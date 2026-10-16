@@ -13,6 +13,11 @@ package dev.trmx.gui.net
 
 import dev.trmx.gui.model.AiConfig
 import dev.trmx.gui.model.AiConfigUpdate
+import dev.trmx.gui.model.AgentConfirmRequest
+import dev.trmx.gui.model.AgentConfirmResponse
+import dev.trmx.gui.model.AgentTaskRequest
+import dev.trmx.gui.model.AgentTaskResponse
+import dev.trmx.gui.model.AgentTaskStatus
 import dev.trmx.gui.model.AutostartRequest
 import dev.trmx.gui.model.CancelRequest
 import dev.trmx.gui.model.ErrorEnvelope
@@ -226,6 +231,31 @@ class BridgeClient(
         }
 
     // ---- internals -----------------------------------------------------
+
+    // ---- agent tasks (revival §5) -----------------------------------------
+
+    /** Start an agent task from a plain instruction; the bridge runs it as
+     *  an internal `agent`-tool job and streams §5 events on its stdout. */
+    suspend fun createAgentTask(instruction: String): BridgeResult<AgentTaskResponse> =
+        call("POST", "/v1/agent/tasks",
+             jsonFormat.encodeToString(AgentTaskRequest.serializer(),
+                                       AgentTaskRequest(instruction)).toRequestBody(JSON)) { body, _ ->
+            jsonFormat.decodeFromString(AgentTaskResponse.serializer(), body)
+        }
+
+    /** Task state + pending confirm, if any. */
+    suspend fun agentTaskStatus(taskId: String): BridgeResult<AgentTaskStatus> =
+        get("/v1/agent/tasks/${enc(taskId)}") { body, _ ->
+            jsonFormat.decodeFromString(AgentTaskStatus.serializer(), body)
+        }
+
+    /** Answer a confirm-needed pause: "allow" or "deny" (409 = nothing awaiting). */
+    suspend fun confirmAgentTask(taskId: String, decision: String): BridgeResult<AgentConfirmResponse> =
+        call("POST", "/v1/agent/tasks/${enc(taskId)}/confirm",
+             jsonFormat.encodeToString(AgentConfirmRequest.serializer(),
+                                       AgentConfirmRequest(decision)).toRequestBody(JSON)) { body, _ ->
+            jsonFormat.decodeFromString(AgentConfirmResponse.serializer(), body)
+        }
 
     // ---- AI backend config (protocol 1.1, §15) -----------------------------
 

@@ -690,6 +690,25 @@ class ToolRegistry:
                 self.schema_errors.append(f"{origin}: {e}")
                 continue
             merged[schema["id"]] = schema
+        # The agent runner: bundled tool with a bridge-computed path. It is
+        # launched by the bridge itself (POST /v1/agent/tasks) — internal,
+        # not a toolbox entry the app offers for manual submits.
+        agent_schema = {
+            "id": "agent",
+            "name": "Agent task runner (internal)",
+            "description": "Runs trmx-agent for one agent task. Internal — "
+                           "submitted by POST /v1/agent/tasks only.",
+            "binary": "python3",
+            "fixed_argv": [str(Path(__file__).resolve().parent / "trmx-agent")],
+            "risk_tier": "confirm",
+            "args": [
+                {"name": "task_id", "label": "Task ID", "type": "string",
+                 "required": True, "help": "agent task id",
+                 "argv": ["--task", "{value}"]},
+            ],
+        }
+        self._validate_schema(agent_schema)  # bundled: fail loud
+        merged["agent"] = agent_schema
         self.schemas = merged
 
     @staticmethod
@@ -1758,6 +1777,11 @@ class BridgeApp:
             # AI backend config (protocol 1.1; the file is trmx-ai's, see docs/AI-CONFIG.md)
             ("GET", re.compile(r"^/v1/ai/config$"), self.h_ai_config_get),
             ("POST", re.compile(r"^/v1/ai/config$"), self.h_ai_config_post),
+            # Agent tasks (protocol 1.1, PROTOCOL §16)
+            ("POST", re.compile(r"^/v1/agent/tasks$"), self.h_agent_tasks_post),
+            ("GET", re.compile(r"^/v1/agent/tasks/([A-Za-z0-9_-]+)$"), self.h_agent_task_get),
+            ("POST", re.compile(r"^/v1/agent/tasks/([A-Za-z0-9_-]+)/confirm$"),
+             self.h_agent_task_confirm),
         ]
 
     # -- connection handling ----------------------------------------------
@@ -2656,6 +2680,137 @@ class BridgeApp:
         self.store.audit("ai.config",
                          f"mode={view['mode']} provider={view['http_api']['provider']}")
         return JsonResponse(view)
+
+    # -- agent tasks (PROTOCOL §16) ----------------------------------------
+
+    def _agent_home(self) -> Path:
+        d = self.home / "agent"
+        for sub in ("", "tasks", "pending", "decisions"):
+            (d / sub).mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _agent_task_path(self, task_id: str) -> Path:
+        return self._agent_home() / "tasks" / f"{task_id}.json"
+
+    @staticmethod
+    def _agent_task_id_ok(task_id: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id or ""))
+
+    def _agent_read_task(self, task_id: str) -> dict:
+        if not self._agent_task_id_ok(task_id):
+            raise BridgeError(400, "VALIDATION_FAILED", "bad task id",
+                              field="task_id")
+        p = self._agent_task_path(task_id)
+        if not p.is_file():
+            raise BridgeError(404, "TASK_NOT_FOUND",
+                              f"no such agent task: {task_id}")
+        try:
+            task = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            raise BridgeError(500, "INTERNAL",
+                              "agent task file unreadable") from None
+        if not isinstance(task, dict):
+            raise BridgeError(500, "INTERNAL", "agent task file unreadable")
+        return task
+
+    def _agent_write_task(self, task: dict) -> None:
+        p = self._agent_task_path(task["task_id"])
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(task, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+
+    async def h_agent_tasks_post(self, req, m):
+        body = self.parse_json_body(req)
+        instruction = body.get("instruction")
+        if not isinstance(instruction, str) or not (1 <= len(instruction) <= 2000):
+            raise BridgeError(400, "VALIDATION_FAILED",
+                              "instruction must be 1..2000 chars",
+                              field="instruction")
+        task_id = "AT-" + secrets.token_urlsafe(9)
+        task = {"task_id": task_id, "instruction": instruction,
+                "created_at": now_iso(), "status": "running", "job_id": None}
+        self._agent_write_task(task)
+        job, _ = await self.manager.submit({
+            "type": "tool", "tool": "agent",
+            "name": f"agent task {task_id}", "args": {"task_id": task_id},
+            # explicit: the agent must find its task file even if the bridge
+            # itself was started without TRMX_HOME in its environment
+            "env": {"TRMX_HOME": str(self.home)}})
+        task["job_id"] = job["job_id"]
+        self._agent_write_task(task)
+        self.store.audit("agent.task", f"{task_id} job={job['job_id']}")
+        return JsonResponse({"task_id": task_id, "job_id": job["job_id"],
+                             "status": "running"}, 201)
+
+    async def h_agent_task_get(self, req, m):
+        task = self._agent_read_task(m.group(1))
+        pending_p = (self._agent_home() / "pending"
+                     / f"{task['task_id']}.json")
+        awaiting = pending_p.is_file()
+        pending_action = None
+        if awaiting:
+            try:
+                pending_action = json.loads(
+                    pending_p.read_text(encoding="utf-8"))
+            except ValueError:
+                pending_action = None
+        status = task.get("status", "running")
+        job_id = task.get("job_id")
+        job_terminal: str | None = None
+        if job_id:
+            job = self.manager.get_job(job_id)
+            if job and job.get("status") in ("COMPLETED", "FAILED",
+                                             "CANCELLED", "LOST"):
+                job_terminal = job["status"]
+        if status not in ("done", "failed") and job_terminal:
+            # the agent process ended without writing its outcome — a
+            # lingering confirm request dies with it, never strands the task
+            status = "failed"
+            task["status"] = "failed"
+            task["error"] = (f"agent job ended {job_terminal} "
+                             "without reporting")
+            self._agent_write_task(task)
+            try:
+                pending_p.unlink(missing_ok=True)
+            except OSError:
+                pass
+            awaiting = False
+        elif awaiting:
+            status = "awaiting_confirm"
+        return JsonResponse({
+            "task_id": task["task_id"], "job_id": job_id, "status": status,
+            "awaiting_confirm": awaiting,
+            "pending_action": (({
+                "describe": (pending_action or {}).get("describe"),
+                "tool": (pending_action or {}).get("tool"),
+                "at": (pending_action or {}).get("requested_at"),
+            }) if pending_action else None),
+            "summary": task.get("summary"), "error": task.get("error"),
+        })
+
+    async def h_agent_task_confirm(self, req, m):
+        task = self._agent_read_task(m.group(1))
+        body = self.parse_json_body(req)
+        decision = body.get("decision")
+        if decision not in ("allow", "deny"):
+            raise BridgeError(400, "VALIDATION_FAILED",
+                              "decision must be allow|deny", field="decision")
+        pending_p = (self._agent_home() / "pending"
+                     / f"{task['task_id']}.json")
+        if not pending_p.is_file():
+            raise BridgeError(409, "NO_PENDING_CONFIRM",
+                              "this task is not awaiting confirmation")
+        dec_p = (self._agent_home() / "decisions"
+                 / f"{task['task_id']}.json")
+        dec_p.write_text(json.dumps({"decision": decision, "decided_at":
+                                     now_iso()}), encoding="utf-8")
+        try:
+            pending_p.unlink()
+        except OSError:
+            pass
+        self.store.audit("agent.confirm", f"{task['task_id']} {decision}")
+        return JsonResponse({"ok": True})
 
     async def h_bridge_ctl(self, req, m):
         body = self.parse_json_body(req)

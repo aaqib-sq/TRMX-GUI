@@ -215,7 +215,7 @@ fun SchemaBuilderScreen(
             }
         }
 
-        // Sticky primary action (P4 pattern): full-width 48 dp, ice-cyan.
+        // Sticky primary action: full-width 48 dp, white (monochrome identity).
         Surface(color = P.Background, modifier = Modifier.fillMaxWidth()) {
             Box(modifier = Modifier.padding(Sp.m)) {
                 TrmxButton(

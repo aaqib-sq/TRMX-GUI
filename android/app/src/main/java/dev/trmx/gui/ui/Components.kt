@@ -7,7 +7,7 @@ package dev.trmx.gui.ui
  *
  *   TrmxTopBar    — M3 top app bar, token colors, back arrow + title
  *   TrmxCard      — elevated container: Surface color, 1 dp outline, Radius.l
- *   TrmxButton    — Primary (ice-cyan) / Secondary (outline) / Ghost / Danger
+ *   TrmxButton    — Primary (white) / Secondary (outline) / Ghost / Danger
  *   TrmxTextField — dark input field, tokens + FieldShape
  *   ActionFlowRow — action cluster that wraps whole buttons, never squeezes
  *   CopyableId    — monospace id that copies on tap
@@ -144,8 +144,9 @@ fun TrmxCard(
 enum class TrmxButtonKind { Primary, Secondary, Ghost, Danger }
 
 /**
- * The button. Primary = ice-cyan fill (the ONE loud element per screen);
- * Secondary = quiet outline; Ghost = text-only; Danger = semantic red.
+ * The button. Primary = white fill on black (the ONE loud element per
+ * screen — the monochrome identity); Secondary = quiet outline; Ghost =
+ * text-only; Danger = semantic red.
  */
 @Composable
 fun TrmxButton(
@@ -332,7 +333,7 @@ fun ActionFlowRow(
 
 // ---- navigation --------------------------------------------------------------
 
-/** Active state: pill with deep-contrast container + ice-cyan icon (P4). */
+/** Active state: pill with deep-contrast container + white icon. */
 @Composable
 fun TrmxNavItemColors() = androidx.compose.material3.NavigationBarItemDefaults.colors(
     selectedIconColor = P.Accent,

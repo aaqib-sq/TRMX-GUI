@@ -26,7 +26,7 @@ set -eu
 
 REF="main"
 DEFAULT_BASE="https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/$REF/termux"
-FILES="trmx-bridge.py trmx trmx-ai"
+FILES="trmx-bridge.py trmx trmx-ai trmx_ai_lib.py trmx-agent"
 HOME_DIR="${TRMX_HOME:-$HOME/.trmx}"
 
 SOURCE=""
@@ -98,22 +98,26 @@ fi
 
 # --- install atomically -----------------------------------------------------
 # trmx-ai is a TOOL binary: it installs to ~/.trmx/bin/ (the registry's
-# resolve_binary probes $TRMX/bin before $PREFIX/bin — ADR-014). The bridge
-# and the control CLI stay at the state-dir root.
+# resolve_binary probes $TRMX/bin before $PREFIX/bin — ADR-014). The bridge,
+# the control CLI and the agent runner stay at the state-dir root
+# (the bridge launches trmx-agent by absolute path).
 mkdir -p "$HOME_DIR/logs" "$HOME_DIR/tools" "$HOME_DIR/bin"
 for f in $FILES; do
   dest="$HOME_DIR/$f"
   [ "$f" = "trmx-ai" ] && dest="$HOME_DIR/bin/$f"
+  # trmx-agent runs beside the bridge (launched by absolute path); the shared
+  # trmx_ai_lib stays at the state-dir root where both scripts find it
+  # (they put their own dir and its parent on sys.path).
   if [ -f "$dest" ]; then cp "$dest" "$dest.old"; fi
   mv "$STAGE/$f" "$dest"
 done
-chmod 755 "$HOME_DIR/trmx" "$HOME_DIR/trmx-bridge.py" "$HOME_DIR/bin/trmx-ai"
+chmod 755 "$HOME_DIR/trmx" "$HOME_DIR/trmx-bridge.py" "$HOME_DIR/trmx-agent" "$HOME_DIR/bin/trmx-ai"
 
 # --- manifest ---------------------------------------------------------------
 python3 - "$HOME_DIR" <<'PYEOF'
 import hashlib, json, os, sys, time
 home = sys.argv[1]
-files = ["trmx-bridge.py", "trmx", "bin/trmx-ai"]
+files = ["trmx-bridge.py", "trmx", "trmx-agent", "trmx_ai_lib.py", "bin/trmx-ai"]
 manifest = {
     "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "files": {

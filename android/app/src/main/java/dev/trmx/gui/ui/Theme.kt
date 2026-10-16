@@ -1,7 +1,7 @@
 package dev.trmx.gui.ui
 
 /*
- * TRMX theme (ADR-011 terminal-luxe → ADR-013 OLED regrade).
+ * TRMX theme (revival: monochrome identity).
  *
  * Every constant comes from Tokens — this file only MAPS tokens onto the
  * Material 3 scheme and the legacy compat surface (Sp, FieldShape,
@@ -25,11 +25,11 @@ private val TrmxScheme = darkColorScheme(
     primaryContainer = P.AccentContainer,
     onPrimaryContainer = P.OnAccentContainer,
     secondary = P.Steel,
-    onSecondary = Color(0xFF0A1A2B),
+    onSecondary = Color(0xFF0A0E14),
     secondaryContainer = P.SteelContainer,
     onSecondaryContainer = P.OnSteelContainer,
-    tertiary = P.Steel,                        // was amber; no warm accents (ADR-013)
-    onTertiary = Color(0xFF0A1A2B),
+    tertiary = P.Steel,
+    onTertiary = Color(0xFF0A0E14),
     tertiaryContainer = P.SteelContainer,
     onTertiaryContainer = P.OnSteelContainer,
     background = P.Background,
@@ -66,9 +66,9 @@ private val TrmxShapes = Shapes(
 )
 
 /**
- * Semantic status/tier colors — ONE source, token-driven. No green, no
- * amber (ADR-013): running = ice-cyan (active/focus), completed = steel,
- * queued = dim steel, failed = semantic red, cancelled = muted slate.
+ * Semantic status/tier colors — ONE source, token-driven. Monochrome:
+ * running = white (active/focus), completed = grey, queued = dim grey,
+ * failed = semantic red, cancelled = muted grey.
  */
 object TrmxColors {
     val Running = P.Accent
@@ -106,7 +106,7 @@ object TrmxColors {
  */
 @Composable
 fun TrmxFieldColors() = OutlinedTextFieldDefaults.colors(
-    // P4 contract: subtle #0A0E17 fill, 1 px #1E293B outline, ice-cyan focus.
+    // Monochrome: white focus ring on the dark fill.
     focusedContainerColor = P.FieldFill,
     unfocusedContainerColor = P.FieldFill,
     disabledContainerColor = P.FieldFill,

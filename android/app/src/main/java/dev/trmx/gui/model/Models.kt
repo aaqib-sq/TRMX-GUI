@@ -364,3 +364,49 @@ data class BridgeError(
     val message: String = "",
     val field: String? = null,
 )
+
+// ---- agent tasks (revival §5: app speaks these; the bridge runs them) ----
+
+/** POST /v1/agent/tasks body. Instruction is 1..2000 chars (bridge-enforced). */
+@Serializable
+data class AgentTaskRequest(
+    val instruction: String,
+)
+
+/** POST /v1/agent/tasks → 201. The work runs as an internal `agent`-tool job. */
+@Serializable
+data class AgentTaskResponse(
+    val task_id: String,
+    val job_id: String,
+    val status: String = "running",
+)
+
+/** The action currently awaiting the user's decision, if any. */
+@Serializable
+data class AgentPendingAction(
+    val describe: String = "",
+    val tool: String? = null,
+    val at: String? = null,
+)
+
+/** GET /v1/agent/tasks/{task_id}. */
+@Serializable
+data class AgentTaskStatus(
+    val task_id: String,
+    val job_id: String,
+    val status: String = "running",   // running | awaiting_confirm | done | failed
+    val awaiting_confirm: Boolean = false,
+    val pending_action: AgentPendingAction? = null,
+)
+
+/** POST /v1/agent/tasks/{task_id}/confirm body. */
+@Serializable
+data class AgentConfirmRequest(
+    val decision: String,   // "allow" | "deny"
+)
+
+/** POST /v1/agent/tasks/{task_id}/confirm response. */
+@Serializable
+data class AgentConfirmResponse(
+    val ok: Boolean = false,
+)

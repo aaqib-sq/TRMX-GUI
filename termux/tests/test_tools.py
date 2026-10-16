@@ -222,9 +222,11 @@ class TestTools(unittest.TestCase):
         status, _, raw = self.http("POST", "/v1/tools/refresh", body={})
         self.assertEqual(status, 200, raw)
         tools = json.loads(raw)["tools"]
-        # 7 bundled + ai-schema-builder + 5 user (faketool, fakeprog,
-        # ghosttool, fakegit, fakeserver)
-        self.assertEqual(len(tools), 13)
+        # 7 bundled + ai-schema-builder + agent (internal) + 5 user (faketool,
+        # fakeprog, ghosttool, fakegit, fakeserver)
+        self.assertEqual(len(tools), 14)
+        ids = {t["schema"]["id"] for t in tools}
+        self.assertIn("agent", ids)
 
     # ---- §7.2 submit: synthesis -------------------------------------------
 
