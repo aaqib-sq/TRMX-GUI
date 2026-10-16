@@ -1,6 +1,7 @@
 # android/ — TRMX-GUI native app
 
-**Status: Phases 4–7 (shell + wizard + jobs + streaming + files) — 4–6 on-device verified on Android 16; Phase 7 CI-green, on-device round pending (ADRs [006](../docs/decisions/ADR-006-android-shell.md), [007](../docs/decisions/ADR-007-file-manager.md)).**
+**Status: app shell, jobs, live streaming, files, tool registry, services,
+AI agent screen — CI compiles + unit-tests green on every push.**
 
 Native Android app (Kotlin + Jetpack Compose). The app is a *disposable control
 plane*: it drives Termux through `RUN_COMMAND` intents (control plane, see
@@ -10,14 +11,16 @@ over loopback HTTP (data plane, TRMX-P/1). Termux does the work.
 ```
 app/src/main/java/dev/trmx/gui/
   MainActivity.kt            single-activity Compose host, state-driven screens
-  AppViewModel.kt            orchestrates both planes; thin by design
+  AppViewModel.kt            jobs/tools/files/services orchestration
+  agent/                     AgentScreen (first tab) + event parser/viewmodel
   control/ControlOps.kt      the 8 intent ops — mirror of CONTROL-PLANE.md §3 (conformance-tested)
   control/IntentControlPlane.kt  intent assembly + send, permission handling
   net/BridgeClient.kt        TRMX-P/1 client (OkHttp, pure JVM, MockWebServer-tested)
   net/Handshaker.kt          START→poll-until-answer logic
-  wizard/WizardEngine.kt     pure first-run state machine
-  store/TokenStore.kt        pairing token + install base (private prefs; Phase 10: crypto store)
-  ui/                        WizardScreen (3 consents + 5 steps), DashboardScreen, theme
+  net/SseClient.kt           SSE event streaming
+  wizard/                    one-screen setup: SetupScreen + SetupViewModel (+ legacy WizardEngine)
+  store/TokenStore.kt        pairing token (encrypted, Phase 10) + install base
+  ui/                        monochrome theme, home/jobs, tools, files, services, settings
 ```
 
 ## Building
@@ -30,16 +33,10 @@ gradle :app:testDebugUnitTest
 ```
 
 The repo deliberately does not commit a `gradle-wrapper.jar` (generated
-artifact); CI installs Gradle 8.7 directly. Locally, run `gradle wrapper` once
-or open the project in Android Studio and let it create the wrapper.
-
-**CI activation is a one-time manual step** (the automation token pushing
-this branch cannot create `.github/workflows/` files): copy
-[`docs/ci/android-workflow.yml`](../docs/ci/android-workflow.yml) to
-`.github/workflows/android.yml` — exact steps in
-[docs/ci/README.md](../docs/ci/README.md). After that, every push builds the
-APK in GitHub Actions and uploads it as an artifact — that is the compile
-gate, since the dev sandbox has no JDK/Android SDK.
+artifact); CI installs Gradle 8.7 directly (`.github/workflows/android.yml` —
+the compile gate, since the dev sandbox has no JDK/Android SDK). Locally, run
+`gradle wrapper` once or open the project in Android Studio and let it create
+the wrapper.
 
 ## Version matrix (ADR-006)
 

@@ -1,84 +1,100 @@
 # TRMX-GUI
 
-**A Universal Linux Runtime & Visual Control Plane for Android.**
+**A visual control plane for the Linux living in your Android phone.**
 
-> The Android app is a clean control plane. **Termux is the execution engine — a
-> complete Linux userspace living on the phone.**
-> `Android UI → control/communication layer → Termux → shell · Python · git · servers · archives · CLI tools · AI agents · media`
+> The app is the face. **Termux is the engine — a complete Linux userspace on the
+> device.** `Android UI → control layer → Termux → shell · Python · git · servers · archives · CLI tools · AI`
+>
+> TRMX-GUI does not replace Termux — it makes it operable without typing.
 
-TRMX-GUI does not replace Termux — it makes all of it operable without typing:
-run and monitor jobs with live output, manage files, clone repositories, run
-scripts and local models, serve folders over HTTP, archive and back up data —
-and launch **any** CLI tool through generated GUIs built from JSON schemas.
-Bundled showcase spans the categories (git-clone, python-run, http-server,
-tar-backup, yt-dlp, ffmpeg, aria2c); drop your own schema into
-`~/.trmx/tools/` and it becomes a first-class form — zero app changes.
+## What it does
+
+- **Jobs** — run anything with live output, in the background, with progress you
+  can watch and a Stop button that actually stops.
+- **AI agent** — describe what you want in plain words; the agent plans the
+  steps, executes them through the bridge, shows each step as it happens, and
+  **asks before anything destructive** (silence = no). Local model or cloud API —
+  your choice, shown on screen.
+- **Tools** — any CLI tool (yt-dlp, ffmpeg, git, …) gets a calm form UI generated
+  from a JSON schema. Drop a schema in `~/.trmx/tools/` and it becomes a
+  first-class screen — no app changes.
+- **Files** — browse, create, rename, move and delete inside Termux storage.
+- **Services** — define and control background services (start/stop/restart,
+  boot autostart) from switch rows.
+- **One-screen setup** — first run is a single screen and one button; the app
+  walks you to the two permission toggles Android/Termux require and does the
+  rest itself. One-tap repair in Settings.
+
+Pairing is token-authenticated over loopback only; the token lives in the app's
+private storage. Keystore-encrypted storage and token-free logs arrive with
+Phase 10 (in review — see status below). Design decisions are recorded as ADRs
+under [docs/decisions/](docs/decisions/).
 
 ## Project status
 
-| Phase | State |
+| Area | State |
 |---|---|
-| **Phase 0 — Feasibility & Architecture Discovery** | ✅ **Complete & approved** (decisions in Appendix 3) |
-| **Phase 1 — Protocol freeze & project constitution** | ✅ **Complete** (TRMX-P/1, ADR-001…003) |
-| **Phase 2 — Termux bridge PoC** | ✅ **Code complete — 19/19 tests + smoke demo pass (sandbox); on-device verification in Termux pending** |
-| **Phase 3 — Bootstrap automation** | ✅ **Complete — installer + autostart + frozen intent contract; 32/32 tests (sandbox)** |
-| **Phase 4 — Android app shell** | ✅ **Complete & on-device verified (Android 16) — 3 fix rounds: cleartext loopback, INTERNET permission, pairing flow** |
-| **Phase 5 — Job submission & management** | ✅ **Complete & ON-DEVICE VERIFIED (Android 16, 2026-09-08): wizard → pair → jobs J-1…J-3 exit 0** |
-| **Phase 6 — Live output streaming** | ✅ **Complete & ON-DEVICE VERIFIED (Android 16, 2026-09-08): live console (stdout/stderr filter, replay), events-driven dashboard** |
-| **Phase 7 — File manager** | ✅ **Complete & ON-DEVICE VERIFIED (Android 16, 2026-09-08): bridge v0.3.0 + Files browser — list/navigate/mkdir/rename/delete/download; 49/49 Termux tests** |
-| **Phase 8 — Polish, UX & FileProvider** | ✅ **Complete & ON-DEVICE VERIFIED (Android 16, 2026-09-09): icon, back navigation, open/share confirmed** |
-| **Phase 9 — Tool Registry & GUI modules** | ✅ **Complete & functionally verified on-device (Android 16): registry + forms + toolbox + chains (bridge v0.4.1)** |
-| **Phase 9.5 — Executive polish & artifacts** | ✅ **Complete — terminal-luxe design system, form overhaul (touched-state, in-field pickers), NavigationBar, x_trmx vocabulary, artifact cards; CI green (run 34440424849); on-device round pending** |
-| **UX-audit P0–P4 — Cognitive UX + design system** | ✅ **Built & CI green (P0+P1 run 34502295508, P2 34507791245, P3 34567118036, P4 34571211804; ADR-012/013) — Command Center IA, OLED design system (Tokens + Trmx components), P4 commercial-grade rebuild: Material Symbols everywhere (zero OS emojis), authentic M3 NavigationBar, ToolForm sticky primary action + floating labels, Chains automation canvas; P4 verified on-device** |
-| **Engine fix + AI round — Schema Builder** | ✅ **Built (ADR-014) — bridge v0.4.2: `mkdir:true` outdir args auto-created at submit (yt-dlp/aria2c `~/downloads` no longer 404s); `trmx-ai` 0.2.0 wrapper with DUAL backend (`cli` offline / `http_api` cloud: openai·groq·gemini·openai_compatible, natively configurable in the app since bridge v0.5.1 — see docs/AI-CONFIG.md) — untrusted LLM output → strict §7.2 validation → `~/.trmx/tools/ai-*.json`, confirm-tier pinned — + bundled `ai-schema-builder` schema + Schema Builder screen with event-wired rescan; python+JVM tests green; on-device rounds 5–6 pending** |
-| **Services — protocol 1.1 service registry** | ✅ **Built (ADR-015) — bridge v0.5.0: `~/.trmx/services/*.json` definitions running registry tools (start/stop/restart/status/autostart; idempotent stop; boot autostart; `features.service_registry` gate; `service.updated` events; PROTOCOL §14 + fixtures); app: Services tab + save-as-service from the tool form (P4 components); python+JVM tests green; on-device round 7 pending** |
-| Phases 10–12 | 🚫 not started |
-
-**Phase 0 decisions:** me + friends distribution via GitHub releases · Termux from GitHub Releases · target Android 14+ (minSdk 26) · hybrid GUI (Tool Registry + universal runner) · device-local-only V1 transport · core-first V1 scope. See [Appendix 3 of the report](docs/PHASE-0-DISCOVERY-REPORT.md#appendix-3--phase-0-sign-off-inputs-recorded-2026-09-07).
+| Bridge daemon + CLI (`termux/`) | ✅ Built, spec'd (TRMX-P/1), fully tested |
+| Android app (`android/`) | ✅ Built, CI compiles + unit-tests green |
+| Agent task loop | ✅ Built & tested (scripted backend); **real-model validation pending** |
+| Setup / pairing | ✅ One-screen flow built; **on-device round pending** |
+| Phase 10 hardening | 🔄 In review (PR #4) — encrypted token store, log redaction |
+| On-device verification | ⏳ The remaining rounds need a real phone + Termux |
+| Release APK | ⏳ Not cut yet |
 
 ## Documentation
 
-- [docs/PHASE-0-DISCOVERY-REPORT.md](docs/PHASE-0-DISCOVERY-REPORT.md) — feasibility verdict, *maximum practical control boundary*, communication comparison, full system architecture, threat model, feature map, 13-phase roadmap, testing strategy, risks
-- [docs/PROTOCOL.md](docs/PROTOCOL.md) — **TRMX-P/1**: the wire contract between app and bridge (every route, error code, event, limit, versioning rule)
-- [docs/CONTROL-PLANE.md](docs/CONTROL-PLANE.md) — **the frozen `RUN_COMMAND` intent interface**: 8 operations, consent preconditions, first-run/warm-start/upgrade sequences, error-state mapping
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) — **TRMX-P/1**: the wire contract between
+  app and bridge (routes, error codes, events, limits, versioning)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — living architecture summary
-- [docs/decisions/](docs/decisions/) — ADR decision log (ADR-001 architecture, ADR-002 protocol core, ADR-003 license, ADR-004 bridge PoC, ADR-005 bootstrap automation, ADR-006 Android shell)
-- [fixtures/v1/](fixtures/v1/) — normative contract fixtures shared by both test suites
-- [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE) (MIT)
-
-## Architecture at a glance
-
-- **Control plane** — Termux's opt-in `RUN_COMMAND` intent API (bootstrap, install, pairing, start/stop), protected by the `com.termux.permission.RUN_COMMAND` permission and the user's `allow-external-apps` opt-in.
-- **Data plane** — a single-file, stdlib-only Python daemon (`trmx-bridge`) inside Termux serving a token-authenticated JSON API with chunked/SSE streaming on `127.0.0.1` (jobs, live logs, files, tool registry, metrics), per the TRMX-P/1 protocol.
-- **Philosophy** — hybrid GUI: schema-driven forms for known tools + a structured universal runner + (V2) a PTY terminal.
-- **Resilience** — the bridge is the source of truth (SQLite + log ring buffers), so jobs survive the Android app being killed; the app is a disposable, reconnecting client.
+- [docs/CONTROL-PLANE.md](docs/CONTROL-PLANE.md) — the frozen `RUN_COMMAND`
+  intent interface
+- [docs/AI-CONFIG.md](docs/AI-CONFIG.md) — configuring the agent/AI backend
+  (local CLI model or cloud API)
+- [docs/decisions/](docs/decisions/) — ADR decision log (ADR-001…015)
+- [docs/PHASE-0-DISCOVERY-REPORT.md](docs/PHASE-0-DISCOVERY-REPORT.md) —
+  feasibility, threat model, full roadmap
+- [fixtures/v1/](fixtures/v1/) — normative contract fixtures shared by both
+  test suites
 
 ## Repository layout
 
 ```
-docs/        discovery report, protocol spec, control-plane spec, living architecture, ADRs
-fixtures/    normative TRMX-P/1 contract fixtures (shared by both test suites)
-android/     native Android app (Kotlin + Jetpack Compose)      — Phase 4+
-termux/      trmx-bridge daemon, trmx CLI, installer, tests     — Phases 2–3 ✅
+docs/        protocol spec, architecture, control-plane spec, ADRs
+fixtures/    TRMX-P/1 contract fixtures (shared by both test suites)
+android/     native app (Kotlin + Jetpack Compose)
+termux/      bridge daemon, trmx CLI, installer, agent service, tests
+tests/       spec-conformance check (Kotlin sources vs frozen contracts)
 ```
 
-## Try it (in Termux or any Linux box)
+## Try it
 
 ```sh
-pkg install python curl          # in Termux; elsewhere just need python3 + curl
+pkg install python curl          # in Termux; elsewhere python3 + curl suffice
 git clone https://github.com/sq987in-wq/TRMX-GUI && cd TRMX-GUI
 
-# Phase 3: install into a throwaway home and run the bridge (TRMX_HOME = the .trmx dir)
+# install the bridge into a throwaway home and start it
 D=/tmp/trmx-demo; mkdir -p $D
 env HOME=$D TRMX_HOME=$D/.trmx sh termux/install.sh --source termux
 env HOME=$D TRMX_HOME=$D/.trmx $D/.trmx/trmx start
 env HOME=$D TRMX_HOME=$D/.trmx $D/.trmx/trmx status    # → data-plane: UP
 env HOME=$D TRMX_HOME=$D/.trmx $D/.trmx/trmx stop
 
-sh termux/tests/smoke.sh         # the full Phase 2 demo (pair → … → re-adopt → stop)
-sh termux/tests/run_tests.sh     # both suites: 19 bridge + 12 bootstrap tests
+sh termux/tests/run_tests.sh all   # full Python suite (bridge/files/tools/ai/services/agent/…)
+python3 tests/spec_conformance.py  # app sources vs frozen contracts
 ```
 
-## Contributing / building
+## Building the app
 
-Nothing to build yet — implementation begins with the Phase 2 bridge PoC, gated on Phase 1 review. The project follows a strict *architecture → smallest working proof → verified communication → controlled execution → reliable jobs → polish → security → testing → production* order, documented in the Phase 0 report §H.
+```sh
+cd android && gradle :app:assembleDebug          # JDK 17, Gradle 8.7
+gradle :app:testDebugUnitTest                    # JVM unit tests
+```
+
+CI (`.github/workflows/android.yml`) runs the conformance check, the debug
+build and the unit tests on every push and PR. The debug APK is uploaded as a
+build artifact.
+
+## License
+
+MIT — see [LICENSE](LICENSE). [CHANGELOG.md](CHANGELOG.md) tracks releases.
