@@ -24,7 +24,10 @@
 11. [SSE framing rules](#11-sse-framing-rules)
 12. [Limits summary](#12-limits-summary)
 13. [Versioning & governance](#13-versioning--governance)
-14. [Fixture index](#14-fixture-index)
+14. [Services](#14-services)
+15. [AI backend configuration](#15-ai-backend-configuration)
+16. [Agent tasks](#16-agent-tasks)
+17. [Fixture index](#17-fixture-index)
 
 ---
 
@@ -428,7 +431,7 @@ Autostart: after boot reconciliation (§3.6), definitions with `autostart: true`
 
 ## 15. AI backend configuration (protocol 1.1, additive — bridge ≥ 0.5.1)
 
-Capability: route presence (older bridges 404). The file is trmx-ai's (`~/.trmx/ai.json`, see docs/AI-CONFIG.md); the bridge only reads/validates/writes it for the app — trmx-ai stays the sole consumer.
+Capability: route presence (older bridges 404). The file is trmx-ai's (`~/.trmx/ai.json`, see docs/AI-CONFIG.md); the bridge only reads/validates/writes it for the app — `trmx-ai` and `trmx-agent` are its consumers (same backends, same trust rules).
 
 **`GET /v1/ai/config`** — masked, normalized view (legacy flat configs folded in):
 
@@ -454,7 +457,63 @@ The raw API key **never** crosses the API — `api_key_set` is the only key stat
 
 Validation of the FINAL config: `cli.command` a non-empty string list; in `http_api` mode a non-empty `model` is required and `openai_compatible` additionally requires `endpoint`; timeouts positive. Violations → `400 VALIDATION_FAILED` (nothing written). An unparsable existing file → `500 INTERNAL` with a fix-it-in-Termux hint (fail loud, never silently overwrite).
 
-## 16. Fixture index
+## 16. Agent tasks (protocol 1.1, additive — bridge ≥ 0.6.0)
+
+Capability: route presence (older bridges 404). The agent is an LLM task
+loop (`termux/trmx-agent`) that the bridge runs as an ordinary job: the app
+creates a task, the bridge submits the internal `agent` tool, and the agent
+process prints a JSON-lines event stream to its stdout — rendered by the app
+from the job's output stream (§4). The agent acts **only** through the
+fixed tool menu below; it can never submit the `agent` tool itself.
+
+**`POST /v1/agent/tasks`** — body `{"instruction": "<1..2000 chars>"}` →
+`201 {"task_id": "AT-…", "job_id": "J-…", "status": "running"}`.
+The bridge writes `~/.trmx/agent/tasks/{task_id}.json`, submits the agent
+tool job with `TRMX_HOME` set explicitly, and audit-logs `agent.task`.
+Validation failures → `400 VALIDATION_FAILED`.
+
+**`GET /v1/agent/tasks/{task_id}`** →
+```json
+{ "task_id": "AT-…", "job_id": "J-…",
+  "status": "running|awaiting_confirm|done|failed",
+  "awaiting_confirm": false,
+  "pending_action": { "describe": "…", "tool": "submit_tool", "at": "…" },
+  "summary": "…", "error": "…" }
+```
+`awaiting_confirm` is true while a confirm request file is pending;
+`pending_action` carries the plain-words description the app shows on the
+confirm card. Unknown id → `404 TASK_NOT_FOUND`.
+
+**`POST /v1/agent/tasks/{task_id}/confirm`** — body
+`{"decision": "allow"|"deny"}` → `{"ok": true}` (audit-logged
+`agent.confirm`). Nothing pending → `409 NO_PENDING_CONFIRM`.
+Bad decision → `400 VALIDATION_FAILED`.
+
+**Event stream** (one JSON object per stdout line of the agent job):
+
+| `t` | Meaning |
+|---|---|
+| `backend` | `{"mode":"cli\|http_api","model":"…"}` — which backend answers (cost visibility) |
+| `plan` | `{"step":n,"thought":"…","describe":"<human sentence>"}` — shown *before* the action runs |
+| `action` | `{"step":n,"tool":"…","describe":"…"}` — about to execute |
+| `result` | `{"step":n,"ok":bool,"excerpt":"…"}` — what happened |
+| `confirm-needed` | `{"step":n,"describe":"…","tool":"…","why":"risk-tier\|destructive"}` — paused for the app's answer |
+| `done` | `{"summary":"…"}` |
+| `failed` | `{"error":"…"}` |
+
+**Agent tool menu** (fixed, server-validated whitelist): `submit_tool`
+(run a registered tool — `tool: "agent"` is rejected), `list_jobs`,
+`job_output` (tail), `list_files`, `service_action`, `cancel_job`.
+A `submit_tool` whose target tool has `risk_tier` `confirm`/`destructive`,
+or whose description matches a destructive verb, emits `confirm-needed`
+and pauses until the app answers via the confirm endpoint (10-minute
+silence = deny). Cancel = `POST /v1/jobs/{job_id}/cancel` (§3.5).
+
+The pairing token is never part of this protocol: the agent reads it from
+`~/.trmx/bridge.json` only to authenticate its own calls (like the `trmx`
+CLI); it cannot mint, change, or read it back over the API.
+
+## 17. Fixture index
 
 Shared contract fixtures live in [`fixtures/v1/`](../fixtures/v1/) and are normative:
 
@@ -473,6 +532,8 @@ Shared contract fixtures live in [`fixtures/v1/`](../fixtures/v1/) and are norma
 | `tool.schema.yt-dlp.json` | §7.2 |
 | `services.def.request.json` · `services.list.response.json` | §14 |
 | `ai.config.response.json` · `ai.config.request.json` | §15 |
+| `agent.tasks.create.response.json` · `agent.tasks.get.response.json` | §16 |
+| `agent.events.stream.txt` | §16 (event JSONL) |
 | `error.response.json` | §10 |
 
 *End of TRMX-P/1 draft. Reviewing this document is the Phase 1 exit gate; Phase 2 (bridge PoC) starts only after sign-off.*
