@@ -79,13 +79,13 @@ fun AgentScreen(
                     TrmxCard(modifier = Modifier.fillMaxWidth()) {
                         Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
                             Text(
-                                "Tell me what to do.",
+                                "मुझे बताइए, क्या करना है।",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold)
                             Text(
-                                "Plain words — \"download this video's audio\", " +
-                                    "\"back up last night's files\". " +
-                                    "I'll show every step before and while it runs.",
+                                "सीधे शब्दों में — \"इस वीडियो का ऑडियो निकाल दो\", " +
+                                    "\"कल रात की फ़ाइलों का बैकअप ले लो\"। " +
+                                    "हर क़दम चलते हुए दिखाऊँगा।",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = P.TextSecondary)
                         }
@@ -114,7 +114,7 @@ fun AgentScreen(
                             color = P.TextSecondary,
                             modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(Sp.s))
-                        Text("working…",
+                        Text("काम चल रहा है…",
                              style = MaterialTheme.typography.bodySmall,
                              color = P.TextSecondary)
                     }
@@ -136,6 +136,9 @@ fun AgentScreen(
             sending = state.sending,
             active = state.active,
             onStop = onStop,
+            // Don't let a tap vanish into a doomed task: the backend strip
+            // above already explains how to configure it.
+            backendBlocked = !state.backendConfigured && !state.backendLoading,
         )
     }
 }
@@ -149,11 +152,11 @@ private fun BackendBar(
     loading: Boolean,
 ) {
     val (text, color) = when {
-        loading -> "checking AI backend…" to P.TextMuted
-        label == null -> "AI backend unknown" to P.TextMuted
-        !configured -> "AI backend not configured — set it in Settings" to P.Danger
-        free == true -> "$label · free (runs on this phone)" to P.TextSecondary
-        free == false -> "$label · uses API — costs money" to P.Danger
+        loading -> "एआई देख रहा हूँ…" to P.TextMuted
+        label == null -> "एआई की जानकारी नहीं है" to P.TextMuted
+        !configured -> "एआई तैयार नहीं है — सेटिंग्स में लगाइए" to P.Danger
+        free == true -> "$label · मुफ़्त (इसी फ़ोन पर चलता है)" to P.TextSecondary
+        free == false -> "$label · एपीआई वाला है — पैसे लगते हैं" to P.Danger
         else -> label to P.TextSecondary
     }
     Text(
@@ -214,7 +217,12 @@ private fun ConfirmCard(
                  style = MaterialTheme.typography.bodyLarge,
                  fontWeight = FontWeight.SemiBold)
             if (confirm.why.isNotEmpty()) {
-                Text("Needs your approval (${confirm.why})",
+                val whyText = when (confirm.why) {
+                    "destructive" -> "ख़तरनाक काम"
+                    "risk-tier" -> "जोखिम वाला काम"
+                    else -> confirm.why
+                }
+                Text("आपकी इजाज़त चाहिए ($whyText)",
                      style = MaterialTheme.typography.bodySmall,
                      color = P.TextMuted)
             }
@@ -234,7 +242,7 @@ private fun ConfirmCard(
                     modifier = Modifier.weight(1f),
                 )
             }
-            Text("No answer within 10 minutes counts as Deny.",
+            Text("10 मिनट में जवाब न आए तो मना समझा जाएगा।",
                  style = MaterialTheme.typography.labelSmall,
                  color = P.TextMuted)
         }
@@ -254,7 +262,7 @@ private fun ErrorStrip(text: String, onDismiss: () -> Unit) {
              color = P.Danger,
              modifier = Modifier.weight(1f))
         androidx.compose.material3.TextButton(onClick = onDismiss) {
-            Text("dismiss", style = MaterialTheme.typography.labelSmall)
+            Text("हटाओ", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -267,6 +275,7 @@ private fun InputBar(
     sending: Boolean,
     active: Boolean,
     onStop: () -> Unit,
+    backendBlocked: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -290,16 +299,17 @@ private fun InputBar(
             TrmxTextField(
                 value = input,
                 onValueChange = onInput,
-                label = "What should I do?",
+                label = "मुझे क्या करना है?",
                 modifier = Modifier.weight(1f),
                 singleLine = false,
                 minLines = 1,
-                enabled = !sending && !active,
+                enabled = !sending && !active && !backendBlocked,
             )
             Spacer(Modifier.width(Sp.s))
             androidx.compose.material3.IconButton(
                 onClick = onSend,
-                enabled = input.isNotBlank() && !sending && !active,
+                enabled = input.isNotBlank() && !sending && !active &&
+                    !backendBlocked,
                 modifier = Modifier
                     .size(52.dp)
                     .padding(bottom = 2.dp),
@@ -319,8 +329,8 @@ private fun InputBar(
             }
         }
         Text(
-            "The agent only acts through the bridge's tools — no raw shell, " +
-                "no new binaries, and it always asks before anything destructive.",
+            "एजेंट सिर्फ़ ब्रिज के औज़ारों से काम करता है — कोई कच्चा कमांड " +
+                "नहीं, और मिटाने-बदलने वाले काम से पहले हमेशा पूछता है।",
             style = MaterialTheme.typography.labelSmall,
             color = P.TextMuted,
         )
