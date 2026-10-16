@@ -61,7 +61,10 @@ fun SetupScreen(
     onSkipPythonWait: () -> Unit,
     onRetry: () -> Unit,
     onReset: () -> Unit,
+    existingToken: String = "",
+    onVerifyManualPairing: () -> Unit = {},
 ) {
+    var showManualWelcome by remember { mutableStateOf(false) }
     // "waiting for you" states resolve here — the user comes back from
     // settings, the checklist re-verifies itself, no taps needed.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -119,6 +122,19 @@ fun SetupScreen(
                 Text(it, color = MaterialTheme.colorScheme.error,
                      style = MaterialTheme.typography.bodyMedium)
             }
+            // Manual pairing is reachable WITHOUT a pipeline run or a
+            // failure whenever a token already exists (device round 1:
+            // the escape hatch must never be hostage to a slow wait).
+            if (existingToken.isNotEmpty()) {
+                TextButton(onClick = { showManualWelcome = !showManualWelcome }) {
+                    Text(if (showManualWelcome) "Hide manual pairing"
+                         else "Pair manually instead (last resort)")
+                }
+                if (showManualWelcome) {
+                    ManualPairing(token = existingToken,
+                                  onRetry = onVerifyManualPairing)
+                }
+            }
             Text(
                 "This installs Python (only if missing), downloads the TRMX " +
                     "bridge and starts it. Nothing runs as root; everything " +
@@ -131,6 +147,7 @@ fun SetupScreen(
                 onSkipPythonWait = onSkipPythonWait,
                 onRetry = onRetry,
                 onReset = onReset,
+                onVerifyManualPairing = onVerifyManualPairing,
             )
         }
     }
@@ -266,6 +283,7 @@ private fun PipelineBody(
     onSkipPythonWait: () -> Unit,
     onRetry: () -> Unit,
     onReset: () -> Unit,
+    onVerifyManualPairing: () -> Unit = {},
 ) {
     var showManual by remember { mutableStateOf(false) }
     val (index, name) = stageOf(state.step)
@@ -293,6 +311,18 @@ private fun PipelineBody(
         }
     }
 
+    // The manual escape hatch is also reachable mid-pipeline — a slow
+    // stage must never hold it hostage (device round 1, 2026-10-16).
+    if (state.busy && state.token.isNotEmpty()) {
+        TextButton(onClick = { showManual = !showManual }) {
+            Text(if (showManual) "Hide manual pairing"
+                 else "Pair manually instead (last resort)")
+        }
+        if (showManual) {
+            ManualPairing(token = state.token, onRetry = onVerifyManualPairing)
+        }
+    }
+
     state.failure?.let { fail ->
         TrmxCard(modifier = Modifier.fillMaxWidth()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -312,7 +342,8 @@ private fun PipelineBody(
                          else "Pair manually instead (last resort)")
                 }
                 if (showManual && state.token.isNotEmpty()) {
-                    ManualPairing(token = state.token, onRetry = onRetry)
+                    ManualPairing(token = state.token,
+                                  onRetry = onVerifyManualPairing)
                 }
             }
         }

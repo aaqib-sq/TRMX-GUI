@@ -34,6 +34,22 @@ class HandshakerTest {
     }
 
     @Test
+    fun `wall clock deadline stops slow probes long before attempts run out`() = runTest {
+        // Each clock read jumps 20 s: probes are "slow" (a frozen bridge
+        // burning connect/read timeouts). 60 attempts must NOT happen —
+        // the 45 s wall-clock cap ends the wait after a few probes.
+        var clock = 0L
+        var attempts = 0
+        val h = Handshaker(
+            probe = { attempts++; BridgeResult.NetworkError(RuntimeException("timeout")) },
+            pollIntervalMs = 500, maxAttempts = 60, maxDurationMs = 45_000,
+            nowMs = { clock += 20_000; clock })
+        val r = h.awaitHandshake(delayFn = { })
+        assertTrue(r is BridgeResult.NetworkError)
+        assertTrue("attempts=$attempts must be far below 60", attempts in 1..5)
+    }
+
+    @Test
     fun `deadline exhausted reports the last network error`() = runTest {
         val h = Handshaker(
             probe = { BridgeResult.NetworkError(RuntimeException("refused")) },
