@@ -7,9 +7,19 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -84,7 +94,7 @@ class MainActivity : ComponentActivity() {
         handleRecipeIntent(intent)
         setContent {
             TRMXTheme {
-                AppRoot()
+                CrashGate { AppRoot() }
             }
         }
     }
@@ -551,6 +561,54 @@ fun AppRoot(
                         onDismiss = { showDiagnostics = false },
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Crash-report gate: when the previous run died, the saved stack trace
+ * is shown FIRST — on a screen built from plain Compose primitives and
+ * no ViewModels, so it renders even if the failing code is in the main
+ * UI itself. "Clear and continue" deletes the report and proceeds;
+ * if the fault is still present the app will crash again and the next
+ * launch will show a fresh report.
+ */
+@Composable
+private fun CrashGate(content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    var report by remember { mutableStateOf(CrashLog.read(context)) }
+    val text = report
+    if (text == null) {
+        content()
+        return
+    }
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Last time, TRMX stopped — here is why",
+             fontWeight = FontWeight.Bold,
+             style = MaterialTheme.typography.titleMedium)
+        Text("Screenshot this screen and send it — it names the exact fault.",
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.padding(6.dp))
+        Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Text(text, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.padding(6.dp))
+        Row {
+            Button(onClick = { CrashLog.clear(context); report = null }) {
+                Text("Clear and continue")
+            }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = {
+                runCatching {
+                    val send = Intent(Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, text)
+                    context.startActivity(Intent.createChooser(send, "Share crash report"))
+                }
+            }) {
+                Text("Share")
             }
         }
     }
