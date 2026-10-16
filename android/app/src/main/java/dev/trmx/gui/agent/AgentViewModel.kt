@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
@@ -167,7 +168,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                         .collect { frame ->
                             when (frame.event) {
                                 "stdout" -> {
-                                    val text = runCatching {
+                                    val text = runCatching<String?> {
                                         BridgeClient.jsonFormat
                                             .parseToJsonElement(frame.data)
                                             .jsonObject["text"]
@@ -177,14 +178,14 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                                     frame.id?.let { fromSeq = maxOf(fromSeq, it + 1) }
                                 }
                                 "status" -> {
-                                    val status = runCatching {
+                                    val status = runCatching<String?> {
                                         BridgeClient.jsonFormat
                                             .parseToJsonElement(frame.data)
                                             .jsonObject["status"]
                                             ?.jsonPrimitive?.contentOrNull
                                     }.getOrNull()
                                     frame.id?.let { fromSeq = maxOf(fromSeq, it + 1) }
-                                    if (status in TERMINAL_STATUSES) {
+                                    if (!status.isNullOrEmpty() && status in TERMINAL_STATUSES) {
                                         terminalSeen = true
                                         _state.update { it.copy(active = false) }
                                     }
@@ -320,7 +321,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
     fun stop() {
         val jobId = _state.value.jobId ?: return
         viewModelScope.launch {
-            when (client().cancelJob(jobId)) {
+            when (val r = client().cancelJob(jobId)) {
                 is BridgeResult.Success -> {
                     _state.update { it.copy(active = false) }
                     addRow(AgentRow(AgentRowKind.FAILED, title = "रुक गया (stopped)"))
