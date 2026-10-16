@@ -38,26 +38,35 @@ class IntentControlPlane(private val context: Context) {
      * call time — the token never lives in the static op table.
      * Acceptance is observed through the data plane, not intent callbacks
      * (CONTROL-PLANE.md §1).
+     *
+     * This function is Result-typed and must NEVER throw: validation
+     * failures (an unresolvable placeholder, e.g. PAIR with no token)
+     * come back as Result.failure. Before 2026-10-16 the require /
+     * resolveArgs calls sat OUTSIDE the try block, so a missing token
+     * threw IllegalArgumentException straight through the caller into a
+     * coroutine and crashed the app — in a loop, on every warm start
+     * whose bridge held a different token (device crash report,
+     * 2026-10-16 22:23).
      */
     fun send(
         spec: ControlOps.OpSpec,
         baseUrl: String? = null,
         token: String? = null,
     ): Result<Unit> {
-        require(ControlOps.pathIsInTermuxSandbox(spec.path)) {
-            "refusing to execute outside the Termux sandbox: ${spec.path}"
-        }
-        val args = ControlOps.resolveArgs(spec, baseUrl, token)
-        val intent = Intent(ControlOps.ACTION_RUN_COMMAND).apply {
-            component = ComponentName(ControlOps.TERMUX_PACKAGE, ControlOps.RUN_COMMAND_SERVICE)
-            putExtra(ControlOps.EXTRA_PATH, spec.path)
-            putExtra(ControlOps.EXTRA_ARGUMENTS, args.toTypedArray())
-            putExtra(ControlOps.EXTRA_WORKDIR, ControlOps.TERMUX_HOME)
-            putExtra(ControlOps.EXTRA_BACKGROUND, true)
-            putExtra(ControlOps.EXTRA_LABEL, "TRMX: ${spec.id}")
-            putExtra(ControlOps.EXTRA_DESCRIPTION, spec.description)
-        }
         return try {
+            require(ControlOps.pathIsInTermuxSandbox(spec.path)) {
+                "refusing to execute outside the Termux sandbox: ${spec.path}"
+            }
+            val args = ControlOps.resolveArgs(spec, baseUrl, token)
+            val intent = Intent(ControlOps.ACTION_RUN_COMMAND).apply {
+                component = ComponentName(ControlOps.TERMUX_PACKAGE, ControlOps.RUN_COMMAND_SERVICE)
+                putExtra(ControlOps.EXTRA_PATH, spec.path)
+                putExtra(ControlOps.EXTRA_ARGUMENTS, args.toTypedArray())
+                putExtra(ControlOps.EXTRA_WORKDIR, ControlOps.TERMUX_HOME)
+                putExtra(ControlOps.EXTRA_BACKGROUND, true)
+                putExtra(ControlOps.EXTRA_LABEL, "TRMX: ${spec.id}")
+                putExtra(ControlOps.EXTRA_DESCRIPTION, spec.description)
+            }
             context.startService(intent)
             Result.success(Unit)
         } catch (e: SecurityException) {
@@ -70,6 +79,8 @@ class IntentControlPlane(private val context: Context) {
                 ControlPlaneException(
                     ControlPlaneException.SendError.TERMUX_NOT_RUNNING,
                     "cannot start Termux service (is Termux running?)", e))
+        } catch (e: IllegalArgumentException) {
+            Result.failure(e)
         }
     }
 }
