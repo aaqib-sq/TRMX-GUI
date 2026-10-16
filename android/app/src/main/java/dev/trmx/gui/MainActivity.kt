@@ -7,27 +7,32 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,24 +44,33 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.trmx.gui.agent.AgentViewModel
 import dev.trmx.gui.model.ToolExample
+import dev.trmx.gui.ui.AgentScreen
 import dev.trmx.gui.ui.ChainsScreen
 import dev.trmx.gui.ui.DashboardScreen
 import dev.trmx.gui.ui.DiagnosticsSheet
 import dev.trmx.gui.ui.SchemaBuilderScreen
 import dev.trmx.gui.ui.ServicesScreen
+import dev.trmx.gui.ui.SettingsScreen
+import dev.trmx.gui.ui.SetupScreen
 import dev.trmx.gui.ui.FilesScreen
 import dev.trmx.gui.ui.JobDetailScreen
-import dev.trmx.gui.ui.SubmitDialog
 import dev.trmx.gui.ui.ToolFormScreen
 import dev.trmx.gui.ui.ToolboxScreen
+import dev.trmx.gui.ui.TrmxIconButton
 import dev.trmx.gui.ui.TrmxNavItemColors
+import dev.trmx.gui.ui.TrmxTopBar
 import dev.trmx.gui.ui.TRMXTheme
-import dev.trmx.gui.ui.WizardScreen
+import dev.trmx.gui.wizard.SetupViewModel
 import dev.trmx.gui.wizard.WizardStep
 import java.io.File
 
-private enum class Screen { DASHBOARD, FILES, TOOLBOX, CHAINS, AI_BUILDER, SERVICES }
+/** Tabs, in order: the Agent is the front door (revival), Tools second. */
+private enum class Screen { AGENT, TOOLS, HOME, FILES, SERVICES }
+
+/** Advanced surfaces, opened as overlays above the tabs (never tab items). */
+private enum class Overlay { CHAINS, AI_BUILDER, SETTINGS }
 
 private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 
@@ -88,8 +102,15 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppRoot(vm: AppViewModel = viewModel()) {
-    val wizard by vm.wizard.collectAsStateWithLifecycle()
+fun AppRoot(
+    vm: AppViewModel = viewModel(),
+    setupVm: SetupViewModel = viewModel(),
+    agentVm: AgentViewModel = viewModel(),
+) {
+    val setup by setupVm.wizard.collectAsStateWithLifecycle()
+    val checks by setupVm.checks.collectAsStateWithLifecycle()
+    val repair by setupVm.repair.collectAsStateWithLifecycle()
+    val agentState by agentVm.state.collectAsStateWithLifecycle()
     val dashboard by vm.dashboard.collectAsStateWithLifecycle()
     val submitForm by vm.submitForm.collectAsStateWithLifecycle()
     val detail by vm.detail.collectAsStateWithLifecycle()
@@ -103,40 +124,40 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     val chainsState by vm.chains.collectAsStateWithLifecycle()
     val recipes by vm.recipes.collectAsStateWithLifecycle()
     val artifactsState by vm.artifacts.collectAsStateWithLifecycle()
-    val termuxInstalled = remember { vm.isTermuxInstalled() }
-    var screen by remember { mutableStateOf(Screen.DASHBOARD) }
+    var screen by remember { mutableStateOf(Screen.AGENT) }
+    var overlay by remember { mutableStateOf<Overlay?>(null) }
     var showDiagnostics by remember { mutableStateOf(false) }
-    // Custom-command dialog, openable from Home intent cards (P2).
-    var showSubmit by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
 
     // Cold-start recipe shortcut (set by MainActivity before composition).
     LaunchedEffect(Unit) {
         pendingRecipeId?.let { id ->
             pendingRecipeId = null
-            screen = Screen.TOOLBOX
+            screen = Screen.TOOLS
             vm.loadTools()
             vm.openRecipe(id)
         }
     }
 
     when {
-        wizard.step != WizardStep.DONE -> WizardScreen(
-            state = wizard,
-            termuxInstalled = termuxInstalled,
-            onConsentTermux = vm::consentTermux,
-            onConsentRunCommand = vm::consentRunCommand,
-            onConsentAllowExternal = vm::consentAllowExternal,
-            onBaseUrlChanged = vm::baseUrlChanged,
-            onBegin = vm::beginWizard,
-            onSkipWait = vm::skipWait,
-            onRetry = vm::retry,
-            onReset = vm::resetWizard,
+        setup.step != WizardStep.DONE -> SetupScreen(
+            state = setup,
+            checks = checks,
+            onResume = setupVm::recheck,
+            onOpenRunCommandSettings = setupVm::openRunCommandSettings,
+            onOpenTermuxApp = setupVm::openTermuxApp,
+            onConfirmAllowExternal = setupVm::confirmAllowExternal,
+            onBegin = setupVm::beginSetup,
+            onSkipPythonWait = setupVm::skipPythonWait,
+            onRetry = setupVm::retrySetup,
+            onReset = setupVm::resetSetup,
         )
 
         else -> {
             // local capture: delegated properties cannot be smart-cast
             val detailState = detail
             val toolForm = toolFormState
+            val currentOverlay = overlay
 
             // Staged open/share (ADR-008): fired at root so it works from
             // every screen — Files, Toolbox (recipe share), artifacts, anywhere.
@@ -207,27 +228,173 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                     onSaveRecipe = vm::saveRecipeFromForm,
                     onSaveService = vm::saveServiceFromForm,
                 )
+            } else if (currentOverlay != null) {
+                // Advanced surfaces: Chains, AI builder, Settings — overlays,
+                // never tabs.
+                BackHandler { overlay = null }
+                when (currentOverlay) {
+                    Overlay.CHAINS -> Column(Modifier.fillMaxSize()) {
+                        TrmxTopBar(title = "Chains", onBack = { overlay = null })
+                        ChainsScreen(
+                            state = chainsState,
+                            tools = toolsState.tools,
+                            jobs = dashboard.jobs,
+                            onNew = vm::newChainBuilder,
+                            onEditDef = vm::editChainDef,
+                            onDeleteDef = vm::deleteChainDef,
+                            onRun = vm::runChain,
+                            onResume = vm::resumeChain,
+                            onStopRun = vm::stopChainRun,
+                            onSetTitle = vm::setChainTitle,
+                            onAddStep = vm::addChainStep,
+                            onRemoveStep = vm::removeChainStep,
+                            onEditStep = { i -> vm.editChainStep(i) },
+                            onSaveDef = vm::saveChainDef,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Overlay.AI_BUILDER -> {
+                        LaunchedEffect(Unit) {
+                            vm.loadTools()
+                            vm.loadAiConfig()
+                        }
+                        SchemaBuilderScreen(
+                            state = schemaBuilder,
+                            aiToolInstalled = toolsState.tools
+                                .firstOrNull { it.schema.id == "ai-schema-builder" }
+                                ?.installed,
+                            config = aiConfigState,
+                            onLoadConfig = vm::loadAiConfig,
+                            onSaveConfig = vm::saveAiConfig,
+                            onSetAiMode = vm::setAiMode,
+                            onSetAiProvider = vm::setAiProvider,
+                            onSetAiEndpoint = vm::setAiEndpoint,
+                            onSetAiModel = vm::setAiModel,
+                            onSetAiApiKey = vm::setAiApiKey,
+                            onForgetAiKey = vm::forgetAiKey,
+                            onSetAiCommand = vm::setAiCommand,
+                            onEditDescription = vm::editSchemaDescription,
+                            onSubmit = vm::submitSchemaBuilder,
+                            onOpenToolbox = {
+                                overlay = null
+                                screen = Screen.TOOLS
+                            },
+                            onOpenJob = { vm.selectJob(it) },
+                            onBack = { overlay = null },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    Overlay.SETTINGS -> SettingsScreen(
+                        connected = dashboard.error == null,
+                        repair = repair,
+                        aiConfig = aiConfigState,
+                        onRepair = setupVm::runRepair,
+                        onDismissRepair = setupVm::dismissRepair,
+                        onRerunSetup = {
+                            vm.resetAppState()
+                            setupVm.resetSetup()
+                            overlay = null
+                        },
+                        onLoadAiConfig = vm::loadAiConfig,
+                        onBack = { overlay = null },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             } else {
-                // ---- main shell: bottom navigation (Phase 9.5) -----------
-                BackHandler(enabled = screen != Screen.DASHBOARD) {
-                    screen = if (screen == Screen.AI_BUILDER) Screen.TOOLBOX else Screen.DASHBOARD
+                // ---- main shell: bottom navigation -----------------------
+                BackHandler(enabled = screen != Screen.AGENT) {
+                    screen = Screen.AGENT
                 }
                 Scaffold(
+                    topBar = {
+                        TrmxTopBar(
+                            title = when (screen) {
+                                Screen.AGENT -> "Agent"
+                                Screen.TOOLS -> "Tools"
+                                Screen.HOME -> "TRMX"
+                                Screen.FILES -> "Files"
+                                Screen.SERVICES -> "Services"
+                            },
+                            actions = {
+                                if (screen == Screen.SERVICES) {
+                                    TrmxIconButton(
+                                        icon = Icons.Outlined.Refresh,
+                                        contentDescription = "refresh",
+                                        onClick = vm::loadServices)
+                                }
+                                TrmxIconButton(
+                                    icon = Icons.Filled.MoreVert,
+                                    contentDescription = "more",
+                                    onClick = { menuOpen = true })
+                                DropdownMenu(
+                                    expanded = menuOpen,
+                                    onDismissRequest = { menuOpen = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("Chains") },
+                                        onClick = {
+                                            menuOpen = false
+                                            overlay = Overlay.CHAINS
+                                        })
+                                    DropdownMenuItem(
+                                        text = { Text("AI builder") },
+                                        onClick = {
+                                            menuOpen = false
+                                            overlay = Overlay.AI_BUILDER
+                                        })
+                                    DropdownMenuItem(
+                                        text = { Text("Diagnostics") },
+                                        onClick = {
+                                            menuOpen = false
+                                            showDiagnostics = true
+                                        })
+                                    DropdownMenuItem(
+                                        text = { Text("Settings") },
+                                        onClick = {
+                                            menuOpen = false
+                                            overlay = Overlay.SETTINGS
+                                        })
+                                }
+                            },
+                        )
+                    },
                     bottomBar = {
-                        // Commercial M3 NavigationBar (P4): OLED black,
-                        // 24 dp vector icons (outlined -> filled when
-                        // selected), LabelSmall, pill indicator with deep
-                        // contrast container + ice-cyan active tint.
+                        // Monochrome M3 NavigationBar: OLED black, 24 dp
+                        // vector icons (outlined -> filled when selected),
+                        // white active tint, grey inactive.
                         NavigationBar(
                             containerColor = Color(0xFF000000),
                             tonalElevation = 0.dp,
                         ) {
                             NavigationBarItem(
-                                selected = screen == Screen.DASHBOARD,
-                                onClick = { screen = Screen.DASHBOARD },
+                                selected = screen == Screen.AGENT,
+                                onClick = { screen = Screen.AGENT },
                                 icon = {
                                     Icon(
-                                        if (screen == Screen.DASHBOARD) Icons.Filled.Home
+                                        if (screen == Screen.AGENT) Icons.Filled.AutoAwesome
+                                        else Icons.Outlined.AutoAwesome,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp))
+                                },
+                                label = { Text("Agent", style = MaterialTheme.typography.labelSmall) },
+                                colors = TrmxNavItemColors())
+                            NavigationBarItem(
+                                selected = screen == Screen.TOOLS,
+                                onClick = { screen = Screen.TOOLS },
+                                icon = {
+                                    Icon(
+                                        if (screen == Screen.TOOLS) Icons.Filled.Build
+                                        else Icons.Outlined.Build,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp))
+                                },
+                                label = { Text("Tools", style = MaterialTheme.typography.labelSmall) },
+                                colors = TrmxNavItemColors())
+                            NavigationBarItem(
+                                selected = screen == Screen.HOME,
+                                onClick = { screen = Screen.HOME },
+                                icon = {
+                                    Icon(
+                                        if (screen == Screen.HOME) Icons.Filled.Home
                                         else Icons.Outlined.Home,
                                         contentDescription = null,
                                         modifier = Modifier.size(24.dp))
@@ -250,30 +417,6 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 label = { Text("Files", style = MaterialTheme.typography.labelSmall) },
                                 colors = TrmxNavItemColors())
                             NavigationBarItem(
-                                selected = screen == Screen.TOOLBOX || screen == Screen.AI_BUILDER,
-                                onClick = { screen = Screen.TOOLBOX },
-                                icon = {
-                                    Icon(
-                                        if (screen == Screen.TOOLBOX) Icons.Filled.Build
-                                        else Icons.Outlined.Build,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp))
-                                },
-                                label = { Text("Tools", style = MaterialTheme.typography.labelSmall) },
-                                colors = TrmxNavItemColors())
-                            NavigationBarItem(
-                                selected = screen == Screen.CHAINS,
-                                onClick = { screen = Screen.CHAINS },
-                                icon = {
-                                    Icon(
-                                        if (screen == Screen.CHAINS) Icons.Filled.AccountTree
-                                        else Icons.Outlined.AccountTree,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp))
-                                },
-                                label = { Text("Chains", style = MaterialTheme.typography.labelSmall) },
-                                colors = TrmxNavItemColors())
-                            NavigationBarItem(
                                 selected = screen == Screen.SERVICES,
                                 onClick = {
                                     vm.clearServicesNotice()
@@ -292,11 +435,25 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                     },
                 ) { padding ->
                     when (screen) {
+                        Screen.AGENT -> {
+                            LaunchedEffect(Unit) { agentVm.loadBackend() }
+                            AgentScreen(
+                                state = agentState,
+                                onInput = agentVm::inputChanged,
+                                onSend = agentVm::send,
+                                onAllow = agentVm::allow,
+                                onDeny = agentVm::deny,
+                                onStop = agentVm::stop,
+                                onDismissSendError = agentVm::clearSendError,
+                                onDismissStreamError = agentVm::clearStreamError,
+                                modifier = Modifier.padding(padding),
+                            )
+                        }
                         Screen.FILES -> {
                             // Back walks up the directory tree first; the tab
-                            // bar handles leaving (BackHandler above → Home).
+                            // bar handles leaving (BackHandler above → Agent).
                             BackHandler {
-                                if (!vm.filesUp()) screen = Screen.DASHBOARD
+                                if (!vm.filesUp()) screen = Screen.AGENT
                             }
                             LaunchedEffect(Unit) {
                                 if (filesState.entries.isEmpty()) vm.openPath(filesState.path)
@@ -324,7 +481,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 modifier = Modifier.padding(padding),
                             )
                         }
-                        Screen.TOOLBOX -> {
+                        Screen.TOOLS -> {
                             LaunchedEffect(Unit) { vm.loadTools() }
                             ToolboxScreen(
                                 state = toolsState,
@@ -339,8 +496,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 onDeleteRecipe = vm::deleteRecipe,
                                 onShareRecipe = vm::shareRecipe,
                                 onImportRecipe = vm::importRecipe,
-                                onOpenChains = { screen = Screen.CHAINS },
-                                onOpenSchemaBuilder = { screen = Screen.AI_BUILDER },
+                                onOpenChains = { overlay = Overlay.CHAINS },
+                                onOpenSchemaBuilder = { overlay = Overlay.AI_BUILDER },
                                 onSubmitName = vm::editName,
                                 onSubmitArgv = vm::editArgvText,
                                 onSubmitCwd = vm::editCwd,
@@ -360,68 +517,20 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 onToggleAutostart = vm::setServiceAutostart,
                                 onDelete = vm::deleteService,
                                 onOpenJob = { vm.selectJob(it) },
-                                onOpenToolbox = { screen = Screen.TOOLBOX },
+                                onOpenToolbox = { screen = Screen.TOOLS },
                                 onRefresh = vm::loadServices,
                                 modifier = Modifier.padding(padding),
                             )
                         }
-                        Screen.AI_BUILDER -> {
-                            LaunchedEffect(Unit) {
-                                vm.loadTools()
-                                vm.loadAiConfig()
-                            }
-                            SchemaBuilderScreen(
-                                state = schemaBuilder,
-                                aiToolInstalled = toolsState.tools
-                                    .firstOrNull { it.schema.id == "ai-schema-builder" }
-                                    ?.installed,
-                                config = aiConfigState,
-                                onLoadConfig = vm::loadAiConfig,
-                                onSaveConfig = vm::saveAiConfig,
-                                onSetAiMode = vm::setAiMode,
-                                onSetAiProvider = vm::setAiProvider,
-                                onSetAiEndpoint = vm::setAiEndpoint,
-                                onSetAiModel = vm::setAiModel,
-                                onSetAiApiKey = vm::setAiApiKey,
-                                onForgetAiKey = vm::forgetAiKey,
-                                onSetAiCommand = vm::setAiCommand,
-                                onEditDescription = vm::editSchemaDescription,
-                                onSubmit = vm::submitSchemaBuilder,
-                                onOpenToolbox = { screen = Screen.TOOLBOX },
-                                onOpenJob = { vm.selectJob(it) },
-                                onBack = { screen = Screen.TOOLBOX },
-                                modifier = Modifier.padding(padding),
-                            )
-                        }
-                        Screen.CHAINS -> {
-                            ChainsScreen(
-                                state = chainsState,
-                                tools = toolsState.tools,
-                                jobs = dashboard.jobs,
-                                onNew = vm::newChainBuilder,
-                                onEditDef = vm::editChainDef,
-                                onDeleteDef = vm::deleteChainDef,
-                                onRun = vm::runChain,
-                                onResume = vm::resumeChain,
-                                onStopRun = vm::stopChainRun,
-                                onSetTitle = vm::setChainTitle,
-                                onAddStep = vm::addChainStep,
-                                onRemoveStep = vm::removeChainStep,
-                                onEditStep = { i -> vm.editChainStep(i) },
-                                onSaveDef = vm::saveChainDef,
-                                modifier = Modifier.padding(padding),
-                            )
-                        }
-                        Screen.DASHBOARD -> {
+                        Screen.HOME -> {
                             LaunchedEffect(Unit) { if (dashboard.info == null) vm.refresh() }
                             DashboardScreen(
                                 state = dashboard,
-                                recipes = recipes,
-                                onOpenDiagnostics = { showDiagnostics = true },
+                                repair = repair,
                                 onJobClick = vm::selectJob,
-                                onOpenRecipe = { id -> vm.openRecipe(id) },
-                                onOpenIntent = { toolId -> vm.openToolById(toolId) },
-                                onOpenCustom = { showSubmit = true },
+                                onCancelJob = vm::cancelJob,
+                                onRepair = setupVm::runRepair,
+                                onNewJob = { screen = Screen.AGENT },
                                 modifier = Modifier.padding(padding),
                             )
                         }
@@ -434,24 +543,12 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                         state = dashboard,
                         onRefresh = vm::refresh,
                         onStopBridge = vm::stopBridge,
-                        onRerunWizard = vm::resetWizard,
-                        onDismiss = { showDiagnostics = false },
-                    )
-                }
-
-                // Custom command (argv) — Home intent card entry (P2).
-                if (showSubmit) {
-                    SubmitDialog(
-                        state = submitForm,
-                        onName = vm::editName,
-                        onArgv = vm::editArgvText,
-                        onCwd = vm::editCwd,
-                        onTimeout = vm::editTimeout,
-                        onSubmit = vm::submitJob,
-                        onDismiss = {
-                            showSubmit = false
-                            vm.clearSubmitErrors()
+                        onRerunWizard = {
+                            vm.resetAppState()
+                            setupVm.resetSetup()
+                            showDiagnostics = false
                         },
+                        onDismiss = { showDiagnostics = false },
                     )
                 }
             }
