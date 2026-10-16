@@ -266,7 +266,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             _repair.update { it.copy(label = "Pairing…") }
             if (!sendOp(ControlOps.spec("PAIR")!!, token = token,
                         onFailure = { failRepair(it) })) return@launch
-            delay(2_000L)
+            // No long blind wait here: START + the handshake poll below
+            // (500ms × 60) detect readiness honestly.
+            delay(1_000L)
             _repair.update { it.copy(label = "Starting the bridge…") }
             if (!sendOp(ControlOps.spec("START")!!,
                         onFailure = { failRepair(it) })) return@launch
@@ -388,8 +390,13 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        // Fixed waits are INTENT-EXECUTION padding only: Termux executes a
+        // RUN_COMMAND in ~0.5–2s when alive. Longer blind waits are pure
+        // waste — a slow/failed step is caught by the handshake afterwards
+        // with a guiding error and retry. (Self-audit 2026-10-16: INSTALL
+        // 20s→10s, PAIR 3s→1.5s, repair post-PAIR 2s→1s.)
         private const val INSTALL_PY_WAIT_MS = 40_000L
-        private const val INSTALL_WAIT_MS = 20_000L
-        private const val PAIR_WAIT_MS = 3_000L
+        private const val INSTALL_WAIT_MS = 10_000L
+        private const val PAIR_WAIT_MS = 1_500L
     }
 }
