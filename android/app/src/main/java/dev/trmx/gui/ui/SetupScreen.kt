@@ -29,9 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import kotlinx.coroutines.delay
 import dev.trmx.gui.wizard.SetupChecks
 import dev.trmx.gui.wizard.WizardState
 import dev.trmx.gui.wizard.WizardStep
@@ -263,13 +260,6 @@ private fun stageOf(step: WizardStep): Pair<Int, String> = when (step) {
     else -> 5 to "Finishing"
 }
 
-/** Rotating plain-language notes shown during the long honest waits. */
-private val WAITING_NOTES = listOf(
-    "जुड़ते ही आप बस कहेंगे — बाक़ी काम एजेंट करेगा।",
-    "यहाँ सिर्फ़ असली चरण दिखते हैं — नकली प्रोग्रेस नहीं।",
-    "पहली बार पाइथन में 1–3 मिनट लग सकते हैं — ऐप ख़ुद संभालता है।",
-)
-
 @Composable
 private fun PipelineBody(
     state: WizardState,
@@ -281,21 +271,6 @@ private fun PipelineBody(
     val (index, name) = stageOf(state.step)
     val completed = if (state.busy) index - 1 else index
 
-    // Honest waiting (self-audit 2026-10-16): the bar moves only on real
-    // stages, so during the long blind waits we show a live elapsed timer
-    // and rotating plain notes instead. Compose-side only — no engine or
-    // test changes, no fake progress.
-    var stageStartMs by remember(state.step) {
-        mutableLongStateOf(System.currentTimeMillis())
-    }
-    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(state.step, state.busy) {
-        while (state.busy) {
-            delay(1_000L)
-            nowMs = System.currentTimeMillis()
-        }
-    }
-
     Text("Step $index of 5 — $name", fontWeight = FontWeight.Bold)
     LinearProgressIndicator(
         progress = { completed / 5f },
@@ -305,14 +280,9 @@ private fun PipelineBody(
     )
 
     if (state.busy) {
-        val elapsed = maxOf(0L, (nowMs - stageStartMs) / 1_000L)
-        Text(state.detail.ifEmpty { "working…" } + " — ${elapsed}s",
+        Text(state.detail.ifEmpty { "working…" },
              style = MaterialTheme.typography.bodyMedium,
              color = P.TextSecondary)
-        Text(
-            WAITING_NOTES[(elapsed / 8).toInt() % WAITING_NOTES.size],
-            style = MaterialTheme.typography.bodySmall,
-            color = P.TextMuted)
     } else if (state.detail.isNotEmpty()) {
         Text(state.detail, style = MaterialTheme.typography.bodyMedium)
     }
@@ -359,7 +329,7 @@ private fun ManualPairing(token: String, onRetry: () -> Unit) {
             color = P.TextSecondary)
         Text(
             "  ~/.trmx/trmx stop\n" +
-                "  ~/.trmx/trmx pair <paste-token>\n" +
+                "  ~/.trmx/trmx pair <paste-token> --force\n" +
                 "  ~/.trmx/trmx start",
             fontFamily = FontFamily.Monospace,
             style = MaterialTheme.typography.bodySmall)

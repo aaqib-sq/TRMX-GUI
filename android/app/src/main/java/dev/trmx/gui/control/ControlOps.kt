@@ -53,7 +53,7 @@ object ControlOps {
             "install backend", "download + SHA256-verify the TRMX bridge installer",
         ),
         OpSpec(
-            "PAIR", "$TRMX_HOME/trmx", listOf("pair", "<TOKEN>"),
+            "PAIR", "$TRMX_HOME/trmx", listOf("pair", "<TOKEN>", "--force"),
             "pair", "store this app's pairing token in the bridge config",
         ),
         OpSpec(
