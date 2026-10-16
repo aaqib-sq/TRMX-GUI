@@ -157,7 +157,7 @@ fun ToolFormScreen(
             }
         }
 
-        // Sticky primary action (P4): full-width, 48 dp, ice-cyan fill,
+        // Sticky primary action: full-width, 48 dp, white fill,
         // pure black bold text — always visible without scrolling. A
         // premature tap still marks every field touched (Ph 9.5).
         Surface(
@@ -364,7 +364,7 @@ private fun Field(
     }
 }
 
-/** Shared chip styling (P4): dark fill, cyan active container. */
+/** Shared chip styling: dark fill, white active container (monochrome). */
 @Composable
 fun TrmxChipColors() = FilterChipDefaults.filterChipColors(
     containerColor = P.FieldFill,
