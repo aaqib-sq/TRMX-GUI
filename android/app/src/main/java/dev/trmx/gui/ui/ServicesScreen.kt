@@ -2,10 +2,9 @@ package dev.trmx.gui.ui
 
 /*
  * Services (protocol 1.1, PROTOCOL §14): named long-running tools with
- * lifecycle management — start / stop / restart, live status, autostart.
- * Composed exclusively from the P4 foundation (Tokens, TrmxCard,
- * TrmxTopBar, TrmxButton, TrmxIconButton, TrmxChipColors); the vector
- * status dot is the P4 StatusPill pattern.
+ * lifecycle management. Revival face: quiet switch rows (name + status +
+ * switch), autostart as a second switch, restart / view-job / delete as
+ * calm text actions. Composed from the foundation (Tokens, TrmxCard).
  */
 
 import androidx.compose.foundation.background
@@ -13,22 +12,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.RestartAlt
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,14 +59,7 @@ fun ServicesScreen(
     var confirmDelete by remember { mutableStateOf<ServiceStatus?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        TrmxTopBar(
-            title = "Services",
-            subtitle = "long-running tools · autostart",
-            actions = {
-                TrmxIconButton(icon = Icons.Outlined.Dns, contentDescription = "refresh",
-                               onClick = onRefresh)
-            },
-        )
+        // (The tab scaffold's top bar carries this screen's title + refresh.)
 
         state.error?.let {
             Text(it, style = MaterialTheme.typography.bodySmall,
@@ -85,10 +77,9 @@ fun ServicesScreen(
             state.services.isEmpty() && !state.loading -> EmptyCard(onOpenToolbox)
             else -> LazyColumn(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(Sp.m),
-                verticalArrangement = Arrangement.spacedBy(Sp.m),
             ) {
                 items(state.services.size) { i ->
-                    ServiceCard(
+                    ServiceRow(
                         s = state.services[i],
                         onStart = { onStart(state.services[i].id) },
                         onStop = { onStop(state.services[i].id) },
@@ -97,6 +88,9 @@ fun ServicesScreen(
                         onDelete = { confirmDelete = state.services[i] },
                         onOpenJob = onOpenJob,
                     )
+                    if (i < state.services.size - 1) {
+                        HorizontalDivider(color = P.Border)
+                    }
                 }
             }
         }
@@ -121,8 +115,9 @@ fun ServicesScreen(
     }
 }
 
+/** One service = one quiet switch row (name + status + switch). */
 @Composable
-private fun ServiceCard(
+private fun ServiceRow(
     s: ServiceStatus,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -132,51 +127,53 @@ private fun ServiceCard(
     onOpenJob: (String) -> Unit,
 ) {
     val running = s.state == "running"
-    val dotColor = if (running) P.Accent else P.TextMuted
-
-    TrmxCard(modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Sp.s)) {
-                Box(Modifier.size(7.dp).background(dotColor, CircleShape))
-                Text(s.name, style = MaterialTheme.typography.titleSmall,
-                     fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                TrmxIconButton(icon = Icons.Outlined.Delete, contentDescription = "delete",
-                               onClick = onDelete)
+    val switchColors = SwitchDefaults.colors(
+        checkedThumbColor = P.Accent,
+        checkedTrackColor = P.SteelDim,
+        uncheckedThumbColor = P.TextMuted,
+        uncheckedTrackColor = P.SurfaceHighest,
+    )
+    Column(modifier = Modifier
+        .fillMaxWidth()
+        .padding(vertical = Sp.s)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp)
+                .background(if (running) P.Accent else P.TextMuted, CircleShape))
+            Spacer(Modifier.width(Sp.s))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(s.name, style = MaterialTheme.typography.bodyLarge,
+                     fontWeight = FontWeight.SemiBold)
+                Text(when {
+                         running -> "running"
+                         s.last_status == null -> "stopped"
+                         else -> "stopped · last run ${s.last_status.lowercase()}"
+                     },
+                     style = MaterialTheme.typography.bodySmall,
+                     color = P.TextSecondary)
             }
-
-            Text(when {
-                     running -> "running"
-                     s.last_status == null -> "stopped — never started"
-                     else -> "stopped · last run ${s.last_status.lowercase()}"
-                 },
-                 style = MaterialTheme.typography.bodySmall, color = P.TextSecondary)
-
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Sp.s)) {
-                if (running) {
-                    TrmxButton(label = "Stop",
-                               leading = { Icon(Icons.Outlined.Stop, contentDescription = null) },
-                               onClick = onStop, kind = TrmxButtonKind.Secondary)
-                    TrmxButton(label = "Restart",
-                               leading = { Icon(Icons.Outlined.RestartAlt, contentDescription = null) },
-                               onClick = onRestart, kind = TrmxButtonKind.Secondary)
-                    s.job_id?.let { id ->
-                        TextButton(onClick = { onOpenJob(id) }) { Text("view job") }
-                    }
-                } else {
-                    TrmxButton(label = "Start",
-                               leading = {
-                                   Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
-                               },
-                               onClick = onStart)
-                }
-                FilterChip(
-                    selected = s.autostart,
-                    onClick = { onToggleAutostart(!s.autostart) },
-                    colors = TrmxChipColors(),
-                    label = { Text("autostart") },
-                )
+            Switch(checked = running,
+                   onCheckedChange = { checked ->
+                       if (checked) onStart() else onStop()
+                   },
+                   colors = switchColors)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Start on boot",
+                 style = MaterialTheme.typography.bodySmall,
+                 color = P.TextSecondary,
+                 modifier = Modifier.weight(1f))
+            Switch(checked = s.autostart,
+                   onCheckedChange = onToggleAutostart,
+                   colors = switchColors)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onRestart) { Text("restart") }
+            s.job_id?.let { id ->
+                TextButton(onClick = { onOpenJob(id) }) { Text("view job") }
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onDelete) {
+                Text("delete", color = MaterialTheme.colorScheme.error)
             }
         }
     }

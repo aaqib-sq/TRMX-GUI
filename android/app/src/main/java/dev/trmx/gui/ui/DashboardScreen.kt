@@ -1,66 +1,57 @@
 package dev.trmx.gui.ui
 
 /*
- * Home = Command Center (UX-audit P1–P3, ADR-012/013), per the
- * home_dashboard blueprint: compact status pill → hero workspace (idle) →
- * 4 prominent intent cards for the FULL runtime → active & recent task
- * OUTCOME cards → quick run (recipes). Built exclusively from Trmx
- * components + Tokens — zero ad-hoc styling.
+ * Home (revival): "my work", not "the whole runtime". A monochrome status
+ * card (connected / not, one-tap repair), big running-job cards with live
+ * progress and one-tap cancel, one big white "+ New job" button, and a
+ * quiet recent list. No intent grid, no console aesthetic.
  */
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Movie
-import androidx.compose.material.icons.outlined.Public
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trmx.gui.DashboardState
 import dev.trmx.gui.model.JobSummary
-import dev.trmx.gui.store.Recipe
 import dev.trmx.gui.tools.JobLabels
+import dev.trmx.gui.wizard.RepairState
 import dev.trmx.gui.ui.Tokens.Palette as P
+
+private val ACTIVE = setOf("RUNNING", "STARTING", "QUEUED", "CANCELLING")
+private val TERMINAL = setOf("COMPLETED", "FAILED", "CANCELLED", "LOST")
 
 @Composable
 fun DashboardScreen(
     state: DashboardState,
-    recipes: List<Recipe>,
-    onOpenDiagnostics: () -> Unit,
+    repair: RepairState,
     onJobClick: (String) -> Unit,
-    onOpenRecipe: (String) -> Unit,
-    onOpenIntent: (String) -> Unit,
-    onOpenCustom: () -> Unit,
+    onCancelJob: (String) -> Unit,
+    onRepair: () -> Unit,
+    onNewJob: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -70,193 +61,143 @@ fun DashboardScreen(
             .padding(Sp.m),
         verticalArrangement = Arrangement.spacedBy(Sp.m),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("TRMX", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            StatusPill(state, onOpenDiagnostics)
+        Text("TRMX", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+
+        StatusCard(state = state, repair = repair, onRepair = onRepair)
+
+        val running = state.jobs.filter { it.status in ACTIVE }
+        if (running.isNotEmpty()) {
+            Text("Running now",
+                 style = MaterialTheme.typography.titleMedium,
+                 fontWeight = FontWeight.Bold)
+            running.forEach { job ->
+                RunningJobCard(
+                    job = job,
+                    onOpen = { onJobClick(job.job_id) },
+                    onCancel = { onCancelJob(job.job_id) },
+                )
+            }
+        } else {
+            TrmxCard(modifier = Modifier.fillMaxWidth()) {
+                Text("Nothing running.",
+                     style = MaterialTheme.typography.bodyMedium,
+                     color = P.TextSecondary)
+                Text("Start something from the Agent tab — or tap + New job.",
+                     style = MaterialTheme.typography.bodySmall,
+                     color = P.TextMuted)
+            }
         }
 
-        state.notice?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TrmxButton(
+            label = "+ New job",
+            onClick = onNewJob,
+            kind = TrmxButtonKind.Primary,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+        )
+
+        val recent = state.jobs.filter { it.status in TERMINAL }.take(5)
+        if (recent.isNotEmpty()) {
+            Text("Recent",
+                 style = MaterialTheme.typography.titleMedium,
+                 fontWeight = FontWeight.Bold)
+            recent.forEach { job ->
+                RecentRow(job = job, onOpen = { onJobClick(job.job_id) })
+            }
         }
+
         state.error?.let {
             Text(it, style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.error)
         }
-
-        if (state.jobs.isEmpty()) {
-            HeroWorkspace()
-        }
-
-        IntentGrid(onOpenIntent = onOpenIntent, onOpenCustom = onOpenCustom)
-
-        if (state.jobs.isNotEmpty()) {
-            Text("Active & recent",
-                 style = MaterialTheme.typography.titleMedium,
-                 fontWeight = FontWeight.Bold)
-            state.jobs.take(10).forEach { job ->
-                TaskOutcomeCard(job, onJobClick)
-            }
-        }
-
-        if (recipes.isNotEmpty()) {
-            QuickRunCard(recipes, onOpenRecipe)
-        }
     }
 }
 
-/** Compact health surface; tap opens the Diagnostics sheet. */
+/** Monochrome connection card: state + one-tap repair. */
 @Composable
-private fun StatusPill(state: DashboardState, onOpenDiagnostics: () -> Unit) {
+private fun StatusCard(
+    state: DashboardState,
+    repair: RepairState,
+    onRepair: () -> Unit,
+) {
     val connected = state.error == null
-    val running = state.info?.load?.jobs_running ?: 0
-    val (label, color) = when {
-        !connected -> "connection error" to P.Danger
-        state.refreshing -> "refreshing" to P.Accent
-        running > 0 -> "$running running" to P.Accent
-        else -> "connected" to P.Steel
-    }
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = P.Surface,
-        border = BorderStroke(1.dp, color.copy(alpha = 0.45f)),
-        modifier = Modifier.clickable(onClick = onOpenDiagnostics),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            // status dot: vector circle, not a glyph (P4)
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .background(color, CircleShape)
-            )
-            Spacer(Modifier.width(Sp.s))
-            Icon(Icons.Outlined.Settings, contentDescription = "diagnostics",
-                 tint = color, modifier = Modifier.size(14.dp))
-        }
-    }
-}
-
-/** Idle Home: an inviting workspace instead of a dead task list. */
-@Composable
-private fun HeroWorkspace() {
-    TrmxCard(modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-            Text(
-                "Your Linux runtime,\non this phone.",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold)
-            Text(
-                "Run tools, scripts and services locally — no cloud, no root. " +
-                    "Start with a goal:",
-                style = MaterialTheme.typography.bodyMedium,
-                color = P.TextSecondary)
-        }
-    }
-}
-
-/**
- * Intent cards for the FULL runtime (never just a downloader): download,
- * convert, arbitrary commands, long-running services — equal footing.
- */
-@Composable
-private fun IntentGrid(
-    onOpenIntent: (String) -> Unit,
-    onOpenCustom: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(Sp.s)) {
-            IntentCard(
-                icon = Icons.Outlined.Download, title = "Download media",
-                sub = "yt-dlp · video & audio",
-                modifier = Modifier.weight(1f),
-            ) { onOpenIntent("yt-dlp") }
-            IntentCard(
-                icon = Icons.Outlined.Movie, title = "Convert / transcode",
-                sub = "ffmpeg · any format",
-                modifier = Modifier.weight(1f),
-            ) { onOpenIntent("ffmpeg") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(Sp.s)) {
-            IntentCard(
-                icon = Icons.Outlined.Terminal, title = "Run a command",
-                sub = "any argv · scripts",
-                modifier = Modifier.weight(1f),
-            ) { onOpenCustom() }
-            IntentCard(
-                icon = Icons.Outlined.Public, title = "Start a service",
-                sub = "serve a folder over HTTP",
-                modifier = Modifier.weight(1f),
-            ) { onOpenIntent("http-server") }
-        }
-    }
-}
-
-@Composable
-private fun IntentCard(
-    icon: ImageVector,
-    title: String,
-    sub: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    TrmxCard(
-        modifier = modifier.fillMaxWidth(),
-        onClick = onClick,
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-            Icon(icon, contentDescription = null, tint = P.Accent,
-                 modifier = Modifier.size(22.dp))
-            Text(title, style = MaterialTheme.typography.titleSmall,
-                 fontWeight = FontWeight.SemiBold)
-            Text(sub, style = MaterialTheme.typography.bodySmall,
-                 color = P.TextSecondary)
-        }
-    }
-}
-
-/** Saved recipes: the fastest path from goal to filled form. */
-@Composable
-private fun QuickRunCard(recipes: List<Recipe>, onOpenRecipe: (String) -> Unit) {
     TrmxCard(modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-            Text("Quick run", fontWeight = FontWeight.Bold,
-                 style = MaterialTheme.typography.titleMedium)
-            recipes.take(4).forEach { r ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenRecipe(r.id) },
-                ) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null,
-                         tint = P.Accent, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(Sp.s))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(r.title, style = MaterialTheme.typography.titleSmall,
-                             fontWeight = FontWeight.SemiBold,
-                             maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(r.toolId, style = MaterialTheme.typography.bodySmall,
+                        .size(10.dp)
+                        .background(
+                            if (connected) P.Accent else P.Danger,
+                            CircleShape))
+                Spacer(Modifier.width(Sp.s))
+                Text(
+                    if (connected) "Connected" else "Not connected",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f))
+                if (state.refreshing) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        color = P.TextSecondary,
+                        modifier = Modifier.size(16.dp))
+                }
+            }
+            state.info?.let { info ->
+                val running = info.load?.jobs_running ?: 0
+                if (running > 0) {
+                    Text("$running job${if (running == 1) "" else "s"} running",
+                         style = MaterialTheme.typography.bodySmall,
+                         color = P.TextSecondary)
+                }
+            }
+            when {
+                repair.running -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = P.TextSecondary,
+                            modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(Sp.s))
+                        Text(repair.label.ifEmpty { "Repairing…" },
+                             style = MaterialTheme.typography.bodySmall,
                              color = P.TextSecondary)
                     }
-                    Text("›", color = P.TextMuted)
+                }
+                repair.failure != null -> {
+                    Text(repair.failure,
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.error)
+                    TrmxButton(label = "Try repair again", onClick = onRepair,
+                               kind = TrmxButtonKind.Secondary)
+                }
+                else -> {
+                    if (repair.finished) {
+                        Text("Connection repaired.",
+                             style = MaterialTheme.typography.bodySmall,
+                             color = P.TextSecondary)
+                    }
+                    TrmxButton(label = "Repair connection", onClick = onRepair,
+                               kind = TrmxButtonKind.Secondary)
                 }
             }
         }
     }
 }
 
-/** One task = one outcome card: human label, status verb, J-ID copyable. */
+/** One running job = one big card: label, live progress, one-tap cancel. */
 @Composable
-private fun TaskOutcomeCard(job: JobSummary, onJobClick: (String) -> Unit) {
+private fun RunningJobCard(
+    job: JobSummary,
+    onOpen: () -> Unit,
+    onCancel: () -> Unit,
+) {
     TrmxCard(
         modifier = Modifier.fillMaxWidth(),
-        onClick = { onJobClick(job.job_id) },
+        onClick = onOpen,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+        Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     JobLabels.taskLabel(job),
@@ -273,32 +214,50 @@ private fun TaskOutcomeCard(job: JobSummary, onJobClick: (String) -> Unit) {
                     fontSize = 12.sp,
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    JobLabels.subtitle(job),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = P.TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                CopyableId(job.job_id)
-            }
             if (job.progress_pct != null) {
                 LinearProgressIndicator(
                     progress = { (job.progress_pct / 100.0).toFloat() },
                     modifier = Modifier.fillMaxWidth(),
                     color = P.Accent, trackColor = P.SurfaceHighest)
-                job.progress_detail?.let {
-                    Text("  $it", fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-                         color = P.TextMuted)
-                }
             } else {
-                job.progress_detail?.let {
-                    Text("  $it", fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-                         color = P.TextMuted)
-                }
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = P.TextMuted, trackColor = P.SurfaceHighest)
+            }
+            job.progress_detail?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                     color = P.TextSecondary,
+                     maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            TextButton(onClick = onCancel) {
+                Text("Cancel", color = MaterialTheme.colorScheme.error)
             }
         }
+    }
+}
+
+/** Quiet recent row: name + status, nothing more. */
+@Composable
+private fun RecentRow(job: JobSummary, onOpen: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(vertical = Sp.xs),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(JobLabels.taskLabel(job),
+                 style = MaterialTheme.typography.bodyMedium,
+                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(JobLabels.subtitle(job),
+                 style = MaterialTheme.typography.bodySmall,
+                 color = P.TextSecondary,
+                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(Sp.s))
+        Text(JobLabels.statusVerb(job.status),
+             style = MaterialTheme.typography.labelSmall,
+             color = TrmxColors.status(job.status))
     }
 }

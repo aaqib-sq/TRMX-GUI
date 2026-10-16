@@ -1,14 +1,15 @@
 package dev.trmx.gui.ui
 
 /*
- * Job detail: the full job record (TRMX-P/1 §3.4 shape), cancel with
- * confirmation, auto-refresh every 2 s while the job is active.
- * Live output streaming arrives in Phase 6.
+ * Job detail (revival): a clean reading card for the live output first —
+ * big Cancel on top while the job is active — with the full KV/monospaced
+ * record hidden under a "Details" toggle. No console-dump aesthetic.
  */
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -34,9 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import android.text.format.Formatter
 import androidx.compose.ui.platform.LocalContext
 import dev.trmx.gui.ArtifactsState
@@ -48,7 +47,6 @@ import dev.trmx.gui.ui.Tokens.Palette as P
 
 private val ACTIVE = setOf("QUEUED", "RUNNING", "CANCELLING")
 
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun JobDetailScreen(
     state: JobDetailState,
@@ -60,9 +58,9 @@ fun JobDetailScreen(
     onOpenArtifact: (Artifact, Boolean) -> Unit,
 ) {
     var confirmCancel by remember { mutableStateOf(false) }
+    var showDetails by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Standard header (P3): human task label as the title.
         TrmxTopBar(
             title = state.job?.let { JobLabels.taskLabel(it) } ?: "Task",
             onBack = onBack,
@@ -75,71 +73,51 @@ fun JobDetailScreen(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-
-        val job = state.job
-        state.error?.let {
-            TrmxCard(modifier = Modifier.fillMaxWidth()) {
-                Text(it, color = MaterialTheme.colorScheme.error)
-            }
-        }
-
-        if (job != null) {
-            TrmxCard(modifier = Modifier.fillMaxWidth()) {
-                Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // J-ID: secondary, copyable — one tap for bug reports.
-                        CopyableId(state.jobId, modifier = Modifier.weight(1f))
-                        Text(
-                            job.status,
-                            color = statusColor(job.status),
-                            fontWeight = FontWeight.Bold)
-                    }
-                    Text(JobLabels.subtitle(job),
-                         style = MaterialTheme.typography.bodySmall,
-                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Section("argv") {
-                        Text(
-                            job.argv?.joinToString("\n") ?: "—",
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                    KV("type", job.type)
-                    job.cwd?.let { KV("cwd", it) }
-                    KV("created", job.created_at ?: "—")
-                    KV("started", job.started_at ?: "—")
-                    KV("ended", job.ended_at ?: "—")
-                    job.pid?.let { KV("pid", it.toString()) }
-                    job.exit_code?.let { KV("exit code", it.toString()) }
-                    job.signal?.let { KV("signal", it.toString()) }
-                    job.timeout_s?.let { KV("timeout_s", it.toString()) }
-                    job.error?.let { KV("error", "${it.code}: ${it.message}") }
-                    KV("stdout / stderr", "${job.stdout_bytes} / ${job.stderr_bytes} bytes")
-                    KV("log frames", job.log_seq.toString() + if (job.log_truncated) " (ring evicted older frames)" else "")
-                    if (job.cancel_requested) {
-                        Text("cancel requested${job.cancel_reason?.let { " ($it)" } ?: ""}",
-                             color = MaterialTheme.colorScheme.error)
-                    }
+            val job = state.job
+            state.error?.let {
+                TrmxCard(modifier = Modifier.fillMaxWidth()) {
+                    Text(it, color = MaterialTheme.colorScheme.error)
                 }
             }
 
-            if (artifacts.jobId == state.jobId &&
-                (artifacts.artifacts.isNotEmpty() || artifacts.loading || artifacts.error != null)) {
-                ArtifactsCard(artifacts, onOpenArtifact)
-            }
+            if (job != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(JobLabels.subtitle(job),
+                         style = MaterialTheme.typography.bodyMedium,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                         modifier = Modifier.weight(1f))
+                    Text(
+                        JobLabels.statusVerb(job.status),
+                        color = TrmxColors.status(job.status),
+                        fontWeight = FontWeight.Bold)
+                }
 
-            output?.let { OutputConsole(it, onReplayOutput) }
+                if (job.status in ACTIVE) {
+                    TrmxButton(
+                        label = if (state.cancelling) "Cancelling…" else "Cancel job",
+                        onClick = { confirmCancel = true },
+                        kind = TrmxButtonKind.Danger,
+                        enabled = !state.cancelling,
+                        modifier = Modifier.fillMaxWidth())
+                }
 
-            if (job.status in ACTIVE) {
-                TrmxButton(
-                    label = if (state.cancelling) "Cancelling…" else "Cancel job",
-                    onClick = { confirmCancel = true },
-                    kind = TrmxButtonKind.Danger,
-                    enabled = !state.cancelling,
-                    modifier = Modifier.fillMaxWidth())
+                output?.let { OutputCard(it, onReplayOutput) }
+
+                if (artifacts.jobId == state.jobId &&
+                    (artifacts.artifacts.isNotEmpty() || artifacts.loading || artifacts.error != null)) {
+                    ArtifactsCard(artifacts, onOpenArtifact)
+                }
+
+                // The full record — hidden unless asked for.
+                TextButton(onClick = { showDetails = !showDetails }) {
+                    Text(if (showDetails) "Hide details" else "Details")
+                }
+                if (showDetails) {
+                    DetailsCard(state)
+                }
+            } else if (state.error == null) {
+                Text("loading…")
             }
-        } else if (state.error == null) {
-            Text("loading…")
-        }
         }
     }
 
@@ -165,20 +143,117 @@ fun JobDetailScreen(
     }
 }
 
+/** Live output as a clean reading card — no filter bar, no console chrome. */
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
-    Text(title, style = MaterialTheme.typography.labelSmall,
-         color = MaterialTheme.colorScheme.secondary)
-    content()
+private fun OutputCard(
+    output: JobOutputState,
+    onReplay: () -> Unit,
+) {
+    var autoScroll by remember { mutableStateOf(true) }
+    val listState = rememberLazyListState()
+    LaunchedEffect(output.lines.size, autoScroll) {
+        if (autoScroll && output.lines.isNotEmpty()) {
+            listState.animateScrollToItem(output.lines.size - 1)
+        }
+    }
+
+    TrmxCard(modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Output", style = MaterialTheme.typography.titleMedium,
+                     fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                val live = output.error == null && !output.ended
+                Text(
+                    when {
+                        output.error != null -> "${output.error}"
+                        output.ended -> "ended"
+                        else -> "live"
+                    },
+                    color = if (live) TrmxColors.Running else P.TextMuted,
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            if (output.evicted) {
+                Text(
+                    "Older output was trimmed — showing the recent window.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary)
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 340.dp)) {
+                items(output.lines) { line ->
+                    Text(
+                        line.text,
+                        fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                        color = when {
+                            line.isStderr -> P.Danger
+                            line.kind == "status" -> MaterialTheme.colorScheme.secondary
+                            else -> Color.Unspecified
+                        })
+                }
+            }
+            Row {
+                TextButton(onClick = { autoScroll = !autoScroll }) {
+                    Text(if (autoScroll) "auto-scroll on" else "auto-scroll off",
+                         style = MaterialTheme.typography.labelSmall,
+                         color = MaterialTheme.colorScheme.secondary)
+                }
+                Spacer(Modifier.width(Sp.s))
+                TextButton(onClick = onReplay) {
+                    Text("replay from start",
+                         style = MaterialTheme.typography.labelSmall,
+                         color = MaterialTheme.colorScheme.secondary)
+                }
+            }
+        }
+    }
+}
+
+/** The full job record (TRMX-P/1 §3.4 shape), monospaced, under the toggle. */
+@Composable
+private fun DetailsCard(state: JobDetailState) {
+    val job = state.job ?: return
+    TrmxCard(modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+            CopyableId(state.jobId, modifier = Modifier.fillMaxWidth())
+            Text("command",
+                 style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.secondary)
+            Text(
+                job.argv?.joinToString(" ") ?: "—",
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall)
+            KV("type", job.type)
+            job.cwd?.let { KV("cwd", it) }
+            KV("created", job.created_at ?: "—")
+            KV("started", job.started_at ?: "—")
+            KV("ended", job.ended_at ?: "—")
+            job.pid?.let { KV("pid", it.toString()) }
+            job.exit_code?.let { KV("exit code", it.toString()) }
+            job.signal?.let { KV("signal", it.toString()) }
+            job.timeout_s?.let { KV("timeout (s)", it.toString()) }
+            job.error?.let { KV("error", "${it.code}: ${it.message}") }
+            KV("output bytes", "${job.stdout_bytes} / ${job.stderr_bytes}")
+            KV("log frames", job.log_seq.toString() +
+                if (job.log_truncated) " (older frames evicted)" else "")
+            if (job.cancel_requested) {
+                Text("cancel requested${job.cancel_reason?.let { " ($it)" } ?: ""}",
+                     color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
 }
 
 @Composable
 private fun KV(k: String, v: String) {
     Row {
         Text(k, fontFamily = FontFamily.Monospace,
-             modifier = Modifier.width(120.dp),
+             modifier = Modifier.width(110.dp),
              color = MaterialTheme.colorScheme.secondary)
-        Text(v, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        Text(v, fontFamily = FontFamily.Monospace,
+             style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -202,8 +277,6 @@ private fun ArtifactsCard(
             }
             state.artifacts.forEach { a ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("■", color = TrmxColors.Completed,
-                         modifier = Modifier.width(24.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(a.name, style = MaterialTheme.typography.bodyLarge)
                         Text(
@@ -212,97 +285,14 @@ private fun ArtifactsCard(
                                 append(if (a.exact) "  · output" else "  · detected")
                                 a.mtime?.let { append("  · ").append(it) }
                             },
-                            fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     TextButton(onClick = { onOpenArtifact(a, false) }) { Text("open") }
                     TextButton(onClick = { onOpenArtifact(a, true) }) { Text("share") }
                 }
             }
-        }
-    }
-}
-
-private fun statusColor(status: String): Color = TrmxColors.status(status)
-
-
-// ---- live output console (Phase 6) ---------------------------------------
-
-@Composable
-private fun OutputConsole(
-    output: JobOutputState,
-    onReplay: () -> Unit,
-) {
-    var filter by remember { mutableStateOf("all") }   // all | stdout | stderr
-    var autoScroll by remember { mutableStateOf(true) }
-    val listState = rememberLazyListState()
-    val visible = when (filter) {
-        "stdout" -> output.lines.filter { it.kind == "stdout" }
-        "stderr" -> output.lines.filter { it.kind == "stderr" }
-        else -> output.lines
-    }
-    LaunchedEffect(visible.size, autoScroll) {
-        if (autoScroll && visible.isNotEmpty()) {
-            listState.animateScrollToItem(visible.size - 1)
-        }
-    }
-
-    TrmxCard(modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Output", style = MaterialTheme.typography.titleMedium,
-                     fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                val live = output.error == null && !output.ended
-                Text(
-                    when {
-                        output.error != null -> "${output.error}"
-                        output.ended -> "ended"
-                        else -> "live"
-                    },
-                    color = if (live) TrmxColors.Running else P.TextMuted,
-                    style = MaterialTheme.typography.labelSmall)
-            }
-            if (output.evicted) {
-                Text(
-                    "older frames were evicted from the bridge's ring — showing the replayable window",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                listOf("all", "stdout", "stderr").forEach { f ->
-                    TextButton(onClick = { filter = f }) {
-                        Text(
-                            f,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (filter == f) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.secondary)
-                    }
-                }
-                TextButton(onClick = { autoScroll = !autoScroll }) {
-                    Text(
-                        if (autoScroll) "auto-scroll on" else "auto-scroll off",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.secondary)
-                }
-            }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 340.dp)) {
-                items(visible) { line ->
-                    Text(
-                        line.text,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = when {
-                            line.isStderr -> P.Danger
-                            line.kind == "status" -> MaterialTheme.colorScheme.secondary
-                            else -> Color.Unspecified
-                        })
-                }
-            }
-            TextButton(onClick = onReplay) { Text("replay from start") }
         }
     }
 }

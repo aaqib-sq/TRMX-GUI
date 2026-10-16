@@ -11,6 +11,7 @@ Android app can drive it (docs/CONTROL-PLANE.md):
   trmx start [--port N]     start the bridge detached (nohup-style)
   trmx stop                 stop it (API stop, then SIGTERM fallback)
   trmx status               is the port answering?
+  trmx doctor               self-check: python, token, port, API (JSON on stdout)
   trmx pid                  print the bridge PID from the pidfile
   trmx enable-boot          install the Termux:Boot autostart script
   trmx enable-service       install the runit service (needs termux-services)
@@ -225,6 +226,67 @@ def cmd_status(args) -> int:
     return 0 if port_open(port) else 1
 
 
+def cmd_doctor(args) -> int:
+    """Self-check for setup/orchestration: python, token, port, API.
+
+    Stdout is pure JSON (the app polls this); a one-line human summary goes
+    to stderr. Exit 0 = healthy, 3 = something needs attention.
+    """
+    home = trmx_home()
+    cfg = load_config()
+    port = int(cfg.get("port", 27342))
+    token = cfg.get("token") or ""
+    report: dict = {
+        "python": {"present": True,
+                   "version": sys.version.split()[0],
+                   "exe": sys.executable},
+        "home": str(home),
+        "token_set": bool(token),
+        "port": port,
+        "port_open": port_open(port),
+        "api_ok": False,
+        "bridge_version": None,
+    }
+    if report["port_open"] and token:
+        try:
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            conn.request("GET", "/v1/system/info",
+                         headers={"Authorization": f"Bearer {token}",
+                                  "X-TRMX-Protocol": "1"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            if resp.status == 200:
+                report["api_ok"] = True
+                try:
+                    report["bridge_version"] = json.loads(body).get("bridge_version")
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+    if report["api_ok"]:
+        verdict = "healthy"
+    elif not report["token_set"]:
+        verdict = "unpaired"
+    elif not report["port_open"]:
+        verdict = "bridge_down"
+    else:
+        verdict = "auth_failed"
+    report["verdict"] = verdict
+    print(json.dumps(report))
+    if verdict == "healthy":
+        print(f"trmx doctor: healthy (bridge {report['bridge_version']})",
+              file=sys.stderr)
+        return 0
+    print(f"trmx doctor: {verdict} "
+          f"(python={report['python']['version']} "
+          f"token={'set' if report['token_set'] else 'MISSING'} "
+          f"port={port} {'open' if report['port_open'] else 'closed'} "
+          f"api={'ok' if report['api_ok'] else 'FAILED'})", file=sys.stderr)
+    return 3
+
+
 def cmd_pid(args) -> int:
     pidfile = trmx_home() / "bridge.pid"
     if pidfile.exists():
@@ -303,6 +365,7 @@ def main() -> None:
     p.set_defaults(fn=cmd_start)
     sub.add_parser("stop").set_defaults(fn=cmd_stop)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     sub.add_parser("pid").set_defaults(fn=cmd_pid)
     sub.add_parser("enable-boot").set_defaults(fn=cmd_enable_boot)
     sub.add_parser("enable-service").set_defaults(fn=cmd_enable_service)
