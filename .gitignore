@@ -3,9 +3,12 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.log
+*.egg-info/
+dist/
 
 # android / gradle (CI and Android Studio artifacts — never commit)
 .gradle/
+build/
 local.properties
 .idea/
 *.iml
@@ -16,3 +19,15 @@ captures/
 # committed on purpose: the stable CI debug-signing test key (public
 # passwords, debug builds only — ADR-006); must not be ignored
 !android/config/debug.keystore
+
+# editors / OS
+.vscode/
+*.swp
+*~
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+
+# misc
+.env
