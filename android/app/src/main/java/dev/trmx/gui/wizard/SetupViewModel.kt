@@ -167,7 +167,16 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         applyEvent(WizardEvent.Retry)
         sequenceJob?.cancel()
         skipSignal.tryReceive()
-        sequenceJob = viewModelScope.launch { runPipeline(fromStep = _wizard.value.step) }
+        // Device round 1 lesson (2026-10-16): if the handshake failed,
+        // re-polling a dead port can never heal it — the bridge may
+        // simply not be running (stopped, killed, or never started
+        // because the earlier steps ran against a half-installed
+        // Termux). Resume from the PAIR block instead: it re-runs
+        // STOP → PAIR → START before the next handshake, which heals
+        // both a dead bridge and a stale in-memory token.
+        val failedAt = _wizard.value.step
+        val resume = if (failedAt == WizardStep.HANDSHAKE) WizardStep.PAIR else failedAt
+        sequenceJob = viewModelScope.launch { runPipeline(fromStep = resume) }
     }
 
     fun resetSetup() {
@@ -202,12 +211,23 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             step.ordinal < WizardStep.INSTALL.ordinal
         ) {
             if (!sendOp(ControlOps.spec("INSTALL_PY")!!)) return
-            withTimeoutOrNull(INSTALL_PY_WAIT_MS) { skipSignal.receive() }
+            // Observed wait (device round 1, 2026-10-16): the old code
+            // burned the full 40 s blind window even when Python and the
+            // bridge were already in place, and the skip tap alone could
+            // not move a pipeline whose later steps were not ready. Poll
+            // the data plane while waiting: any HTTP answer proves the
+            // bridge binaries — and therefore Python — already exist; a
+            // Success means the bridge already trusts our token and the
+            // whole setup is effectively done.
+            if (awaitInstallPy()) {
+                applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
+                return
+            }
             applyEvent(WizardEvent.StepSucceeded(WizardStep.INSTALL))
         }
         if (step.ordinal < WizardStep.PAIR.ordinal) {
             if (!sendOp(ControlOps.spec("INSTALL")!!)) return
-            delay(INSTALL_WAIT_MS)
+            awaitAnyAnswer(INSTALL_WAIT_MS)
             applyEvent(WizardEvent.StepSucceeded(WizardStep.PAIR))
         }
         if (step.ordinal < WizardStep.START.ordinal) {
@@ -226,6 +246,42 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             applyEvent(WizardEvent.StepSucceeded(WizardStep.HANDSHAKE))
         }
         awaitHandshakeOrFail()
+    }
+
+    /**
+     * The INSTALL_PY stage wait, observed instead of blind: polls the
+     * bridge every [POLL_WAIT_MS] until [INSTALL_PY_WAIT_MS] elapses.
+     * Returns true only when the bridge already answers WITH our token
+     * (setup effectively complete). Any other HTTP answer (e.g. a 401
+     * from a bridge holding an older token) ends the wait early — the
+     * remaining stages will re-pair. The user's skip tap also ends it.
+     */
+    private suspend fun awaitInstallPy(): Boolean {
+        val deadline = System.currentTimeMillis() + INSTALL_PY_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            when (probe()) {
+                is BridgeResult.Success -> return true
+                is BridgeResult.HttpError -> return false
+                is BridgeResult.NetworkError -> {}
+            }
+            if (withTimeoutOrNull(POLL_WAIT_MS) { skipSignal.receive() } != null) {
+                return false
+            }
+        }
+        return false
+    }
+
+    /** Waits up to [timeoutMs], returning as soon as the bridge answers
+     *  anything at all (proof the install landed and it is up). */
+    private suspend fun awaitAnyAnswer(timeoutMs: Long) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            when (probe()) {
+                is BridgeResult.Success, is BridgeResult.HttpError -> return
+                is BridgeResult.NetworkError -> {}
+            }
+            delay(POLL_WAIT_MS)
+        }
     }
 
     /** Warm start (was AppViewModel.warmStart): probe, START if down, probe
@@ -398,5 +454,6 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         private const val INSTALL_PY_WAIT_MS = 40_000L
         private const val INSTALL_WAIT_MS = 10_000L
         private const val PAIR_WAIT_MS = 1_500L
+        private const val POLL_WAIT_MS = 2_000L
     }
 }
