@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Control plane: lets us send RUN_COMMAND intents to Termux.
+         Granted by the user in OUR App Info → Permissions (consent screen 2). -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <!-- Required even for loopback sockets: without it, socket() fails with
+         EPERM on API 34+ (on-device round 2 lesson, 2026-09-08). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Package visibility (Android 11+): we need to see Termux to check
+         it is installed before offering the wizard. -->
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
+    <application
+        android:label="TRMX"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.TRMX">
+
+        <!-- Phase 8: open/share staged bridge files. Only cache/shared/ is
+             exposed, read-only, via explicit URI grants (ADR-008). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="dev.trmx.gui.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,626 @@
+#!/usr/bin/env python3
+"""trmx-ai — LLM wrapper that WRITES tool schemas (AI round, ADR-014).
+
+    trmx-ai "<plain-words description of a command-line tool>"
+
+Pipeline: description -> prompt -> configured LLM backend -> UNTRUSTED
+output -> strict validation (§7.2 rules, mirrored from the bridge) ->
+schema file in ~/.trmx/tools/ai-<id>.json. The bridge's
+/v1/tools/refresh picks it up; no bridge restart needed.
+
+DUAL backends (~/.trmx/ai.json, see docs/AI-CONFIG.md):
+
+  1. OFFLINE / LOCAL ("mode": "cli") — any CLI-wrapped model runner:
+         {"mode": "cli",
+          "cli": {"command": ["ollama", "run", "llama3.2"], "timeout_s": 180}}
+     The prompt is appended to `command` as a single argv element (no
+     shell). Legacy flat form ({"command": [...]}) still loads.
+
+  2. CLOUD API ("mode": "http_api") — lightweight HTTP calls, no
+     multi-GB models on mobile storage:
+         {"mode": "http_api",
+          "http_api": {"provider": "groq", "model": "llama-3.3-70b-versatile",
+                       "api_key": "…", "timeout_s": 120}}
+     provider ∈ openai | groq | gemini | openai_compatible (endpoint
+     required for the last). `endpoint` overrides the provider default;
+     `api_key` or `api_key_env` (environment variable name — the
+     provider's conventional <PROVIDER>_API_KEY is tried too). Calls use
+     Python stdlib urllib only (ADR-002); keys are never logged or
+     echoed. When ai.json is absent a documented template is written
+     (mode cli) — edit it to switch.
+
+Trust model (ADR-014) — identical for BOTH backends:
+  - LLM output is UNTRUSTED: never eval'd, only parsed as data; the
+    schema is validated with the same structural rules the bridge
+    enforces, plus size caps; on any doubt the wrapper fails loud and
+    writes nothing.
+  - AI-generated tools are pinned to risk_tier "confirm" — a human must
+    edit the JSON by hand to relax it.
+  - The wrapper writes ONLY inside ~/.trmx/tools/ and never overwrites.
+
+Exit codes: 0 ok · 2 usage · 3 backend/config/network problem (incl.
+HTTP errors) · 4 LLM output invalid · 5 refused overwrite.
+
+Env: TRMX_HOME (default ~/.trmx) — for tests.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+TRMX_AI_VERSION = "0.2.0"
+DEFAULT_COMMAND = ["ollama", "run", "llama3.2"]
+DEFAULT_TIMEOUT_S = 180
+DEFAULT_HTTP_TIMEOUT_S = 120
+MAX_LLM_BYTES = 65536          # cap on model text we are willing to parse
+MAX_HTTP_BYTES = 1024 * 1024   # cap on HTTP response body
+
+VALID_PROVIDERS = ("openai", "groq", "gemini", "openai_compatible")
+PROVIDER_ENDPOINTS = {
+    "openai": "https://api.openai.com/v1/chat/completions",
+    "groq": "https://api.groq.com/openai/v1/chat/completions",
+    # gemini's endpoint embeds the model — constructed at resolve time
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/models",
+}
+DEFAULT_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    # openai_compatible: no convention — set api_key or api_key_env
+}
+
+# Written to ~/.trmx/ai.json on first run (mode cli) so users have a
+# documented, one-flip-ready config to edit. Annotated in docs/AI-CONFIG.md.
+CONFIG_TEMPLATE = {
+    "_help": [
+        "TRMX AI backend configuration (trmx-ai). Full guide: docs/AI-CONFIG.md",
+        "mode: 'cli' = offline/local model runner | 'http_api' = cloud API.",
+        "Unknown keys are ignored. Keep this file private (chmod 600).",
+    ],
+    "mode": "cli",
+    "cli": {
+        "command": ["ollama", "run", "llama3.2"],
+        "timeout_s": 180,
+    },
+    "http_api": {
+        "provider": "groq",
+        "endpoint": "",
+        "api_key": "",
+        "api_key_env": "GROQ_API_KEY",
+        "model": "llama-3.3-70b-versatile",
+        "timeout_s": 120,
+    },
+}
+
+ARG_TYPES = ("string", "int", "float", "bool", "enum", "path", "url")
+
+
+# ---------------------------------------------------------------- helpers
+
+def die(code: int, msg: str) -> "None":
+    print(f"trmx-ai: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def home_dir() -> Path:
+    return Path(os.environ.get("TRMX_HOME", str(Path.home() / ".trmx")))
+
+
+def redact_url(url: str) -> str:
+    """Never echo key material that may be embedded in a URL."""
+    return re.sub(r"([?&](?:key|api_key|token)=)[^&]+", r"\1***", url)
+
+
+def write_template_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                      prefix=".ai.json-", delete=False)
+    try:
+        tmp.write(json.dumps(CONFIG_TEMPLATE, indent=2, ensure_ascii=False) + "\n")
+        tmp.close()
+        os.replace(tmp.name, path)
+        os.chmod(path, 0o600)          # it may hold an API key later
+    except BaseException:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    print(f"trmx-ai: wrote default config template to {path} — edit it to "
+          "switch to a cloud backend (docs/AI-CONFIG.md)", file=sys.stderr)
+
+
+def load_config(write_template: bool) -> dict:
+    """Read ~/.trmx/ai.json; on first run write the template. Returns {} if
+    the file does not exist (and no template was requested)."""
+    path = home_dir() / "ai.json"
+    if not path.is_file():
+        if write_template:
+            write_template_file(path)
+        return {}
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        die(3, f"{path}: not valid JSON: {e}")
+    if not isinstance(cfg, dict):
+        die(3, f"{path}: must be a JSON object")
+    return cfg
+
+
+# -------------------------------------------------- backend resolution
+
+def _pos_timeout(value, default: int, what: str) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, (int, float)) or value <= 0:
+        die(3, f"ai.json: {what} must be a positive number")
+    return int(value)
+
+
+def resolve_cli(cfg: dict, model: str | None) -> tuple[list[str], int]:
+    """cli mode: structured 'cli' block, legacy flat keys, or defaults."""
+    block = cfg.get("cli") if isinstance(cfg.get("cli"), dict) else {}
+    if not isinstance(block, dict):
+        die(3, "ai.json: 'cli' must be a JSON object")
+    command = block.get("command") or cfg.get("command") or list(DEFAULT_COMMAND)
+    if not isinstance(command, list) or not command or \
+            not all(isinstance(x, str) for x in command):
+        die(3, "ai.json: cli 'command' must be a non-empty list of strings")
+    command = list(command)
+    timeout = _pos_timeout(block.get("timeout_s", cfg.get("timeout_s")),
+                           DEFAULT_TIMEOUT_S, "cli timeout_s")
+    if model:                     # --model overrides the configured model
+        if len(command) >= 3 and command[0] == "ollama":
+            command[2] = model
+        else:
+            die(3, "--model needs an 'ollama' backend in ai.json "
+                   "(other backends: set the model inside 'command')")
+    return command, timeout
+
+
+def _resolve_api_key(block: dict, provider: str) -> str:
+    key = block.get("api_key")
+    if isinstance(key, str) and key.strip():
+        return key.strip()
+    env_name = block.get("api_key_env") or DEFAULT_KEY_ENV.get(provider, "")
+    if isinstance(env_name, str) and env_name:
+        val = os.environ.get(env_name, "")
+        if val.strip():
+            return val.strip()
+    hint = f" (or export {env_name})" if env_name else ""
+    die(3, f"ai.json: http_api has no API key for provider '{provider}' — "
+           f"set 'api_key' or 'api_key_env'{hint}")
+
+
+def resolve_http(cfg: dict, model: str | None) -> dict:
+    """http_api mode: validate the block, resolve key/endpoint/model."""
+    block = cfg.get("http_api")
+    if not isinstance(block, dict):
+        die(3, "ai.json: mode 'http_api' needs an 'http_api' object")
+    provider = block.get("provider")
+    if provider not in VALID_PROVIDERS:
+        die(3, f"ai.json: http_api.provider must be one of "
+               f"{', '.join(VALID_PROVIDERS)} — got {provider!r}")
+    model = model or block.get("model")
+    if not isinstance(model, str) or not model.strip():
+        die(3, "ai.json: http_api 'model' is required (e.g. "
+               "'llama-3.3-70b-versatile' on groq)")
+    model = model.strip()
+    endpoint = block.get("endpoint")
+    if endpoint is not None and not isinstance(endpoint, str):
+        die(3, "ai.json: http_api 'endpoint' must be a string")
+    if provider == "gemini":
+        url = endpoint or f"{PROVIDER_ENDPOINTS['gemini']}/{model}:generateContent"
+    elif provider == "openai_compatible":
+        if not endpoint:
+            die(3, "ai.json: provider 'openai_compatible' needs an explicit "
+                   "'endpoint' (any OpenAI-shaped /chat/completions URL)")
+        url = endpoint
+    else:
+        url = endpoint or PROVIDER_ENDPOINTS[provider]
+    return {
+        "provider": provider,
+        "url": url,
+        "key": _resolve_api_key(block, provider),
+        "model": model,
+        "timeout": _pos_timeout(block.get("timeout_s"), DEFAULT_HTTP_TIMEOUT_S,
+                                "http_api timeout_s"),
+    }
+
+
+# ------------------------------------------------------ backend execution
+
+def run_cli(command: list[str], prompt: str, timeout: int) -> str:
+    try:
+        proc = subprocess.run(command + [prompt], capture_output=True,
+                              timeout=timeout)
+    except FileNotFoundError:
+        die(3, f"backend '{command[0]}' not found — install it (e.g. "
+               "pkg install ollama) or switch ai.json to http_api mode "
+               "(docs/AI-CONFIG.md)")
+    except subprocess.TimeoutExpired:
+        die(3, f"backend timed out after {timeout}s — try a smaller model "
+               "or raise timeout_s in ~/.trmx/ai.json")
+    if proc.returncode != 0:
+        tail = proc.stderr.decode("utf-8", "replace")[-500:]
+        die(3, f"backend exited {proc.returncode}: {tail.strip()}")
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def _extract_text(payload, provider: str) -> str:
+    """Pull the model's text out of a provider response (as data)."""
+    if provider == "gemini":
+        try:
+            parts = payload["candidates"][0]["content"]["parts"]
+            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        except (KeyError, IndexError, TypeError, AttributeError):
+            die(3, "gemini response shape unexpected — check provider/model/"
+                   "endpoint (candidates[0].content.parts missing)")
+    else:
+        try:
+            text = payload["choices"][0]["message"]["content"]
+            if not isinstance(text, str):
+                raise TypeError("content is not a string")
+        except (KeyError, IndexError, TypeError):
+            die(3, "openai-compatible response shape unexpected — check "
+                   "provider/model/endpoint (choices[0].message.content missing)")
+    return text
+
+
+def call_http(spec: dict, prompt: str) -> str:
+    """POST the prompt; stdlib only; never echoes the key."""
+    if spec["provider"] == "gemini":
+        headers = {"Content-Type": "application/json",
+                   "x-goog-api-key": spec["key"]}
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
+    else:   # openai / groq / openai_compatible share the chat shape
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {spec['key']}"}
+        body = {"model": spec["model"],
+                "messages": [{"role": "user", "content": prompt}]}
+    req = urllib.request.Request(
+        spec["url"], data=json.dumps(body).encode("utf-8"),
+        headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=spec["timeout"]) as r:
+            raw = r.read(MAX_HTTP_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read(2000).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            detail = ""
+        die(3, f"HTTP {e.code} from {redact_url(spec['url'])}: "
+               f"{detail[:300].strip()}")
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        die(3, f"cannot reach {redact_url(spec['url'])}: {reason}")
+    except (TimeoutError, socket.timeout):
+        die(3, f"HTTP backend timed out after {spec['timeout']}s — raise "
+               "timeout_s in ~/.trmx/ai.json or try a smaller model")
+    if len(raw) > MAX_HTTP_BYTES:
+        die(3, "HTTP response larger than 1 MiB — refusing")
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except Exception as e:  # noqa: BLE001
+        die(3, f"endpoint returned non-JSON: {e}")
+    if not isinstance(payload, dict):
+        die(3, "endpoint returned a non-object JSON body")
+    return _extract_text(payload, spec["provider"])
+
+
+# ------------------------------------------------- prompt (§7.2 teacher)
+
+PROMPT_TEMPLATE = """You translate ONE plain-words description into a JSON tool
+schema for the TRMX registry. Emit ONLY the JSON object — no prose,
+no markdown fences.
+
+Schema shape:
+{{
+  "id": "kebab-case-unique-id",
+  "name": "Human name (<= 80 chars)",
+  "description": "One or two sentences (<= 400 chars)",
+  "binary": "the exact executable name, no slashes",
+  "risk_tier": "safe|confirm|destructive",
+  "fixed_argv": ["flags always passed"],
+  "progress_regex": "regex whose FIRST capture group is an integer percent (or omit)",
+  "args": [
+    {{
+      "name": "arg_name", "label": "Human label", "type": "string|int|float|bool|enum|path|url",
+      "required": true, "help": "short hint",
+      "enum": ["a", "b"],            // enum only
+      "default": "value",            // optional
+      "argv": ["-f", "{{value}}"],    // how it maps to command-line tokens
+      "min": 0, "max": 100,          // int/float only, optional
+      "pattern": "^...$",            // optional validation regex
+      "path_kind": "file|dir"        // path only
+    }}
+  ],
+  "examples": [{{ "label": "...", "args": {{ "arg_name": "value" }} }}]
+}}
+
+Hard rules:
+- At most 12 args. Only include options an ordinary user needs.
+- REQUIRED args must be truly required by the binary.
+- A non-bool arg with "argv" must contain "{{value}}" EXACTLY once.
+- A bool arg's argv must NOT contain "{{value}}" (flags like ["-x"]).
+- Type honestly: numbers int/float, choices enum, files/folders path,
+  http(s) links url.
+- Output folders: type "path", "path_kind": "dir", and add "mkdir": true
+  so the engine creates them if missing.
+- No shell syntax, no pipes, no command substitution anywhere.
+
+Description: {description}
+
+Respond with the JSON object only."""
+
+
+# --------------------------------------------- untrusted-output handling
+
+def extract_json(text: str) -> dict:
+    """First balanced, string-aware {...} block. Fences/prose tolerated,
+    but the JSON itself must parse — anything else is invalid."""
+    text = text[:MAX_LLM_BYTES]
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object found in the model output")
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(text[start:i + 1])
+                except Exception as e:  # noqa: BLE001
+                    raise ValueError(f"model JSON does not parse: {e}") from e
+                if not isinstance(obj, dict):
+                    raise ValueError("model output is not a JSON object")
+                return obj
+    raise ValueError("unbalanced braces in the model output")
+
+
+def _cap(v, limit: int, what: str) -> str:
+    if len(v) > limit:
+        raise ValueError(f"{what}: longer than {limit} chars")
+    return v
+
+
+def validate_schema(raw: dict) -> dict:
+    """§7.2 structural rules (mirrored from the bridge) + AI-specific caps.
+    Returns a NORMALIZED, safe-to-write schema; raises ValueError loudly.
+    Backend-agnostic: the SAME rules apply to cli and http_api output."""
+    if not isinstance(raw, dict):
+        raise ValueError("schema must be a JSON object")
+
+    sid = raw.get("id")
+    if not isinstance(sid, str):
+        raise ValueError("id: must be a string")
+    sid = sid.strip().lower()
+    sid = re.sub(r"[^a-z0-9-]+", "-", sid).strip("-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", sid):
+        raise ValueError(f"id: cannot derive a valid slug from {raw.get('id')!r}")
+
+    name = raw.get("name", sid)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name: must be a non-empty string")
+    name = _cap(name.strip(), 80, "name")
+
+    desc = raw.get("description", "")
+    if not isinstance(desc, str):
+        raise ValueError("description: must be a string")
+    desc = _cap(desc.strip(), 400, "description")
+
+    binary = raw.get("binary")
+    if not isinstance(binary, str) or not binary or "/" in binary or \
+            binary.startswith(".") or ".." in binary:
+        raise ValueError("binary: must be a bare executable name")
+
+    # ADR-014: AI-generated tools are confirm-tier until a human edits
+    # the JSON by hand. The model's claim is ignored on purpose.
+    risk_tier = "confirm"
+
+    fixed = raw.get("fixed_argv", [])
+    if not isinstance(fixed, list) or len(fixed) > 16 or \
+            not all(isinstance(x, str) for x in fixed):
+        raise ValueError("fixed_argv: must be a list of at most 16 strings")
+
+    args = raw.get("args", [])
+    if not isinstance(args, list) or len(args) > 12:
+        raise ValueError("args: must be a list of at most 12 args")
+
+    seen: set[str] = set()
+    clean_args = []
+    for a in args:
+        if not isinstance(a, dict) or not isinstance(a.get("name"), str) or not a["name"]:
+            raise ValueError("each arg needs a non-empty name")
+        an = a["name"]
+        if an in seen:
+            raise ValueError(f"duplicate arg name '{an}'")
+        seen.add(an)
+        t = a.get("type", "string")
+        if t not in ARG_TYPES:
+            raise ValueError(f"arg '{an}': bad type '{t}'")
+        argv = a.get("argv")
+        if argv is not None:
+            if not isinstance(argv, list) or len(argv) > 8 or \
+                    not all(isinstance(x, str) for x in argv):
+                raise ValueError(f"arg '{an}': argv must be a list of at most 8 strings")
+            if t == "bool":
+                if any("{value}" in x for x in argv):
+                    raise ValueError(f"bool arg '{an}': argv may not contain {{value}}")
+            elif sum(x.count("{value}") for x in argv) != 1:
+                raise ValueError(f"arg '{an}': argv must contain {{value}} exactly once")
+        if t == "enum":
+            en = a.get("enum")
+            if not isinstance(en, list) or not en or len(en) > 12 or \
+                    not all(isinstance(x, str) and x for x in en):
+                raise ValueError(f"arg '{an}': enum needs 1-12 non-empty strings")
+        if a.get("pattern"):
+            if not isinstance(a["pattern"], str):
+                raise ValueError(f"arg '{an}': pattern must be a string")
+            try:
+                re.compile(a["pattern"])
+            except re.error as e:
+                raise ValueError(f"arg '{an}': bad pattern: {e}") from e
+        if a.get("path_kind") not in (None, "file", "dir"):
+            raise ValueError(f"arg '{an}': path_kind must be file|dir")
+        if "mkdir" in a:
+            if a.get("path_kind") != "dir" or not isinstance(a["mkdir"], bool):
+                raise ValueError(f"arg '{an}': mkdir requires path_kind 'dir' + boolean")
+        mn, mx = a.get("min"), a.get("max")
+        if None not in (mn, mx) and mn > mx:
+            raise ValueError(f"arg '{an}': min > max")
+        clean = {"name": an, "label": _cap(str(a.get("label", an))[:61] or an, 60, "label"),
+                 "type": t, "required": bool(a.get("required"))}
+        if a.get("help") is not None:
+            clean["help"] = _cap(str(a["help"]), 200, f"arg '{an}' help")
+        if a.get("enum") is not None:
+            clean["enum"] = a["enum"]
+        if a.get("default") is not None:
+            clean["default"] = a["default"]
+        if argv is not None:
+            clean["argv"] = argv
+        if a.get("min") is not None:
+            clean["min"] = a["min"]
+        if a.get("max") is not None:
+            clean["max"] = a["max"]
+        if a.get("pattern") is not None:
+            clean["pattern"] = a["pattern"]
+        if a.get("path_kind") is not None:
+            clean["path_kind"] = a["path_kind"]
+        if "mkdir" in a:
+            clean["mkdir"] = a["mkdir"]
+        clean_args.append(clean)
+
+    examples = []
+    for ex in raw.get("examples", [])[:6]:
+        if isinstance(ex, dict) and isinstance(ex.get("args"), dict):
+            examples.append({"label": _cap(str(ex.get("label", "")), 60, "example label"),
+                             "args": ex["args"]})
+
+    schema = {"id": sid, "name": name, "description": desc, "binary": binary,
+              "risk_tier": risk_tier, "fixed_argv": fixed, "args": clean_args}
+    if raw.get("progress_regex"):
+        if not isinstance(raw["progress_regex"], str):
+            raise ValueError("progress_regex: must be a string")
+        try:
+            re.compile(raw["progress_regex"])
+        except re.error as e:
+            raise ValueError(f"progress_regex: bad regex: {e}") from e
+        schema["progress_regex"] = raw["progress_regex"]
+    if examples:
+        schema["examples"] = examples
+    return schema
+
+
+# ------------------------------------------------------------------ main
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="trmx-ai",
+        description="Turn a plain-words description into a TRMX tool schema "
+                    "via a configured LLM backend (cli or http_api; "
+                    "see docs/AI-CONFIG.md).")
+    ap.add_argument("description", help="what the tool should do, in plain words")
+    ap.add_argument("--model", help="override the configured model")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="validate and print the schema; write nothing")
+    ap.add_argument("--version", action="version",
+                    version=f"trmx-ai {TRMX_AI_VERSION}")
+    args = ap.parse_args(argv)
+
+    description = args.description.strip()
+    if len(description) < 8:
+        die(2, "description too short — describe the binary and what it should do")
+
+    cfg = load_config(write_template=not args.dry_run)
+    mode = cfg.get("mode")
+    if mode is None:
+        # legacy/implicit: flat {"command": ...} is cli; an http_api block
+        # (with or without "mode") is http_api
+        mode = "http_api" if ("http_api" in cfg or "provider" in cfg) else "cli"
+    if mode not in ("cli", "http_api"):
+        die(3, f"ai.json: 'mode' must be 'cli' or 'http_api' — got {mode!r}")
+
+    prompt = PROMPT_TEMPLATE.format(description=description)
+
+    if mode == "cli":
+        command, timeout = resolve_cli(cfg, args.model)
+        print(f"trmx-ai: calling {command[0]} … (this can take a minute)",
+              file=sys.stderr)
+        out = run_cli(command, prompt, timeout)
+    else:
+        spec = resolve_http(cfg, args.model)
+        print(f"trmx-ai: calling {spec['provider']} via "
+              f"{redact_url(spec['url'])} …", file=sys.stderr)
+        out = call_http(spec, prompt)
+
+    if not out.strip():
+        die(4, "model produced no output")
+
+    # ---- untrusted from here on (both backends): parse, validate, cap ----
+    try:
+        schema = validate_schema(extract_json(out))
+    except ValueError as e:
+        die(4, f"model output rejected: {e}\n"
+               "try rephrasing the description (shorter, name the binary)")
+
+    dest_dir = home_dir() / "tools"
+    dest = dest_dir / f"ai-{schema['id']}.json"
+    rendered = json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
+
+    if args.dry_run:
+        print(rendered, end="")
+        print("trmx-ai: dry run — nothing written", file=sys.stderr)
+        return 0
+
+    if dest.exists():
+        die(5, f"refusing to overwrite {dest} — edit or remove it first "
+               "(generated tools are plain JSON)")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=dest_dir,
+                                      prefix=".ai-", delete=False)
+    try:
+        tmp.write(rendered)
+        tmp.close()
+        os.replace(tmp.name, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+
+    print(f"schema installed: {schema['id']} -> {dest}")
+    print(f"risk tier: confirm (AI-generated — edit the JSON to relax it)")
+    print("rescan the toolbox (Tools -> Scan) to activate it.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
