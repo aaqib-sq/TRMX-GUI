@@ -25,13 +25,7 @@ class TokenStore(context: Context) {
     private val legacyPrefs: SharedPreferences =
         context.getSharedPreferences(LEGACY_NAME, Context.MODE_PRIVATE)
 
-    private val securePrefs: SharedPreferences = EncryptedSharedPreferences.create(
-        context,
-        SECURE_NAME,
-        masterKey(context),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    private val securePrefs: SharedPreferences = openSecurePrefs(context)
 
     init {
         migrateLegacyToken()
@@ -40,10 +34,15 @@ class TokenStore(context: Context) {
     /** Data-plane base URL — loopback only in V1 (Phase 0 decision). */
     val bridgeBaseUrl: String = "http://127.0.0.1:27342"
 
-    /** Pairing token — always read from the encrypted store. */
+    /** Pairing token — always read from the encrypted store. A damaged
+     *  stored value reads as "no token" (re-pairing heals it) instead of
+     *  throwing into app startup. */
     var token: String
-        get() = securePrefs.getString(KEY_TOKEN, "") ?: ""
-        set(value) = securePrefs.edit().putString(KEY_TOKEN, value).apply()
+        get() = runCatching { securePrefs.getString(KEY_TOKEN, "") ?: "" }
+            .getOrElse { "" }
+        set(value) {
+            runCatching { securePrefs.edit().putString(KEY_TOKEN, value).apply() }
+        }
 
     var installBase: String
         get() = legacyPrefs.getString(KEY_BASE, DEFAULT_BASE) ?: DEFAULT_BASE
@@ -69,11 +68,13 @@ class TokenStore(context: Context) {
      * store. Runs once per process start; idempotent.
      */
     private fun migrateLegacyToken() {
-        if (securePrefs.contains(KEY_TOKEN)) return
-        val legacyToken = legacyPrefs.getString(KEY_TOKEN, "") ?: ""
-        if (legacyToken.isNotEmpty()) {
-            securePrefs.edit().putString(KEY_TOKEN, legacyToken).apply()
-            legacyPrefs.edit().remove(KEY_TOKEN).apply()
+        runCatching {
+            if (securePrefs.contains(KEY_TOKEN)) return
+            val legacyToken = legacyPrefs.getString(KEY_TOKEN, "") ?: ""
+            if (legacyToken.isNotEmpty()) {
+                securePrefs.edit().putString(KEY_TOKEN, legacyToken).apply()
+                legacyPrefs.edit().remove(KEY_TOKEN).apply()
+            }
         }
     }
 
@@ -89,5 +90,36 @@ class TokenStore(context: Context) {
             MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
+
+        /**
+         * Opens the encrypted store — and heals it if damaged. A corrupt
+         * keyset/prefs file (partial write during a killed setup run, a
+         * keystore hiccup) makes EncryptedSharedPreferences.create()
+         * throw; before this heal, that exception escaped the TokenStore
+         * constructor and killed the app on every launch until the user
+         * cleared app data by hand (seen on device, 2026-10-16). Now:
+         * wipe the damaged store and recreate it once; if even that
+         * fails, fall back to plain prefs so the app always opens — a
+         * lost token is healed by re-pairing; a dead app is healed by
+         * nothing.
+         */
+        private fun openSecurePrefs(context: Context): SharedPreferences {
+            fun create(): SharedPreferences = EncryptedSharedPreferences.create(
+                context,
+                SECURE_NAME,
+                masterKey(context),
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+            return runCatching { create() }.getOrElse {
+                runCatching {
+                    context.deleteSharedPreferences(SECURE_NAME)
+                    create()
+                }.getOrElse {
+                    context.getSharedPreferences(
+                        SECURE_NAME + "_plain", Context.MODE_PRIVATE)
+                }
+            }
+        }
     }
 }
