@@ -2884,8 +2884,9 @@ def main() -> None:
     if args.port:
         config.data["port"] = args.port  # runtime override only
     if config.ensure_token():
-        LOG.warning("no token in config — generated a new one (masked '%s…'); "
-                    "run `trmx token --show` to view it", (config.token or "")[:4])
+        # Phase 10: never log the token or any part of it — not even a prefix.
+        LOG.warning("no token in config — generated a new one; "
+                    "run `trmx token --show` to view it")
 
     pidfile = home / "bridge.pid"
 
