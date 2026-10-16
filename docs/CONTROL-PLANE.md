@@ -47,7 +47,7 @@ Paths on device: `$PREFIX = /data/data/com.termux/files/usr`,
 |---|---|---|---|---|
 | `INSTALL_PY` | `$PREFIX/bin/pkg` | `["install","-y","python"]` | bootstrap, bridge reports python missing | subsequent ops succeed |
 | `INSTALL` | `$PREFIX/bin/bash` | `["-c", "curl -fsSL <BASE>/install.sh \| sh -s -- --base <BASE>"]` | bootstrap / upgrade (app passes pinned `--base` + `--sha256` URL) | `$TRMX/trmx-bridge.py` + `$TRMX/trmx` exist (app can't see them; verified by next op + data plane) |
-| `PAIR` | `$TRMX/trmx` | `["pair", "<TOKEN>"]` | first pairing / re-pairing after unpair | data plane auth starts succeeding |
+| `PAIR` | `$TRMX/trmx` | `["pair", "<TOKEN>", "--force"]` | first pairing / re-pairing (`--force` is required: the CLI refuses to overwrite an already-paired token without it) | data plane auth starts succeeding |
 | `START` | `$TRMX/trmx` | `["start"]` | data plane down, bridge believed stopped | port answers `/v1/system/info` |
 | `STOP` | `$TRMX/trmx` | `["stop"]` | user-initiated backend shutdown | port closed |
 | `STATUS` | `$TRMX/trmx` | `["status"]` | diagnostics (rare — data-plane probe is preferred) | exit/output |
@@ -81,7 +81,7 @@ declaring success.
   `PAIR` → `STOP` → `START` → re-handshake. If it still fails, the card
   shows the consent checklist and a **manual pairing escape hatch** (the
   app's token is displayed with a copy button: `trmx stop` → `trmx pair
-  <token>` → `trmx start` → Retry).
+  <token> --force` → `trmx start` → Retry).
 
 **Warm start:** probe `/v1/system/info`; on connection-refused send `START`,
 re-probe; on repeated failure escalate to `TERMUX_NOT_RUNNING` /

@@ -55,7 +55,7 @@ class ControlOpsTest {
     fun `PAIR resolves the token into argv position 2`() {
         val args = ControlOps.resolveArgs(
             ControlOps.spec("PAIR")!!, baseUrl = null, token = "abc123-def456_ghi789XYZ01")
-        assertEquals(listOf("pair", "abc123-def456_ghi789XYZ01"), args)
+        assertEquals(listOf("pair", "abc123-def456_ghi789XYZ01", "--force"), args)
     }
 
     @Test
