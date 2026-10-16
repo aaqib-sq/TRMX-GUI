@@ -26,8 +26,8 @@
   rest itself. One-tap repair in Settings.
 
 Pairing is token-authenticated over loopback only; the token lives in the app's
-private storage. Keystore-encrypted storage and token-free logs arrive with
-Phase 10 (in review — see status below). Design decisions are recorded as ADRs
+private storage. Keystore-encrypted storage and token-free logs shipped with
+Phase 10 (merged — see status below). Design decisions are recorded as ADRs
 under [docs/decisions/](docs/decisions/).
 
 ## Project status
@@ -38,7 +38,7 @@ under [docs/decisions/](docs/decisions/).
 | Android app (`android/`) | ✅ Built, CI compiles + unit-tests green |
 | Agent task loop | ✅ Built & tested (scripted backend); **real-model validation pending** |
 | Setup / pairing | ✅ One-screen flow built; **on-device round pending** |
-| Phase 10 hardening | 🔄 In review (PR #4) — encrypted token store, log redaction |
+| Phase 10 hardening | ✅ Merged (PR #4) — encrypted token store, log redaction |
 | On-device verification | ⏳ The remaining rounds need a real phone + Termux |
 | Release APK | ⏳ Not cut yet |
 
