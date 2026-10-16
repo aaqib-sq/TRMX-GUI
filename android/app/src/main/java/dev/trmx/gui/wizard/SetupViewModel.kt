@@ -365,7 +365,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 if (r.status == 401 && allowRecovery) {
                     applyEvent(WizardEvent.StepStarted(
                         "token rejected — re-pairing and restarting the bridge…"))
-                    if (!sendOp(ControlOps.spec("PAIR")!!)) return
+                    if (!sendOp(ControlOps.spec("PAIR")!!, token = store.token)) return
                     delay(2_000L)
                     if (!sendOp(ControlOps.spec("STOP")!!)) return
                     delay(2_000L)
@@ -413,7 +413,17 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         val res = controlPlane.send(
             spec,
             baseUrl = if (spec.id == "INSTALL") s.baseUrl else null,
-            token = if (spec.id == "PAIR") (token ?: s.token) else null)
+            // PAIR's token: the explicit arg, else the wizard state's,
+            // else the persisted store token. The wizard state only
+            // holds a token during a first-run Begin — the warm-reconnect
+            // 401 self-heal reaches PAIR with an empty wizard token, and
+            // resolving "<TOKEN>" with "" crashed the app (device crash
+            // report, 2026-10-16 22:23).
+            token = if (spec.id == "PAIR") {
+                token ?: s.token.ifEmpty { store.token }
+            } else {
+                null
+            })
         return res.fold(
             onSuccess = { true },
             onFailure = { e ->
