@@ -163,6 +163,35 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         skipSignal.trySend(Unit)
     }
 
+    /** The persisted pairing token ("" when never paired). Exposed so the
+     *  setup screen can offer manual pairing at any time — the user must
+     *  never have to wait for a pipeline failure to reach it (device
+     *  round 1: a slow handshake hid the failure card, and with it the
+     *  manual escape hatch, for 10+ minutes). */
+    val manualToken: String get() = store.token
+
+    /**
+     * After a manual pair in Termux: cancel whatever the pipeline is
+     * doing and check the data plane once with the persisted token.
+     * Success finishes setup; a 401 explains itself; silence gets a
+     * short, honest retry hint (the bridge may still be starting).
+     */
+    fun verifyManualPairing() {
+        sequenceJob?.cancel()
+        sequenceJob = viewModelScope.launch {
+            when (val r = probe()) {
+                is BridgeResult.Success ->
+                    applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
+                is BridgeResult.HttpError -> failHandshake(r)
+                is BridgeResult.NetworkError ->
+                    applyEvent(WizardEvent.StepFailed(
+                        "The bridge did not answer yet — after 'trmx start' " +
+                            "give it a few seconds, then tap again.\n" +
+                            "Last network error: ${r.cause.message}"))
+            }
+        }
+    }
+
     fun retrySetup() {
         applyEvent(WizardEvent.Retry)
         sequenceJob?.cancel()

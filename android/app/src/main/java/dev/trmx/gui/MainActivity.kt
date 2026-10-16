@@ -161,6 +161,8 @@ fun AppRoot(
             onSkipPythonWait = setupVm::skipPythonWait,
             onRetry = setupVm::retrySetup,
             onReset = setupVm::resetSetup,
+            existingToken = setupVm.manualToken,
+            onVerifyManualPairing = setupVm::verifyManualPairing,
         )
 
         else -> {
