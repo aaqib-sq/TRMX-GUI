@@ -1,17 +1,17 @@
 package dev.trmx.gui
 
 /*
- * AppViewModel — orchestrates the control plane (intents) and the data
- * plane (BridgeClient) and exposes UI state. Kept deliberately thin: all
- * decision logic lives in WizardEngine (pure), Handshaker (pure) and
- * SubmitValidator (pure).
+ * AppViewModel — orchestrates the data plane (BridgeClient) and exposes UI
+ * state for the tab screens. First-run setup / repair lives in
+ * SetupViewModel; the agent chat in AgentViewModel. Kept deliberately
+ * thin: all decision logic lives in pure, tested helpers (OutputReducer,
+ * SubmitValidator, FormEngine, …).
  */
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.trmx.gui.control.ControlOps
-import dev.trmx.gui.control.ControlPlaneException
 import dev.trmx.gui.control.IntentControlPlane
 import dev.trmx.gui.job.JobOutputState
 import dev.trmx.gui.model.FileEntry
@@ -29,16 +29,10 @@ import dev.trmx.gui.model.SubmitRequest
 import dev.trmx.gui.model.SystemInfo
 import dev.trmx.gui.net.BridgeClient
 import dev.trmx.gui.net.BridgeResult
-import dev.trmx.gui.net.Handshaker
 import dev.trmx.gui.net.SseClient
 import dev.trmx.gui.net.SseFrame
 import dev.trmx.gui.store.TokenStore
-import dev.trmx.gui.wizard.WizardEngine
-import dev.trmx.gui.wizard.WizardEvent
-import dev.trmx.gui.wizard.WizardState
-import dev.trmx.gui.wizard.WizardStep
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,7 +40,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -211,11 +204,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = TokenStore(app)
     private val controlPlane = IntentControlPlane(app)
-    private val wizardEngine = WizardEngine()
     private val http = OkHttpClient()
-
-    private val _wizard = MutableStateFlow(WizardState())
-    val wizard = _wizard.asStateFlow()
 
     private val _dashboard = MutableStateFlow(DashboardState())
     val dashboard = _dashboard.asStateFlow()
@@ -272,60 +261,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var aiWatch: String? = null        // job_id of a running trmx-ai job
     val files = _files.asStateFlow()
 
-    fun isTermuxInstalled(): Boolean = controlPlane.isTermuxInstalled()
-
-    private var sequenceJob: Job? = null
     private var pollJob: Job? = null
     private var outputJob: Job? = null
     private var eventsJob: Job? = null
-    private val skipSignal = Channel<Unit>(Channel.CONFLATED)
-
     private fun sseClient() = SseClient(store.bridgeBaseUrl, store.token, http)
-
-    init {
-        if (store.isPaired) warmStart()
-    }
 
     private fun client() = BridgeClient(store.bridgeBaseUrl, store.token, http)
 
-    // ---- wizard ---------------------------------------------------------
-
-    fun consentTermux(given: Boolean) = applyEvent(WizardEvent.ConsentTermux(given))
-    fun consentRunCommand(given: Boolean) = applyEvent(WizardEvent.ConsentRunCommand(given))
-    fun consentAllowExternal(given: Boolean) =
-        applyEvent(WizardEvent.ConsentAllowExternal(given))
-    fun baseUrlChanged(url: String) = applyEvent(WizardEvent.BaseUrlChanged(url))
-
-    fun newToken(): String =
-        store.generateToken().also { store.token = it }
-
-    fun beginWizard() {
-        val token = if (store.isPaired) store.token else newToken()
-        store.installBase = _wizard.value.baseUrl
-        applyEvent(WizardEvent.Begin(token))
-        sequenceJob?.cancel()
-        skipSignal.tryReceive()
-        sequenceJob = viewModelScope.launch { firstRunSequence() }
-    }
-
-    fun skipWait() {
-        skipSignal.trySend(Unit)
-    }
-
-    fun retry() {
-        applyEvent(WizardEvent.Retry)
-        sequenceJob?.cancel()
-        skipSignal.tryReceive()
-        sequenceJob = viewModelScope.launch { firstRunSequence(fromStep = _wizard.value.step) }
-    }
-
-    fun resetWizard() {
-        sequenceJob?.cancel()
+    /**
+     * Full local reset for "Re-run setup": clears every cached screen state.
+     * The setup flow itself is owned by SetupViewModel (resetSetup) — call
+     * both together.
+     */
+    fun resetAppState() {
         pollJob?.cancel()
         outputJob?.cancel()
         eventsJob?.cancel()
-        skipSignal.tryReceive()
-        applyEvent(WizardEvent.Reset)
         _dashboard.value = DashboardState()
         _output.value = null
         _files.value = FileBrowserState()
@@ -334,138 +285,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _recipes.value = recipeStore.list()
         _artifacts.value = ArtifactsState()
     }
-
-    /**
-     * CONTROL-PLANE.md §4 first-run sequence. Each op's acceptance is
-     * observed on the data plane, never assumed from intent delivery.
-     */
-    private suspend fun firstRunSequence(fromStep: WizardStep = WizardStep.INSTALL_PY) {
-        val s = _wizard.value
-        var step = fromStep
-        if (step == WizardStep.WELCOME) step = WizardStep.INSTALL_PY
-        if (step.ordinal >= WizardStep.INSTALL_PY.ordinal &&
-            step.ordinal < WizardStep.INSTALL.ordinal
-        ) {
-            if (!sendOp(ControlOps.spec("INSTALL_PY")!!)) return
-            withTimeoutOrNull(INSTALL_PY_WAIT_MS) { skipSignal.receive() }
-            applyEvent(WizardEvent.StepSucceeded(WizardStep.INSTALL))
-        }
-        if (step.ordinal < WizardStep.PAIR.ordinal) {
-            if (!sendOp(ControlOps.spec("INSTALL")!!)) return
-            delay(INSTALL_WAIT_MS)
-            applyEvent(WizardEvent.StepSucceeded(WizardStep.PAIR))
-        }
-        if (step.ordinal < WizardStep.START.ordinal) {
-            // STOP first, always: a bridge left running (e.g. started manually
-            // in Termux) holds its OLD token in memory and would 401 the app
-            // even after a successful pair. Stopping is idempotent — a no-op
-            // when nothing is running (on-device round 3 lesson).
-            if (!sendOp(ControlOps.spec("STOP")!!)) return
-            delay(1_000L)
-            if (!sendOp(ControlOps.spec("PAIR")!!)) return
-            delay(PAIR_WAIT_MS)
-            applyEvent(WizardEvent.StepSucceeded(WizardStep.START))
-        }
-        if (step.ordinal < WizardStep.HANDSHAKE.ordinal) {
-            if (!sendOp(ControlOps.spec("START")!!)) return
-            applyEvent(WizardEvent.StepSucceeded(WizardStep.HANDSHAKE))
-        }
-        awaitHandshakeOrFail()
-    }
-
-    /** CONTROL-PLANE.md §4 warm start: probe, START if down, probe again. */
-    private fun warmStart() {
-        applyEvent(WizardEvent.StepStarted("reconnecting to the bridge…"))
-        _wizard.update { it.copy(step = WizardStep.HANDSHAKE) }
-        sequenceJob = viewModelScope.launch {
-            when (val r = probe()) {
-                is BridgeResult.Success ->
-                    applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
-                is BridgeResult.HttpError -> failHandshake(r)
-                is BridgeResult.NetworkError -> {
-                    if (!sendOp(ControlOps.spec("START")!!)) return@launch
-                    awaitHandshakeOrFail()
-                }
-            }
-        }
-    }
-
-    private suspend fun awaitHandshakeOrFail(allowRecovery: Boolean = true) {
-        when (val r = handshaker().awaitHandshake()) {
-            is BridgeResult.Success -> {
-                applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
-                refresh()
-            }
-            is BridgeResult.HttpError -> {
-                // 401 with a reachable bridge: our token is not the bridge's
-                // token. Self-heal once: re-pair, restart, retry. If intents
-                // cannot reach Termux, the failure card offers manual pairing.
-                if (r.status == 401 && allowRecovery) {
-                    applyEvent(WizardEvent.StepStarted(
-                        "token rejected — re-pairing and restarting the bridge…"))
-                    if (!sendOp(ControlOps.spec("PAIR")!!)) return
-                    delay(2_000L)
-                    if (!sendOp(ControlOps.spec("STOP")!!)) return
-                    delay(2_000L)
-                    if (!sendOp(ControlOps.spec("START")!!)) return
-                    awaitHandshakeOrFail(allowRecovery = false)
-                } else {
-                    failHandshake(r)
-                }
-            }
-            is BridgeResult.NetworkError ->
-                applyEvent(
-                    WizardEvent.StepFailed(
-                        "The bridge did not answer. Most likely causes:\n" +
-                            "• allow-external-apps is not set in ~/.termux/termux.properties\n" +
-                            "• the install failed — open Termux and run ~/.trmx/trmx status\n" +
-                            "• Termux was killed by Android (phantom process limits)\n" +
-                            "Last network error: ${r.cause.message}"))
-        }
-    }
-
-    private fun failHandshake(r: BridgeResult.HttpError) {
-        val hint = if (r.status == 401) {
-            "The bridge rejected our token (HTTP 401) — pairing did not take effect.\n" +
-                "Checklist:\n" +
-                "• TRMX holds the Termux:Run Command permission (App info → Permissions)\n" +
-                                "• ~/.termux/termux.properties contains allow-external-apps=true\n" +
-                                "  (then run termux-reload-settings and restart Termux)\n" +
-                "• no other bridge instance is running with an old token\n" +
-                "If Termux is not running our commands, use manual pairing below."
-        } else {
-            "The bridge answered with HTTP ${r.status} (${r.code})."
-        }
-        applyEvent(WizardEvent.StepFailed(hint))
-    }
-
-    /** Sends one op; on send failure applies StepFailed and returns false. */
-    private fun sendOp(spec: ControlOps.OpSpec): Boolean {
-        val s = _wizard.value
-        val res = controlPlane.send(
-            spec,
-            baseUrl = if (spec.id == "INSTALL") s.baseUrl else null,
-            token = if (spec.id == "PAIR") s.token else null)
-        return res.fold(
-            onSuccess = { true },
-            onFailure = { e ->
-                val reason = if (e is ControlPlaneException) {
-                    when (e.error) {
-                        ControlPlaneException.SendError.PERMISSION_REQUIRED ->
-                            "RUN_COMMAND permission is not granted to TRMX. " +
-                                "Open App info → Permissions and grant it."
-                        ControlPlaneException.SendError.TERMUX_NOT_RUNNING ->
-                            "Termux did not accept the command. Open Termux once, then retry."
-                    }
-                } else {
-                    "Could not send ${spec.id}: ${e.message}"
-                }
-                applyEvent(WizardEvent.StepFailed(reason))
-                false
-            })
-    }
-
-    private fun applyEvent(e: WizardEvent) = _wizard.update { wizardEngine.reduce(it, e) }
 
     // ---- submit form ----------------------------------------------------
 
@@ -778,7 +597,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val schemaErrors = _dashboard.value.info?.features?.tool_schema_errors
                         ?: emptyList()
                     _tools.update {
-                        it.copy(loading = false, tools = r.data.tools,
+                        it.copy(loading = false,
+                                tools = r.data.tools.filterNot { t -> t.schema.id == "agent" },
                                 schemaErrors = schemaErrors)
                     }
                 }
@@ -797,8 +617,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val r = client().refreshTools()) {
                 is BridgeResult.Success -> _tools.update {
-                    it.copy(loading = false, tools = r.data.tools,
-                            notice = "rescan complete — ${r.data.tools.size} tools")
+                    val visible = r.data.tools.filterNot { t -> t.schema.id == "agent" }
+                    it.copy(loading = false, tools = visible,
+                            notice = "rescan complete — ${visible.size} tools")
                 }
                 is BridgeResult.HttpError ->
                     _tools.update { it.copy(loading = false,
@@ -1722,13 +1543,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun probe(): BridgeResult<SystemInfo> = client().systemInfo()
-
-    private fun handshaker() =
-        Handshaker(probe = { probe() }, pollIntervalMs = 500, maxAttempts = 60)
-
     override fun onCleared() {
-        sequenceJob?.cancel()
         pollJob?.cancel()
         outputJob?.cancel()
         eventsJob?.cancel()
@@ -1736,9 +1551,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        private const val INSTALL_PY_WAIT_MS = 40_000L
-        private const val INSTALL_WAIT_MS = 20_000L
-        private const val PAIR_WAIT_MS = 3_000L
         private const val DETAIL_POLL_MS = 2_000L
         private val TERMINAL = setOf("COMPLETED", "FAILED", "CANCELLED", "LOST")
     }

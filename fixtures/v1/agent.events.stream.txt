@@ -1,0 +1,9 @@
+{"t":"backend","mode":"cli","model":"python3 fake-llm"}
+{"t":"plan","step":1,"thought":"list the tools so I can pick the right one","describe":"looking at the available tools"}
+{"t":"action","step":1,"tool":"list_jobs","describe":"looking at the available tools"}
+{"t":"result","step":1,"ok":true,"excerpt":"(no jobs)"}
+{"t":"plan","step":2,"thought":"the cleanup tool is confirm-tier, so this will pause","describe":"delete the old cache files with the cleanup tool"}
+{"t":"confirm-needed","step":2,"describe":"delete the old cache files with the cleanup tool","tool":"submit_tool","why":"risk-tier"}
+{"t":"action","step":2,"tool":"submit_tool","describe":"delete the old cache files with the cleanup tool"}
+{"t":"result","step":2,"ok":true,"excerpt":"job J-1A2C completed. output tail:\ncleaned 12 files"}
+{"t":"done","summary":"cleaned 12 old cache files"}

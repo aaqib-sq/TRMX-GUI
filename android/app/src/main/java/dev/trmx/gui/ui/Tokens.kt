@@ -1,19 +1,15 @@
 package dev.trmx.gui.ui
 
 /*
- * TRMX design tokens (UX-audit P3, ADR-013) — the SINGLE source of truth
- * for every visual constant in the app. Screens and components may not
+ * TRMX design tokens (revival: monochrome identity) — the SINGLE source of
+ * truth for every visual constant in the app. Screens and components may not
  * hardcode colors, radii or spacing; they reference Tokens.
  *
  * Palette: True-OLED pitch black ground + deep-contrast elevated surfaces
- * with 1 px outlines. Modern-tech accents: Electric Ice-Cyan (focus,
- * primary actions) + Steel Blue (calm/secondary). NO green/mint, NO
- * orange/amber anywhere (explicitly forbidden). Crisp white primary text,
- * muted slate metadata, semantic red ONLY for critical failures.
- *
- * NOTE: hex values derive from the written design directives (the
- * blueprint package did not persist into the workspace — see ADR-013);
- * centralizing them here makes a fidelity pass a one-file change.
+ * with 1 px outlines. Monochrome identity: WHITE primary actions on black,
+ * greys for secondary. NO cyan, NO blue, NO green/mint, NO orange/amber
+ * anywhere. Crisp white primary text, muted grey metadata, semantic red
+ * ONLY for critical failures.
  */
 
 import androidx.compose.ui.graphics.Color
@@ -24,29 +20,30 @@ object Tokens {
     /** Ground + elevated surfaces (OLED). */
     object Palette {
         val Background = Color(0xFF000000)     // true OLED black (ground)
-        val Surface = Color(0xFF0B111A)        // cards (P4 contract)
-        val FieldFill = Color(0xFF0A0E17)      // input field fill (P4 contract)
+        val Surface = Color(0xFF0B111A)        // cards
+        val FieldFill = Color(0xFF0A0E17)      // input field fill
         val SurfaceHigh = Color(0xFF121824)    // sheets / secondary surfaces
         val SurfaceHighest = Color(0xFF1A2232) // menus, pressed states
-        val Border = Color(0xFF1E293B)         // 1 px outlines (P4 contract)
+        val Border = Color(0xFF1E293B)         // 1 px outlines
         val BorderStrong = Color(0xFF2A3550)   // focused/active outlines
 
         /** Text. */
         val TextPrimary = Color(0xFFFFFFFF)    // crisp white
-        val TextSecondary = Color(0xFF94A3B8)  // muted slate (P4 contract)
+        val TextSecondary = Color(0xFF94A3B8)  // muted grey
         val TextMuted = Color(0xFF5F6B80)      // faint metadata
 
-        /** Electric Ice-Cyan — focus + primary actions. */
-        val Accent = Color(0xFF22D3EE)
-        val OnAccent = Color(0xFF00252B)
-        val AccentContainer = Color(0xFF07303A)
-        val OnAccentContainer = Color(0xFFA5F3FC)
+        /** Accent — white. Primary actions are white-on-black, the ONE loud
+         *  element per screen. (The old ice-cyan is gone for good.) */
+        val Accent = Color(0xFFFFFFFF)
+        val OnAccent = Color(0xFF000000)
+        val AccentContainer = Color(0xFF22262D)
+        val OnAccentContainer = Color(0xFFFFFFFF)
 
-        /** Steel Blue — calm secondary / completed. */
-        val Steel = Color(0xFF6FA3D8)
-        val SteelDim = Color(0xFF4E6E96)
-        val SteelContainer = Color(0xFF12263D)
-        val OnSteelContainer = Color(0xFFC9E2F7)
+        /** Grey — calm secondary / completed. (The old steel blue is gone.) */
+        val Steel = Color(0xFFB9C1CC)
+        val SteelDim = Color(0xFF78818D)
+        val SteelContainer = Color(0xFF181C22)
+        val OnSteelContainer = Color(0xFFE6EBF1)
 
         /** Semantic red — critical failures ONLY. */
         val Danger = Color(0xFFF87171)
