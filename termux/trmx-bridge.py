@@ -132,6 +132,13 @@ class Config:
     def __init__(self, path: Path):
         self.path = path
         self.data: dict = {}
+        self._mtime_ns: int | None = None
+
+    def _note_mtime(self) -> None:
+        try:
+            self._mtime_ns = self.path.stat().st_mtime_ns
+        except OSError:
+            self._mtime_ns = None
 
     def load(self) -> "Config":
         if self.path.exists():
@@ -144,6 +151,7 @@ class Config:
         merged = dict(DEFAULT_CONFIG)
         merged.update(self.data)
         self.data = merged
+        self._note_mtime()
         return self
 
     def save(self) -> None:
@@ -153,6 +161,7 @@ class Config:
             json.dump(self.data, f, indent=2)
             f.write("\n")
         os.chmod(self.path, 0o600)
+        self._note_mtime()
 
     def __getitem__(self, k):
         return self.data[k]
@@ -163,6 +172,44 @@ class Config:
     @property
     def token(self):
         return self.data.get("token")
+
+    def fresh_token(self):
+        """The token as it stands in the config FILE right now.
+
+        Until 2026-10-17 the bridge trusted only the token loaded into
+        memory at startup, so a `trmx pair` written while the bridge was
+        running never took effect until the process was restarted — and
+        a bridge started before pairing, or during an unpaired window
+        (when ensure_token() invents its own token), rejected the app
+        with 401s forever, however correct the file on disk was
+        (on-device round 1). Auth now re-reads the file whenever its
+        mtime changes, so pairing takes effect on the next request: no
+        restart, no stop/start ordering for the pairing to depend on.
+        The common path is one stat() call; a half-written or unreadable
+        file falls back to the in-memory value instead of failing auth.
+        """
+        try:
+            mtime_ns = self.path.stat().st_mtime_ns
+        except OSError:
+            return self.token
+        if self._mtime_ns is not None and mtime_ns == self._mtime_ns:
+            return self.token
+        try:
+            data = json.loads(self.path.read_text("utf-8"))
+        except Exception:  # noqa: BLE001 — a torn write must not kill auth
+            return self.token
+        if isinstance(data, dict):
+            self._mtime_ns = mtime_ns
+            # Adopt the file's token as the in-memory one: without this,
+            # the NEXT call (mtime unchanged) would fall back to the
+            # stale startup token and both old and new tokens would
+            # half-work, alternating by call order.
+            if "token" in data:
+                self.data["token"] = data["token"]
+            else:
+                self.data.pop("token", None)
+            return self.token
+        return self.token
 
     def ensure_token(self) -> bool:
         """Generate a token if none exists. Returns True if it generated one."""
@@ -1932,7 +1979,7 @@ class BridgeApp:
         token = m.group(1) if m else None
         if not token:
             raise BridgeError(401, "AUTH_REQUIRED", "missing bearer token")
-        if not hmac.compare_digest(self.config.token or "", token):
+        if not hmac.compare_digest(self.config.fresh_token() or "", token):
             raise BridgeError(401, "AUTH_INVALID", "invalid token")
         path_matched = False
         for method, rx, handler in self.routes:
