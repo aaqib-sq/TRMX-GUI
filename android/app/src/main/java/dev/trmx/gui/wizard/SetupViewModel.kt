@@ -106,7 +106,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         .build()
 
     // Diagnostics (2026-10-17): every probe/op/stage lands in this log;
-    // the setup screen shows it under "विवरण / लॉग" and can share it.
+    // the setup screen shows it under "Details / log" and can share it.
     private val setupLog = SetupLog(File(app.filesDir, "setup_log.txt"))
     private val _setupLogText = MutableStateFlow("")
     val setupLogText = _setupLogText.asStateFlow()
@@ -170,8 +170,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             consentRunCommand = true,
             consentAllowExternal = true,
             busy = false,
-            failure = "सेटअप बीच में रुक गया था — ऐप बंद हो गया था।\n" +
-                "नीचे 'फिर से कोशिश करो' दबाओ — सेटअप वहीं से जारी होगा।")
+            failure = "Setup was interrupted — the app was closed.\n" +
+                "Tap 'Retry this step' below — setup continues from where it stopped.")
         slog("RESTORE interrupted setup at step $step")
         return true
     }
@@ -277,9 +277,39 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 is BridgeResult.HttpError -> failHandshake(r)
                 is BridgeResult.NetworkError ->
                     applyEvent(WizardEvent.StepFailed(
-                        "ब्रिज ने अभी जवाब नहीं दिया — 'trmx pair' चलाने के बाद " +
-                            "कुछ सेकंड रुककर फिर 'चेक करो' दबाओ।\n" +
-                            "आखिरी एरर: ${r.cause.message}"))
+                        "The bridge did not answer yet — after running the pair " +
+                            "command, wait a few seconds, then tap 'Check'.\n" +
+                            "Last error: ${r.cause.message}"))
+            }
+        }
+    }
+
+    /**
+     * Pair-link adoption (2026-10-17): `trmx pair-link` in Termux opens
+     * this app with the BRIDGE's token in a trmx://pair link. The
+     * bridge's token is the auth truth, so the app simply adopts it —
+     * no file write, no intent from the app, no copy-paste of the token
+     * itself. The connection is then verified with one probe, exactly
+     * like the manual path. Works from any wizard step: on DONE the
+     * probe result is recorded in the log and the main UI (which reads
+     * the store per call) picks the token up on its next request.
+     */
+    fun adoptFromLink(token: String) {
+        slog("=== PAIR-LINK adopt (${SetupLog.describeToken(token)}) ===")
+        store.token = token
+        sequenceJob?.cancel()
+        sequenceJob = viewModelScope.launch {
+            when (val r = probe()) {
+                is BridgeResult.Success -> {
+                    slog("PAIR-LINK ok — connected with the bridge's token")
+                    applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
+                }
+                is BridgeResult.HttpError -> failHandshake(r)
+                is BridgeResult.NetworkError ->
+                    applyEvent(WizardEvent.StepFailed(
+                        "The bridge did not answer yet — in Termux run " +
+                            "'~/.trmx/trmx start', then run pair-link again.\n" +
+                            "Last error: ${r.cause.message}"))
             }
         }
     }
@@ -416,7 +446,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private fun warmReconnect() {
         slog("=== WARM reconnect (${SetupLog.describeToken(store.token)}) ===")
         sequenceJob = viewModelScope.launch {
-            applyEvent(WizardEvent.StepStarted("ब्रिज से दोबारा कनेक्ट हो रहा है…"))
+            applyEvent(WizardEvent.StepStarted("reconnecting to the bridge…"))
             when (probe()) {
                 is BridgeResult.Success ->
                     applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
@@ -501,7 +531,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 if (r.status == 401 && allowRecovery) {
                     slog("HEAL 401 — re-pair (file write), then re-probe")
                     applyEvent(WizardEvent.StepStarted(
-                        "टोकन मेल नहीं खाया — दोबारा पेयर करके चेक कर रहे हैं…"))
+                        "token rejected — re-pairing and checking again…"))
                     if (!sendOp(ControlOps.spec("PAIR")!!, token = store.token)) return
                     delay(600L)
                     awaitHandshakeOrFail(allowRecovery = false)
@@ -512,25 +542,25 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             is BridgeResult.NetworkError ->
                 applyEvent(
                     WizardEvent.StepFailed(
-                        "कनेक्ट नहीं हुआ — ब्रिज ने जवाब ही नहीं दिया।\n" +
-                            "आम वजहें:\n" +
-                            "• allow-external-apps सेट नहीं है (~/.termux/termux.properties में)\n" +
-                            "• इंस्टॉल अधूरा रह गया — Termux में ~/.trmx/trmx status चलाकर देखो\n" +
-                            "• Android ने Termux को बंद कर दिया (phantom process limit)\n" +
-                            "आखिरी एरर: ${r.cause.message}"))
+                        "Could not connect — the bridge did not answer.\n" +
+                            "Most likely causes:\n" +
+                            "• allow-external-apps is not set in ~/.termux/termux.properties\n" +
+                            "• the install is incomplete — in Termux, run ~/.trmx/trmx status\n" +
+                            "• Android killed Termux (phantom process limit)\n" +
+                            "Last network error: ${r.cause.message}"))
         }
     }
 
     private fun failHandshake(r: BridgeResult.HttpError) {
         val hint = if (r.status == 401) {
-            "कनेक्ट नहीं हुआ — ब्रिज ने टोकन मना कर दिया (HTTP 401)।\n" +
-                "चेक करो:\n" +
-                "• TRMX को Termux:Run Command परमिशन मिली है (App info → Permissions)\n" +
-                "• ~/.termux/termux.properties में allow-external-apps=true है " +
-                "(फिर termux-reload-settings चलाकर Termux रीस्टार्ट करो)\n" +
-                "• नीचे 'विवरण / लॉग' खोलकर लॉग भेजो — उसमें साफ़ दिखेगा ऐप ने क्या भेजा था"
+            "Could not connect — the bridge rejected our token (HTTP 401).\n" +
+                "Check:\n" +
+                "• TRMX holds the Termux:Run Command permission (App info → Permissions)\n" +
+                "• ~/.termux/termux.properties contains allow-external-apps=true " +
+                "(then run termux-reload-settings and restart Termux)\n" +
+                "• Open 'Details / log' below and share the log — it shows exactly what the app sent"
         } else {
-            "कनेक्ट नहीं हुआ — ब्रिज ने HTTP ${r.status} (${r.code}) जवाब दिया।"
+            "Could not connect — the bridge answered with HTTP ${r.status} (${r.code})."
         }
         applyEvent(WizardEvent.StepFailed(hint))
     }
