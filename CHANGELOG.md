@@ -6,6 +6,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+### Fixed — pairing that could never land: bridge token now re-read per auth (2026-10-17)
+- Root cause (on-device round 1, 2026-10-16): the bridge trusted only
+  the pairing token loaded into memory at startup, so a `trmx pair`
+  written while it ran never took effect until a restart — and a bridge
+  started before pairing (or during an unpaired window, where
+  `ensure_token()` invents a token) rejected the app with 401s forever.
+  Pairing success was hostage to the STOP/START intents actually
+  executing. `Config.fresh_token()` now re-reads `bridge.json` whenever
+  its mtime changes and auth compares against it: re-pairing takes
+  effect on the next request, no restart, no stop/start ordering.
+  Regression test: `test_91_token_reload_without_restart`.
+- App: the 401 self-heal is now re-pair (file write) + re-probe only.
+- App: the pairing token is saved with `commit()`, not `apply()` — a
+  process kill on app-switch could roll back an async flush and the
+  next Begin generated a fresh, divergent token.
+- App: setup probes use 3 s HTTP timeouts (the 10 s OkHttp defaults let
+  one frozen-bridge probe eat the whole wait and made buttons feel
+  dead); the Python-wait skip fires its state change on the tap itself.
+- App: pipeline progress is persisted — leaving mid-setup and returning
+  shows an honest "interrupted" card whose retry resumes the pipeline,
+  instead of the section silently vanishing.
+- Added — setup diagnostics log (`filesDir/setup_log.txt`): every
+  probe (status, latency, token length + 4-char prefix — never the
+  token), op and stage, viewable and shareable from the setup screen
+  under "विवरण / लॉग".
+- Changed — setup screen is plain-Hindi and phone-simple: one
+  "कनेक्ट करो" button, four stages, elapsed seconds while waiting,
+  one-line errors with one repair button, and manual pairing reduced
+  to ONE pasted Termux line (`trmx pair … --force`) + "चेक करो".
+
 ### Fixed — AI Backend editor: Save button occluded by the NavigationBar (2026-09-11)
 - Root cause: `AiConfigEditor` ignored the screen `modifier` — its root
   Column was `fillMaxSize()` WITHOUT the Scaffold innerPadding, so the
