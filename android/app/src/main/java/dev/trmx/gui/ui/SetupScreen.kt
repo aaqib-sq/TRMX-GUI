@@ -1,14 +1,14 @@
 package dev.trmx.gui.ui
 
 /*
- * One-screen setup, kept deliberately phone-simple (2026-10-17 redesign,
- * approved preview): one big "कनेक्ट करो" button, a self-checking
- * checklist, one honest progress line in plain words, and errors as ONE
- * short line + one repair button. Technical detail lives only under
- * "विवरण / लॉग" (the shareable diagnostics log). Rules for this screen:
- * every button visibly responds the moment it is tapped, a disabled
- * button always says why, and manual pairing is a last-resort link that
- * needs ONE pasted line in Termux — never a stop/start recital.
+ * One-screen setup, kept deliberately phone-simple (2026-10-17): one
+ * primary button, a self-checking permission checklist, one honest
+ * progress line, and errors as one short explanation + one repair
+ * button. Technical detail lives only under "Details / log" (the
+ * shareable diagnostics log). Rules for this screen: every button
+ * visibly responds the moment it is tapped, a disabled button always
+ * says why, and manual pairing is a last-resort link — one pasted
+ * command in Termux (pair-link), never a stop/start recital.
  */
 
 import android.content.Intent
@@ -93,19 +93,19 @@ fun SetupScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("TRMX", fontSize = 32.sp, fontWeight = FontWeight.Bold)
-        Text("टर्मक्स ब्रिज से कनेक्शन",
+        Text("Set up the Termux backend",
              style = MaterialTheme.typography.bodyLarge)
 
         if (!checks.termuxInstalled) {
             TrmxCard(modifier = Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("टर्मक्स इंस्टॉल नहीं है", fontWeight = FontWeight.Bold,
+                    Text("Termux is not installed", fontWeight = FontWeight.Bold,
                          color = MaterialTheme.colorScheme.error)
                     Text(
-                        "टर्मक्स GitHub Releases (termux.dev) से इंस्टॉल करो, " +
-                            "एक बार खोलो, फिर यहाँ वापस आओ। सोर्स मिलाना मत — " +
-                            "GitHub और F-Droid वाले बिल्ड कभी साथ मत मिलाओ, " +
-                            "दोनों के सिग्नेचर अलग होते हैं।")
+                        "Install Termux from GitHub Releases (termux.dev), open it " +
+                            "once, then come back here. Do not mix sources: " +
+                            "GitHub and F-Droid builds must never be combined — " +
+                            "same app, different signatures.")
                 }
             }
         }
@@ -119,7 +119,7 @@ fun SetupScreen(
 
         if (state.step == WizardStep.WELCOME) {
             TrmxButton(
-                label = "कनेक्ट करो",
+                label = "Start setup",
                 onClick = onBegin,
                 kind = TrmxButtonKind.Primary,
                 enabled = checks.ready && !state.busy,
@@ -130,7 +130,7 @@ fun SetupScreen(
             if (!checks.ready) {
                 // A disabled button must always say why (2026-10-17 rule).
                 Text(
-                    "पहले ऊपर की बाकी चीज़ें पूरी करो — फिर यह बटन चालू होगा।",
+                    "Finish the checklist items above first — then this button turns on.",
                     style = MaterialTheme.typography.bodySmall,
                     color = P.TextSecondary)
             }
@@ -139,8 +139,9 @@ fun SetupScreen(
                      style = MaterialTheme.typography.bodyMedium)
             }
             Text(
-                "टैप करते ही सब अपने आप होगा — पाइथन, ब्रिज, पेयरिंग। " +
-                    "कोई कमांड नहीं लिखनी, कोई टोकन कॉपी-पेस्ट नहीं करना।",
+                "This installs Python (only if missing), downloads the TRMX " +
+                    "bridge and starts it. Nothing runs as root; everything " +
+                    "stays inside Termux. Your part: under 30 seconds.",
                 style = MaterialTheme.typography.bodySmall,
                 color = P.TextSecondary)
             // Manual pairing is reachable WITHOUT a pipeline run or a
@@ -148,8 +149,8 @@ fun SetupScreen(
             // the escape hatch must never be hostage to a slow wait).
             if (existingToken.isNotEmpty()) {
                 TextButton(onClick = { showManualWelcome = !showManualWelcome }) {
-                    Text(if (showManualWelcome) "मैन्युअल पेयरिंग छिपाओ"
-                         else "मैन्युअल पेयरिंग (सिर्फ़ ज़रूरत पड़ने पर)")
+                    Text(if (showManualWelcome) "Hide manual pairing"
+                         else "Pair manually instead (last resort)")
                 }
                 if (showManualWelcome) {
                     ManualPairing(token = existingToken,
@@ -184,43 +185,43 @@ private fun ChecklistCard(
     val clipboard = LocalClipboardManager.current
     TrmxCard(modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(Sp.m)) {
-            Text("पहले ये तीन चीज़ें", fontWeight = FontWeight.Bold,
+            Text("Before we start", fontWeight = FontWeight.Bold,
                  style = MaterialTheme.typography.titleMedium)
-            Text("सिर्फ़ ये दो-तीन चीज़ें मैं खुद नहीं कर सकता — बाकी सब अपने आप होगा।",
+            Text("Two things only I can't do myself — everything else is automatic.",
                  style = MaterialTheme.typography.bodySmall,
                  color = P.TextSecondary)
 
             CheckRow(
-                title = "टर्मक्स इंस्टॉल है",
+                title = "Termux is installed",
                 done = checks.termuxInstalled,
                 waiting = false,
-                hint = if (!checks.termuxInstalled) "ऊपर देखो — इंस्टॉल करके वापस आओ।"
+                hint = if (!checks.termuxInstalled) "See above — install it, then come back."
                        else null,
             )
 
             CheckRow(
-                title = "रन कमांड परमिशन",
+                title = "Run Command permission",
                 done = checks.runCommandGranted,
                 waiting = checks.resolving == "runcommand" && !checks.runCommandGranted,
-                hint = "App info → Permissions → Additional permissions में जाकर " +
-                    "TRMX के लिए \"Termux:Run Command\" चालू करो।",
-                actionLabel = if (checks.runCommandGranted) null else "सेटिंग्स खोलो",
+                hint = "App info → Permissions → Additional permissions → " +
+                    "allow \"Termux:Run Command\" for TRMX.",
+                actionLabel = if (checks.runCommandGranted) null else "Open settings",
                 onAction = onOpenRunCommandSettings,
             )
 
             CheckRow(
-                title = "टर्मक्स सेटिंग (allow-external-apps)",
+                title = "allow-external-apps in Termux",
                 done = checks.allowExternalConfirmed,
                 waiting = checks.resolving == "allowexternal" && !checks.allowExternalConfirmed,
-                hint = "टर्मक्स में ~/.termux/termux.properties फ़ाइल में यह लाइन जोड़ो, " +
-                    "फिर termux-reload-settings चलाओ।",
-                actionLabel = if (checks.allowExternalConfirmed) null else "टर्मक्स खोलो",
+                hint = "In Termux, add this line to ~/.termux/termux.properties, " +
+                    "then run termux-reload-settings.",
+                actionLabel = if (checks.allowExternalConfirmed) null else "Open Termux",
                 onAction = onOpenTermuxApp,
                 extra = {
                     if (!checks.allowExternalConfirmed) {
                         Row(horizontalArrangement = Arrangement.spacedBy(Sp.s)) {
                             TrmxButton(
-                                label = "लाइन कॉपी करो",
+                                label = "Copy the line",
                                 onClick = {
                                     clipboard.setText(
                                         AnnotatedString("allow-external-apps=true"))
@@ -228,7 +229,7 @@ private fun ChecklistCard(
                                 kind = TrmxButtonKind.Secondary,
                             )
                             TrmxButton(
-                                label = "हो गया — कर दिया",
+                                label = "I've enabled it",
                                 onClick = onConfirmAllowExternal,
                                 kind = TrmxButtonKind.Secondary,
                             )
@@ -262,10 +263,10 @@ private fun CheckRow(
             Text(title, fontWeight = FontWeight.SemiBold,
                  modifier = Modifier.weight(1f))
             if (done) {
-                Text("हो गया", style = MaterialTheme.typography.labelSmall,
+                Text("done", style = MaterialTheme.typography.labelSmall,
                      color = P.TextSecondary)
             } else if (waiting) {
-                Text("तुम्हारा इंतज़ार है", style = MaterialTheme.typography.labelSmall,
+                Text("waiting for you", style = MaterialTheme.typography.labelSmall,
                      color = P.TextSecondary)
             }
         }
@@ -286,14 +287,14 @@ private fun CheckRow(
 
 // ---- pipeline ---------------------------------------------------------------
 
-/** Four honest stages (STOP+PAIR+START fold into "पेयरिंग"). */
+/** Four honest stages (STOP+PAIR+START fold into "Pairing"). */
 private fun stageOf(step: WizardStep): Pair<Int, String> = when (step) {
-    WizardStep.INSTALL_PY -> 1 to "तैयारी — पाइथन चेक हो रहा है"
-    WizardStep.INSTALL -> 2 to "ब्रिज डाउनलोड हो रहा है"
-    WizardStep.PAIR -> 3 to "पेयरिंग हो रही है"
-    WizardStep.START -> 3 to "पेयरिंग हो रही है"
-    WizardStep.HANDSHAKE -> 4 to "कनेक्शन चेक हो रहा है"
-    else -> 4 to "आखिरी चेक हो रहा है"
+    WizardStep.INSTALL_PY -> 1 to "Installing Python"
+    WizardStep.INSTALL -> 2 to "Downloading the bridge"
+    WizardStep.PAIR -> 3 to "Pairing"
+    WizardStep.START -> 3 to "Pairing"
+    WizardStep.HANDSHAKE -> 4 to "Waiting for the bridge"
+    else -> 4 to "Finishing"
 }
 
 @Composable
@@ -321,7 +322,7 @@ private fun PipelineBody(
         }
     }
 
-    Text("स्टेप $index / 4 — $name", fontWeight = FontWeight.Bold)
+    Text("Step $index of 4 — $name", fontWeight = FontWeight.Bold)
     LinearProgressIndicator(
         progress = { completed / 4f },
         modifier = Modifier.fillMaxWidth(),
@@ -330,10 +331,10 @@ private fun PipelineBody(
     )
 
     if (state.busy) {
-        Text(state.detail.ifEmpty { "काम चल रहा है…" },
+        Text(state.detail.ifEmpty { "working…" },
              style = MaterialTheme.typography.bodyMedium,
              color = P.TextSecondary)
-        Text("$elapsedSec सेकंड हुए — अटके तो यहीं साफ़ लिखा आएगा, घुमाव नहीं।",
+        Text("${elapsedSec}s so far — if it gets stuck, the reason will appear right here.",
              style = MaterialTheme.typography.bodySmall,
              color = P.TextMuted)
     } else if (state.detail.isNotEmpty()) {
@@ -346,7 +347,7 @@ private fun PipelineBody(
         // stage text changes at once (round 1: this was a TextButton
         // whose tap changed nothing on screen — it looked dead).
         TrmxButton(
-            label = "पाइथन पहले से है — आगे बढ़ो",
+            label = "Python is already installed — continue",
             onClick = onSkipPythonWait,
             kind = TrmxButtonKind.Secondary,
             modifier = Modifier.fillMaxWidth(),
@@ -357,8 +358,8 @@ private fun PipelineBody(
     // stage must never hold it hostage (device round 1, 2026-10-16).
     if (state.busy && state.token.isNotEmpty()) {
         TextButton(onClick = { showManual = !showManual }) {
-            Text(if (showManual) "मैन्युअल पेयरिंग छिपाओ"
-                 else "मैन्युअल पेयरिंग (सिर्फ़ ज़रूरत पड़ने पर)")
+            Text(if (showManual) "Hide manual pairing"
+                 else "Pair manually instead (last resort)")
         }
         if (showManual) {
             ManualPairing(token = state.token, onRetry = onVerifyManualPairing)
@@ -368,19 +369,19 @@ private fun PipelineBody(
     state.failure?.let { fail ->
         TrmxCard(modifier = Modifier.fillMaxWidth()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("कनेक्ट नहीं हुआ", fontWeight = FontWeight.Bold,
+                Text("Setup problem", fontWeight = FontWeight.Bold,
                      color = MaterialTheme.colorScheme.error)
                 Text(fail, style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TrmxButton(label = "फिर से कोशिश करो", onClick = onRetry,
+                    TrmxButton(label = "Retry this step", onClick = onRetry,
                                kind = TrmxButtonKind.Primary)
                     Spacer(Modifier.width(4.dp))
-                    TrmxButton(label = "नए सिरे से शुरू करो", onClick = onReset,
+                    TrmxButton(label = "Start over", onClick = onReset,
                                kind = TrmxButtonKind.Secondary)
                 }
                 TextButton(onClick = { showManual = !showManual }) {
-                    Text(if (showManual) "मैन्युअल पेयरिंग छिपाओ"
-                         else "मैन्युअल पेयरिंग (सिर्फ़ ज़रूरत पड़ने पर)")
+                    Text(if (showManual) "Hide manual pairing"
+                         else "Pair manually instead (last resort)")
                 }
                 if (showManual && state.token.isNotEmpty()) {
                     ManualPairing(token = state.token,
@@ -394,23 +395,41 @@ private fun PipelineBody(
     }
 }
 
-// ---- manual pairing (last resort, ONE line) ---------------------------------
+// ---- manual pairing (last resort) -------------------------------------------
 
 @Composable
 private fun ManualPairing(token: String, onRetry: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // The easiest path first: ONE command in Termux opens this app
+        // with the bridge's own token (pair-link) and the app pairs
+        // itself — no token handling on this screen at all.
         Text(
-            "सिर्फ़ तब, जब टर्मक्स हमारे कमांड न चला रहा हो। " +
-                "टर्मक्स में बस ये एक लाइन पेस्ट करके चलाओ:",
+            "Fastest way — one command in Termux. It opens TRMX with the " +
+                "bridge's token, and the app pairs itself:",
             style = MaterialTheme.typography.bodySmall,
             color = P.TextSecondary)
         Text(
-            "  ~/.trmx/trmx pair <टोकन> --force",
+            "  ~/.trmx/trmx pair-link",
             fontFamily = FontFamily.Monospace,
             style = MaterialTheme.typography.bodySmall)
         TrmxButton(
-            label = "पूरी लाइन कॉपी करो (टोकन के साथ)",
+            label = "Copy the connect command",
+            onClick = {
+                clipboard.setText(AnnotatedString("~/.trmx/trmx pair-link"))
+            },
+            kind = TrmxButtonKind.Secondary,
+        )
+        Text(
+            "If the app does not open by itself, use this one line in Termux instead:",
+            style = MaterialTheme.typography.bodySmall,
+            color = P.TextSecondary)
+        Text(
+            "  ~/.trmx/trmx pair <paste-token> --force",
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall)
+        TrmxButton(
+            label = "Copy the whole line (with token)",
             onClick = {
                 clipboard.setText(
                     AnnotatedString("~/.trmx/trmx pair $token --force"))
@@ -418,17 +437,17 @@ private fun ManualPairing(token: String, onRetry: () -> Unit) {
             kind = TrmxButtonKind.Secondary,
         )
         TrmxButton(
-            label = "सिर्फ़ टोकन कॉपी करो",
+            label = "Copy token only",
             onClick = { clipboard.setText(AnnotatedString(token)) },
             kind = TrmxButtonKind.Secondary,
         )
         Text(
-            "ब्रिज चल रहा हो तो भी यही काफी है — स्टॉप/स्टार्ट की ज़रूरत नहीं, " +
-                "नया टोकन अगले ही चेक में मान लिया जाएगा।",
+            "No stop/start needed — a running bridge accepts the new " +
+                "token on the very next check.",
             style = MaterialTheme.typography.bodySmall,
             color = P.TextSecondary)
         TrmxButton(
-            label = "चेक करो",
+            label = "Check",
             onClick = onRetry,
             kind = TrmxButtonKind.Primary,
         )
@@ -444,7 +463,7 @@ private fun LogSection(setupLog: String) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = { showLog = !showLog }) {
-                Text(if (showLog) "विवरण / लॉग छिपाओ" else "विवरण / लॉग")
+                Text(if (showLog) "Hide details / log" else "Details / log")
             }
             TextButton(onClick = {
                 runCatching {
@@ -452,10 +471,10 @@ private fun LogSection(setupLog: String) {
                         .setType("text/plain")
                         .putExtra(Intent.EXTRA_TEXT, setupLog)
                     context.startActivity(
-                        Intent.createChooser(send, "लॉग भेजो"))
+                        Intent.createChooser(send, "Share log"))
                 }
             }) {
-                Text("लॉग भेजो")
+                Text("Share log")
             }
         }
         if (showLog) {

@@ -43,6 +43,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Pair-link: `trmx pair-link` in Termux opens
+                 trmx://pair?token=… here; MainActivity hands the token
+                 to SetupViewModel.adoptFromLink. The scheme is ours
+                 alone, so no other app competes for it; the token is
+                 verified against the bridge before setup completes. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="trmx" android:host="pair" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

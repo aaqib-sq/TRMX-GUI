@@ -72,6 +72,7 @@ import dev.trmx.gui.ui.TrmxIconButton
 import dev.trmx.gui.ui.TrmxNavItemColors
 import dev.trmx.gui.ui.TrmxTopBar
 import dev.trmx.gui.ui.TRMXTheme
+import dev.trmx.gui.wizard.PairLink
 import dev.trmx.gui.wizard.SetupViewModel
 import dev.trmx.gui.wizard.WizardStep
 import java.io.File
@@ -87,11 +88,17 @@ private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 /** Recipe shortcut id waiting for the wizard-safe moment (set by the activity). */
 private var pendingRecipeId: String? = null
 
+/** Pair-link token waiting for AppRoot (set by the activity). Snapshot
+ *  state, NOT a plain var: a warm onNewIntent must recompose AppRoot so
+ *  the token is consumed even while the app is already open. */
+private var pendingPairToken by mutableStateOf<String?>(null)
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleRecipeIntent(intent)
+        handlePairIntent(intent)
         setContent {
             TRMXTheme {
                 CrashGate { AppRoot() }
@@ -103,11 +110,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         handleRecipeIntent(intent)
+        handlePairIntent(intent)
     }
 
     private fun handleRecipeIntent(intent: Intent?) {
         val id = intent?.getStringExtra("recipe_id") ?: return
         pendingRecipeId = id
+    }
+
+    /** Pair-link (trmx://pair?token=… from `trmx pair-link` in Termux):
+     *  the bridge's token, adopted by SetupViewModel in AppRoot. */
+    private fun handlePairIntent(intent: Intent?) {
+        val token = PairLink.tokenFrom(intent?.dataString) ?: return
+        pendingPairToken = token
     }
 }
 
@@ -147,6 +162,16 @@ fun AppRoot(
             screen = Screen.TOOLS
             vm.loadTools()
             vm.openRecipe(id)
+        }
+    }
+
+    // Pair-link token (set by MainActivity from a trmx://pair intent,
+    // cold start or warm onNewIntent — the snapshot state re-triggers
+    // this effect either way). The viewmodel verifies the connection.
+    LaunchedEffect(pendingPairToken) {
+        pendingPairToken?.let { token ->
+            pendingPairToken = null
+            setupVm.adoptFromLink(token)
         }
     }
 

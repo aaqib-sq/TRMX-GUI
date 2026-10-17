@@ -563,6 +563,40 @@ class TestBridge(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_92_pair_link_print(self):
+        """`trmx pair-link --print` emits the app link with the bridge's
+        token (2026-10-17); with no token paired it must refuse loudly.
+        (The `am` open itself is Android-only and not exercised here —
+        the command degrades to printing when `am` is missing.)"""
+        tmp = tempfile.mkdtemp(prefix="trmx-pairlink-")
+        home = os.path.join(tmp, "home")
+        env = dict(os.environ, TRMX_HOME=home)
+        cli = str(HERE.parent / "trmx")
+        token = "pairlink-test-token-0123456789abcdef"
+        try:
+            r = subprocess.run([sys.executable, cli, "init"], env=env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run([sys.executable, cli, "pair-link", "--print"],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(r.returncode, 0,
+                                "pair-link without a token must fail")
+            r = subprocess.run([sys.executable, cli, "pair", token], env=env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run([sys.executable, cli, "pair-link", "--print"],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), f"trmx://pair?token={token}")
+            # Without --print on a host with no `am`, it must degrade to
+            # printing the token (exit 0), never crash.
+            r = subprocess.run([sys.executable, cli, "pair-link"],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(token, r.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_91_token_reload_without_restart(self):
         """Re-pairing must take effect on a RUNNING bridge (2026-10-17).
 
