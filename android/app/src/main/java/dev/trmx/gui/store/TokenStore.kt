@@ -41,7 +41,14 @@ class TokenStore(context: Context) {
         get() = runCatching { securePrefs.getString(KEY_TOKEN, "") ?: "" }
             .getOrElse { "" }
         set(value) {
-            runCatching { securePrefs.edit().putString(KEY_TOKEN, value).apply() }
+            // commit(), NOT apply() (2026-10-17): apply() flushes to disk
+            // asynchronously, and Samsung kills this app's process on
+            // app-switch — a token written moments before the kill could
+            // roll back, the next Begin then generated a FRESH token, and
+            // the bridge/app pair silently diverged (round-1 ingredient).
+            // The token is the one value that must be durable the moment
+            // it is set; it is written rarely, so the sync cost is right.
+            runCatching { securePrefs.edit().putString(KEY_TOKEN, value).commit() }
         }
 
     var installBase: String
@@ -72,7 +79,7 @@ class TokenStore(context: Context) {
             if (securePrefs.contains(KEY_TOKEN)) return
             val legacyToken = legacyPrefs.getString(KEY_TOKEN, "") ?: ""
             if (legacyToken.isNotEmpty()) {
-                securePrefs.edit().putString(KEY_TOKEN, legacyToken).apply()
+                securePrefs.edit().putString(KEY_TOKEN, legacyToken).commit()
                 legacyPrefs.edit().remove(KEY_TOKEN).apply()
             }
         }

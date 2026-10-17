@@ -19,9 +19,27 @@ package dev.trmx.gui.wizard
  * doctor report through them. Until the bridge speaks it, the pipeline
  * does a data-plane preflight (bridge already up → skip everything) and
  * the python wait auto-advances with a manual skip as an accelerator.
+ *
+ * 2026-10-17 (easy-pairing update, after on-device round 1):
+ *  - The bridge re-reads its pairing token from bridge.json on every
+ *    auth (Config.fresh_token), so the 401 self-heal is now just
+ *    re-pair (a file write) + re-probe — no STOP/START, no dependence
+ *    on two more intents landing.
+ *  - Every probe / op / stage is written to a diagnostics log
+ *    (filesDir/setup_log.txt, see SetupLog) that the setup screen can
+ *    show and share — device evidence instead of theories.
+ *  - Probe HTTP timeouts are 3 s (the OkHttp default 10 s let a single
+ *    frozen-bridge probe eat the whole wait and made buttons feel dead).
+ *  - The skip tap now fires WizardEvent.SkipWait immediately, so the
+ *    screen responds the moment it is tapped.
+ *  - Pipeline progress is persisted; if the process dies mid-setup
+ *    (Samsung kills the app on switch — round 1), returning shows an
+ *    honest "setup was interrupted" card whose retry resumes the
+ *    pipeline instead of the section silently vanishing.
  */
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -33,6 +51,7 @@ import dev.trmx.gui.model.SystemInfo
 import dev.trmx.gui.net.BridgeClient
 import dev.trmx.gui.net.BridgeResult
 import dev.trmx.gui.net.Handshaker
+import dev.trmx.gui.net.SetupLog
 import dev.trmx.gui.store.TokenStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -43,6 +62,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
+import java.io.File
+import java.util.concurrent.TimeUnit
 
 /** The self-checking permission checklist. */
 data class SetupChecks(
@@ -71,7 +92,29 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private val store = TokenStore(app)
     private val controlPlane = IntentControlPlane(app)
     private val wizardEngine = WizardEngine()
-    private val http = OkHttpClient()
+
+    // Setup probes get SHORT timeouts: loopback either answers in
+    // milliseconds or refuses instantly. The default OkHttp 10 s timeouts
+    // let one probe against a frozen bridge process burn the whole wait
+    // (round 1: the handshake stretched past 10 minutes and every button
+    // felt dead while a probe was in flight).
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .writeTimeout(3, TimeUnit.SECONDS)
+        .callTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    // Diagnostics (2026-10-17): every probe/op/stage lands in this log;
+    // the setup screen shows it under "विवरण / लॉग" and can share it.
+    private val setupLog = SetupLog(File(app.filesDir, "setup_log.txt"))
+    private val _setupLogText = MutableStateFlow("")
+    val setupLogText = _setupLogText.asStateFlow()
+
+    private fun slog(event: String) {
+        setupLog.log(event)
+        _setupLogText.value = setupLog.read()
+    }
 
     /** Pipeline stages; the setup screen shows while this is not DONE. */
     private val _wizard = MutableStateFlow(WizardState())
@@ -86,11 +129,51 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private var sequenceJob: Job? = null
     private val skipSignal = Channel<Unit>(Channel.CONFLATED)
 
+    // Mid-pipeline progress is persisted so a killed process does not
+    // evaporate the setup (round 1: leaving via Recents made the whole
+    // pipeline section vanish). Only the STEP is stored — the token
+    // lives in TokenStore, details are re-derived on resume.
+    private val progressPrefs =
+        app.getSharedPreferences("trmx_setup_progress", Context.MODE_PRIVATE)
+
     private fun client() = BridgeClient(store.bridgeBaseUrl, store.token, http)
 
     init {
+        _setupLogText.value = setupLog.read()
         recheck()
-        if (store.isPaired) warmReconnect()
+        val restored = restoreProgress()
+        if (!restored && store.isPaired) warmReconnect()
+        viewModelScope.launch { _wizard.collect { persistProgress(it) } }
+    }
+
+    private fun persistProgress(s: WizardState) {
+        if (s.step != WizardStep.WELCOME && s.step != WizardStep.DONE) {
+            progressPrefs.edit().putString("step", s.step.name).apply()
+        } else {
+            progressPrefs.edit().remove("step").apply()
+        }
+    }
+
+    /** Returns true when an interrupted pipeline was restored (the
+     *  caller then skips the warm reconnect — the retry button on the
+     *  restored card resumes the pipeline from the persisted step). */
+    private fun restoreProgress(): Boolean {
+        val name = progressPrefs.getString("step", null) ?: return false
+        val step = runCatching { WizardStep.valueOf(name) }.getOrNull() ?: return false
+        if (step == WizardStep.WELCOME || step == WizardStep.DONE) return false
+        if (!store.isPaired) return false
+        _wizard.value = WizardState(
+            step = step,
+            baseUrl = store.installBase,
+            token = store.token,
+            consentTermux = true,
+            consentRunCommand = true,
+            consentAllowExternal = true,
+            busy = false,
+            failure = "सेटअप बीच में रुक गया था — ऐप बंद हो गया था।\n" +
+                "नीचे 'फिर से कोशिश करो' दबाओ — सेटअप वहीं से जारी होगा।")
+        slog("RESTORE interrupted setup at step $step")
+        return true
     }
 
     // ---- checklist ------------------------------------------------------
@@ -152,15 +235,21 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             else store.generateToken().also { store.token = it }))
         if (!_wizard.value.allConsentsGiven) return   // failure is on the state
         store.installBase = _wizard.value.baseUrl
+        slog("=== BEGIN setup (${SetupLog.describeToken(store.token)}) ===")
         sequenceJob?.cancel()
         skipSignal.tryReceive()
         sequenceJob = viewModelScope.launch { runPipeline() }
     }
 
     /** Accelerator for the python wait — the pipeline advances on its own
-     *  when the wait expires; nobody has to tap this. */
+     *  when the wait expires; nobody has to tap this. The SkipWait event
+     *  fires FIRST so the screen changes the moment it is tapped (round 1:
+     *  the tap used to change nothing on screen until an in-flight probe
+     *  returned — the button looked dead). */
     fun skipPythonWait() {
+        applyEvent(WizardEvent.SkipWait)
         skipSignal.trySend(Unit)
+        slog("SKIP python wait (user tap)")
     }
 
     /** The persisted pairing token ("" when never paired). Exposed so the
@@ -175,8 +264,11 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      * doing and check the data plane once with the persisted token.
      * Success finishes setup; a 401 explains itself; silence gets a
      * short, honest retry hint (the bridge may still be starting).
+     * Since 2026-10-17 the manual path needs NO stop/start around the
+     * pair — a running bridge re-reads the token file on the next auth.
      */
     fun verifyManualPairing() {
+        slog("=== MANUAL verify (${SetupLog.describeToken(store.token)}) ===")
         sequenceJob?.cancel()
         sequenceJob = viewModelScope.launch {
             when (val r = probe()) {
@@ -185,14 +277,15 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 is BridgeResult.HttpError -> failHandshake(r)
                 is BridgeResult.NetworkError ->
                     applyEvent(WizardEvent.StepFailed(
-                        "The bridge did not answer yet — after 'trmx start' " +
-                            "give it a few seconds, then tap again.\n" +
-                            "Last network error: ${r.cause.message}"))
+                        "ब्रिज ने अभी जवाब नहीं दिया — 'trmx pair' चलाने के बाद " +
+                            "कुछ सेकंड रुककर फिर 'चेक करो' दबाओ।\n" +
+                            "आखिरी एरर: ${r.cause.message}"))
             }
         }
     }
 
     fun retrySetup() {
+        slog("=== RETRY from ${_wizard.value.step} ===")
         applyEvent(WizardEvent.Retry)
         sequenceJob?.cancel()
         skipSignal.tryReceive()
@@ -220,9 +313,10 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      * INSTALL_PY → INSTALL → STOP → PAIR → START → HANDSHAKE. Each op's
      * acceptance is observed on the data plane, never assumed from intent
      * delivery (CONTROL-PLANE.md §1). STOP is silent inside the pairing
-     * stage — the screen counts five honest stages.
+     * stage — the screen folds the pipeline into four honest stages.
      */
     private suspend fun runPipeline(fromStep: WizardStep = WizardStep.INSTALL_PY) {
+        slog("PIPELINE from $fromStep")
         var step = fromStep
         if (step == WizardStep.WELCOME) step = WizardStep.INSTALL_PY
         if (step == WizardStep.INSTALL_PY) {
@@ -288,6 +382,10 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun awaitInstallPy(): Boolean {
         val deadline = System.currentTimeMillis() + INSTALL_PY_WAIT_MS
         while (System.currentTimeMillis() < deadline) {
+            // The skip is checked BEFORE each probe, so a tap is honored
+            // within one short-timeout probe at the worst — and the
+            // screen itself already changed on the tap (SkipWait event).
+            if (skipSignal.tryReceive().isSuccess) return false
             when (probe()) {
                 is BridgeResult.Success -> return true
                 is BridgeResult.HttpError -> return false
@@ -316,8 +414,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     /** Warm start (was AppViewModel.warmStart): probe, START if down, probe
      *  again. Runs automatically when a pairing token is already saved. */
     private fun warmReconnect() {
+        slog("=== WARM reconnect (${SetupLog.describeToken(store.token)}) ===")
         sequenceJob = viewModelScope.launch {
-            applyEvent(WizardEvent.StepStarted("reconnecting to the bridge…"))
+            applyEvent(WizardEvent.StepStarted("ब्रिज से दोबारा कनेक्ट हो रहा है…"))
             when (probe()) {
                 is BridgeResult.Success ->
                     applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
@@ -386,19 +485,25 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun awaitHandshakeOrFail(allowRecovery: Boolean = true) {
         when (val r = handshaker().awaitHandshake()) {
-            is BridgeResult.Success ->
+            is BridgeResult.Success -> {
+                slog("HANDSHAKE ok — setup DONE")
                 applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
+            }
             is BridgeResult.HttpError -> {
                 // 401 with a reachable bridge: our token is not the bridge's
-                // token. Self-heal once: re-pair, restart, retry.
+                // token. Self-heal once: re-pair, then re-check.
+                // Since 2026-10-17 the bridge re-reads the token from
+                // bridge.json on every auth, so re-pairing is only a file
+                // write — a live bridge accepts it on the next probe. The
+                // heal deliberately does NOT stop/start the bridge: that
+                // dependency on two more intents landing is what made the
+                // old heal fail all night in round 1.
                 if (r.status == 401 && allowRecovery) {
+                    slog("HEAL 401 — re-pair (file write), then re-probe")
                     applyEvent(WizardEvent.StepStarted(
-                        "token rejected — re-pairing and restarting the bridge…"))
+                        "टोकन मेल नहीं खाया — दोबारा पेयर करके चेक कर रहे हैं…"))
                     if (!sendOp(ControlOps.spec("PAIR")!!, token = store.token)) return
-                    delay(2_000L)
-                    if (!sendOp(ControlOps.spec("STOP")!!)) return
-                    delay(2_000L)
-                    if (!sendOp(ControlOps.spec("START")!!)) return
+                    delay(600L)
                     awaitHandshakeOrFail(allowRecovery = false)
                 } else {
                     failHandshake(r)
@@ -407,24 +512,25 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             is BridgeResult.NetworkError ->
                 applyEvent(
                     WizardEvent.StepFailed(
-                        "The bridge did not answer. Most likely causes:\n" +
-                            "• allow-external-apps is not set in ~/.termux/termux.properties\n" +
-                            "• the install failed — open Termux and run ~/.trmx/trmx status\n" +
-                            "• Termux was killed by Android (phantom process limits)\n" +
-                            "Last network error: ${r.cause.message}"))
+                        "कनेक्ट नहीं हुआ — ब्रिज ने जवाब ही नहीं दिया।\n" +
+                            "आम वजहें:\n" +
+                            "• allow-external-apps सेट नहीं है (~/.termux/termux.properties में)\n" +
+                            "• इंस्टॉल अधूरा रह गया — Termux में ~/.trmx/trmx status चलाकर देखो\n" +
+                            "• Android ने Termux को बंद कर दिया (phantom process limit)\n" +
+                            "आखिरी एरर: ${r.cause.message}"))
         }
     }
 
     private fun failHandshake(r: BridgeResult.HttpError) {
         val hint = if (r.status == 401) {
-            "The bridge rejected our token (HTTP 401) — pairing did not take effect.\n" +
-                "Checklist:\n" +
-                "• TRMX holds the Termux:Run Command permission (App info → Permissions)\n" +
-                "• ~/.termux/termux.properties contains allow-external-apps=true\n" +
-                "  (then run termux-reload-settings and restart Termux)\n" +
-                "• no other bridge instance is running with an old token"
+            "कनेक्ट नहीं हुआ — ब्रिज ने टोकन मना कर दिया (HTTP 401)।\n" +
+                "चेक करो:\n" +
+                "• TRMX को Termux:Run Command परमिशन मिली है (App info → Permissions)\n" +
+                "• ~/.termux/termux.properties में allow-external-apps=true है " +
+                "(फिर termux-reload-settings चलाकर Termux रीस्टार्ट करो)\n" +
+                "• नीचे 'विवरण / लॉग' खोलकर लॉग भेजो — उसमें साफ़ दिखेगा ऐप ने क्या भेजा था"
         } else {
-            "The bridge answered with HTTP ${r.status} (${r.code})."
+            "कनेक्ट नहीं हुआ — ब्रिज ने HTTP ${r.status} (${r.code}) जवाब दिया।"
         }
         applyEvent(WizardEvent.StepFailed(hint))
     }
@@ -454,7 +560,10 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 null
             })
         return res.fold(
-            onSuccess = { true },
+            onSuccess = {
+                slog("OP ${spec.id} -> sent")
+                true
+            },
             onFailure = { e ->
                 val reason = if (e is ControlPlaneException) {
                     when (e.error) {
@@ -467,12 +576,32 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     "Could not send ${spec.id}: ${e.message}"
                 }
+                slog("OP ${spec.id} -> FAILED: $reason")
                 onFailure(reason)
                 false
             })
     }
 
-    private suspend fun probe(): BridgeResult<SystemInfo> = client().systemInfo()
+    /** One data-plane probe, timed and written to the diagnostics log —
+     *  this is the evidence line a shared log is judged by: what was
+     *  asked, what came back, how long it took, and WHICH token family
+     *  was sent (length + prefix only, never the token itself). */
+    private suspend fun probe(): BridgeResult<SystemInfo> {
+        val started = System.currentTimeMillis()
+        val r = client().systemInfo()
+        val ms = System.currentTimeMillis() - started
+        val tok = SetupLog.describeToken(store.token)
+        when (r) {
+            is BridgeResult.Success ->
+                slog("PROBE /v1/system/info -> 200 (${ms}ms) $tok")
+            is BridgeResult.HttpError ->
+                slog("PROBE /v1/system/info -> HTTP ${r.status} ${r.code} (${ms}ms) $tok")
+            is BridgeResult.NetworkError ->
+                slog("PROBE /v1/system/info -> NETWORK " +
+                    "${r.cause.javaClass.simpleName}: ${r.cause.message} (${ms}ms) $tok")
+        }
+        return r
+    }
 
     private fun handshaker() =
         Handshaker(probe = { probe() }, pollIntervalMs = 500, maxAttempts = 60)

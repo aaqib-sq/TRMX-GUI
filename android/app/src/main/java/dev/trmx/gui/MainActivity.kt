@@ -118,6 +118,7 @@ fun AppRoot(
     agentVm: AgentViewModel = viewModel(),
 ) {
     val setup by setupVm.wizard.collectAsStateWithLifecycle()
+    val setupLogText by setupVm.setupLogText.collectAsStateWithLifecycle()
     val checks by setupVm.checks.collectAsStateWithLifecycle()
     val repair by setupVm.repair.collectAsStateWithLifecycle()
     val agentState by agentVm.state.collectAsStateWithLifecycle()
@@ -163,6 +164,7 @@ fun AppRoot(
             onReset = setupVm::resetSetup,
             existingToken = setupVm.manualToken,
             onVerifyManualPairing = setupVm::verifyManualPairing,
+            setupLog = setupLogText,
         )
 
         else -> {

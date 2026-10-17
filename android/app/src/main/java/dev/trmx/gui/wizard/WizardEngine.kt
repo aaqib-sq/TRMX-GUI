@@ -76,7 +76,7 @@ class WizardEngine {
                     token = event.token,
                     busy = true,
                     skippable = true,
-                    detail = "asking Termux to install Python…")
+                    detail = "तैयारी हो रही है — पाइथन का इंतज़ाम हो रहा है…")
             }
         }
 
@@ -86,12 +86,12 @@ class WizardEngine {
             val next = event.next
             val detail = when (next) {
                 WizardStep.WELCOME -> ""
-                WizardStep.INSTALL_PY -> "asking Termux to install Python…"
-                WizardStep.INSTALL -> "downloading + verifying the bridge…"
-                WizardStep.PAIR -> "pairing with the bridge…"
-                WizardStep.START -> "starting the bridge…"
-                WizardStep.HANDSHAKE -> "waiting for the bridge to answer…"
-                WizardStep.DONE -> "connected"
+                WizardStep.INSTALL_PY -> "तैयारी हो रही है — पाइथन का इंतज़ाम हो रहा है…"
+                WizardStep.INSTALL -> "ब्रिज डाउनलोड हो रहा है…"
+                WizardStep.PAIR -> "पेयरिंग हो रही है…"
+                WizardStep.START -> "ब्रिज स्टार्ट हो रहा है…"
+                WizardStep.HANDSHAKE -> "ब्रिज के जवाब का इंतज़ार है…"
+                WizardStep.DONE -> "कनेक्ट हो गया"
             }
             state.copy(step = next, busy = next != WizardStep.DONE,
                        skippable = false,   // only the initial INSTALL_PY wait is skippable
@@ -100,10 +100,11 @@ class WizardEngine {
         is WizardEvent.StepFailed ->
             state.copy(busy = false, skippable = false, failure = event.reason)
         WizardEvent.SkipWait ->
-            state.copy(busy = false, skippable = false, detail = "skipped (already installed)")
+            state.copy(busy = false, skippable = false,
+                       detail = "पाइथन वाला स्टेप छोड़ा — आगे बढ़ रहे हैं…")
         WizardEvent.Retry ->
             state.copy(busy = true, skippable = false, failure = null,
-                       detail = "retrying ${state.step}…")
+                       detail = "फिर से कोशिश हो रही है…")
         WizardEvent.Reset ->
             WizardState(baseUrl = state.baseUrl)
     }
