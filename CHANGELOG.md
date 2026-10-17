@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+### Changed — setup flow back to English + pair-link one-command connect (2026-10-17)
+- The setup flow's user-facing strings are English again (the Hindi
+  setup screen of the easy-pairing update was reverted on the owner's
+  call; layout, behaviour and fixes are unchanged).
+- Added — **pair-link**, the easiest connect path: `trmx pair-link` in
+  Termux opens TRMX with the bridge's own token (`trmx://pair?token=…`,
+  explicit-component intent via `am`); the app adopts it and verifies
+  the connection with a probe. No token typing, no app-side intent, no
+  file write. If `am` is blocked it prints the token/link for the
+  copy-paste path. The setup screen's manual section leads with it
+  ("Copy the connect command").
+
 ### Fixed — pairing that could never land: bridge token now re-read per auth (2026-10-17)
 - Root cause (on-device round 1, 2026-10-16): the bridge trusted only
   the pairing token loaded into memory at startup, so a `trmx pair`
