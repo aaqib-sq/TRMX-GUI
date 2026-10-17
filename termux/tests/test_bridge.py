@@ -563,6 +563,71 @@ class TestBridge(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_91_token_reload_without_restart(self):
+        """Re-pairing must take effect on a RUNNING bridge (2026-10-17).
+
+        Regression test for the on-device round-1 failure: the bridge
+        used to trust only the token loaded at startup, so a pair
+        written to bridge.json while it ran was ignored until a restart
+        — and a bridge started during an unpaired window (ensure_token
+        invents a token) rejected the app forever. Auth now re-reads
+        the config file when it changes, so: pair A → start → pair B
+        --force (bridge still running) → B answers 200, A answers 401,
+        with NO stop/start in between.
+        """
+        tmp = tempfile.mkdtemp(prefix="trmx-reload-")
+        home = os.path.join(tmp, "home")
+        env = dict(os.environ, TRMX_HOME=home)
+        cli = str(HERE.parent / "trmx")
+        port = free_port()
+        tok_a = "reload-test-token-A-0123456789abcd"
+        tok_b = "reload-test-token-B-9876543210zyxw"
+
+        def get_info(tok):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                conn.request("GET", "/v1/system/info",
+                             headers={"Authorization": f"Bearer {tok}",
+                                      "X-TRMX-Protocol": "1",
+                                      "Connection": "close"})
+                resp = conn.getresponse()
+                resp.read()
+                return resp.status
+            finally:
+                conn.close()
+
+        try:
+            r = subprocess.run([sys.executable, cli, "init"], env=env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run([sys.executable, cli, "pair", tok_a], env=env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run([sys.executable, cli, "start", "--port", str(port)],
+                               env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(port_open(port))
+            self.assertEqual(get_info(tok_a), 200)
+
+            # Re-pair WHILE the bridge is running — no stop, no start.
+            r = subprocess.run([sys.executable, cli, "pair", tok_b, "--force"],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            deadline = time.time() + 5
+            while time.time() < deadline and get_info(tok_b) != 200:
+                time.sleep(0.1)
+            self.assertEqual(get_info(tok_b), 200,
+                             "new token must work on the running bridge")
+            self.assertEqual(get_info(tok_a), 401,
+                             "old token must stop working after re-pair")
+
+            r = subprocess.run([sys.executable, cli, "stop"], env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(port_open(port))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 def port_open(port: int) -> bool:
     try:
