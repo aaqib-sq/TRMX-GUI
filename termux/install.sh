@@ -1,9 +1,13 @@
 #!/bin/sh
 # TRMX installer — Phase 3 (docs/decisions/ADR-005).
 #
-# Makes "the backend exists" a one-tap operation: the Android app sends a
-# RUN_COMMAND intent that runs exactly this script inside Termux
-# (docs/CONTROL-PLANE.md op INSTALL).
+# Redesign v2 (2026-10-18): the ONE-PASTE bootstrap. The user pastes the
+# curl line into Termux once; this script does everything else — install,
+# the allow-external-apps setting, and the bridge start — because on the
+# owner's device the app's RUN_COMMAND intents are accepted but never
+# executed (proven across three on-device rounds). The historical note:
+# the Android app used to send a RUN_COMMAND intent that ran exactly this
+# script inside Termux (docs/CONTROL-PLANE.md op INSTALL).
 #
 # Modes:
 #   install.sh                      remote: fetch files from BASE (default: GitHub raw @ REF)
@@ -138,10 +142,31 @@ with open(mpath, "w") as fh:
     fh.write("\n")
 PYEOF
 
+# --- allow-external-apps (redesign v2: no separate file-editing ritual) ----
+# Termux must accept external callers for the pair-link hand-off. Do it
+# here, in the one place the user already pasted — idempotently.
+PROPS="$HOME/.termux/termux.properties"
+mkdir -p "$HOME/.termux"
+touch "$PROPS"
+if grep -q '^allow-external-apps' "$PROPS"; then
+  sed -i 's/^allow-external-apps.*/allow-external-apps = true/' "$PROPS"
+else
+  printf '\nallow-external-apps = true\n' >> "$PROPS"
+fi
+if command -v termux-reload-settings >/dev/null 2>&1; then
+  termux-reload-settings >/dev/null 2>&1 || true
+fi
+say "termux setting done: allow-external-apps = true"
+
+# --- always leave the bridge RUNNING (the app's Step 2 listens for it) -----
 if [ "$WAS_RUNNING" = 1 ]; then
   "$HOME_DIR/trmx" start || die "restart after upgrade failed (see ~/.trmx/bridge.log)"
   say "bridge upgraded and restarted"
 else
-  say "installed — start with: ~/.trmx/trmx start"
+  "$HOME_DIR/trmx" start || die "first start failed (see ~/.trmx/bridge.log)"
+  say "bridge installed and started"
 fi
 say "done"
+printf '\n'
+say "NEXT: go back to the TRMX app — it finds the bridge by itself."
+say "Then tap 'Copy the connect command' in the app, paste it here, Enter."

@@ -62,12 +62,21 @@ class TokenStore(context: Context) {
         legacyPrefs.edit().clear().apply()
     }
 
-    /** App-generated pairing token: 32 random bytes, url-safe base64 (~43 chars). */
+    /**
+     * App-generated pairing token: 32 random bytes, url-safe base64 (~43
+     * chars). NEVER starts with '-' or '_': a leading dash is read as a
+     * command-line flag by the Termux-side tooling and silently broke
+     * manual pairing on device (2026-10-18). Regenerate until the first
+     * character is a letter or digit.
+     */
     fun generateToken(): String {
         val bytes = ByteArray(32)
-        SecureRandom().nextBytes(bytes)
-        return Base64.encodeToString(
-            bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        while (true) {
+            SecureRandom().nextBytes(bytes)
+            val token = Base64.encodeToString(
+                bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            if (token[0].isLetterOrDigit()) return token
+        }
     }
 
     /**
