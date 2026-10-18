@@ -73,6 +73,30 @@ class WizardEngineTest {
     }
 
     @Test
+    fun `consent rechecks preserve a pipeline failure`() {
+        // Device round 2 (2026-10-17/18): consent events fire on every
+        // app resume; when they cleared failures unconditionally, the
+        // failure card (and its buttons) vanished the moment the user
+        // came back from Settings — a dead progress bar remained.
+        var s = engine.reduce(ready(), WizardEvent.Begin("token-of-at-least-20-chars"))
+        s = engine.reduce(s, WizardEvent.StepFailed("Termux did not accept the command"))
+        s = engine.reduce(s, WizardEvent.ConsentTermux(true))
+        assertEquals("Termux did not accept the command", s.failure)
+        s = engine.reduce(s, WizardEvent.ConsentRunCommand(true))
+        assertEquals("Termux did not accept the command", s.failure)
+        s = engine.reduce(s, WizardEvent.ConsentAllowExternal(true))
+        assertEquals("Termux did not accept the command", s.failure)
+    }
+
+    @Test
+    fun `consent still clears a welcome failure`() {
+        var s = engine.reduce(WizardState(), WizardEvent.Begin("token-of-at-least-20-chars"))
+        assertTrue(s.failure != null)
+        s = engine.reduce(s, WizardEvent.ConsentTermux(true))
+        assertNull(s.failure)
+    }
+
+    @Test
     fun `skip wait clears the skippable flag only`() {
         var s = engine.reduce(ready(), WizardEvent.Begin("token-of-at-least-20-chars"))
         s = engine.reduce(s, WizardEvent.SkipWait)

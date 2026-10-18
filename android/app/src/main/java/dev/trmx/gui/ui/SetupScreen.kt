@@ -74,6 +74,7 @@ fun SetupScreen(
     setupLog: String = "",
 ) {
     var showManualWelcome by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
     // "waiting for you" states resolve here — the user comes back from
     // settings, the checklist re-verifies itself, no taps needed.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -85,10 +86,19 @@ fun SetupScreen(
         onDispose { lifecycle.removeObserver(obs) }
     }
 
+    // A failure card below the fold is a failure nobody sees (device
+    // round 2: the card existed but the screen looked "stuck on the
+    // same boring page"). When a failure lands, bring it into view.
+    LaunchedEffect(state.failure) {
+        if (state.failure != null) {
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -183,6 +193,30 @@ private fun ChecklistCard(
     onConfirmAllowExternal: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    // Once everything is done, the full checklist is just furniture
+    // eating the screen (device round 2: it pushed the actual status
+    // and repair buttons out of view). Collapse it to one summary row;
+    // the details stay one tap away.
+    var expanded by remember { mutableStateOf(false) }
+    if (checks.ready && !expanded) {
+        TrmxCard(modifier = Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(P.Accent, CircleShape))
+                Spacer(Modifier.width(Sp.s))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Ready — everything is set", fontWeight = FontWeight.SemiBold)
+                    Text("Termux installed · Run Command allowed · allow-external-apps on",
+                         style = MaterialTheme.typography.bodySmall,
+                         color = P.TextSecondary)
+                }
+                TextButton(onClick = { expanded = true }) { Text("Details") }
+            }
+        }
+        return
+    }
     TrmxCard(modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(Sp.m)) {
             Text("Before we start", fontWeight = FontWeight.Bold,
@@ -237,6 +271,10 @@ private fun ChecklistCard(
                     }
                 },
             )
+
+            if (checks.ready) {
+                TextButton(onClick = { expanded = false }) { Text("Hide details") }
+            }
         }
     }
 }
@@ -373,7 +411,7 @@ private fun PipelineBody(
                      color = MaterialTheme.colorScheme.error)
                 Text(fail, style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TrmxButton(label = "Retry this step", onClick = onRetry,
+                    TrmxButton(label = "Try again", onClick = onRetry,
                                kind = TrmxButtonKind.Primary)
                     Spacer(Modifier.width(4.dp))
                     TrmxButton(label = "Start over", onClick = onReset,
@@ -387,11 +425,15 @@ private fun PipelineBody(
                     ManualPairing(token = state.token,
                                   onRetry = onVerifyManualPairing)
                 }
-                if (setupLog.isNotBlank()) {
-                    LogSection(setupLog = setupLog)
-                }
             }
         }
+    }
+
+    // The diagnostics log is reachable in EVERY pipeline state, not
+    // only inside the failure card — evidence must not depend on the
+    // pipeline having failed first.
+    if (setupLog.isNotBlank()) {
+        LogSection(setupLog = setupLog)
     }
 }
 
