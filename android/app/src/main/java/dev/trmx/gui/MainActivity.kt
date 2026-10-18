@@ -57,13 +57,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.trmx.gui.agent.AgentViewModel
 import dev.trmx.gui.model.ToolExample
 import dev.trmx.gui.ui.AgentScreen
-import dev.trmx.gui.ui.ChainsScreen
 import dev.trmx.gui.ui.DashboardScreen
 import dev.trmx.gui.ui.DiagnosticsSheet
 import dev.trmx.gui.ui.SchemaBuilderScreen
 import dev.trmx.gui.ui.ServicesScreen
 import dev.trmx.gui.ui.SettingsScreen
-import dev.trmx.gui.ui.SetupScreen
+import dev.trmx.gui.ui.ConnectScreen
 import dev.trmx.gui.ui.FilesScreen
 import dev.trmx.gui.ui.JobDetailScreen
 import dev.trmx.gui.ui.ToolFormScreen
@@ -77,11 +76,12 @@ import dev.trmx.gui.wizard.SetupViewModel
 import dev.trmx.gui.wizard.WizardStep
 import java.io.File
 
-/** Tabs, in order: the Agent is the front door (revival), Tools second. */
-private enum class Screen { AGENT, TOOLS, HOME, FILES, SERVICES }
+/** Tabs (redesign v2): Agent (front door), Work, Tools. Files and
+ *  Services are root layers above the shell, not tabs. */
+private enum class Screen { AGENT, TOOLS, HOME }
 
 /** Advanced surfaces, opened as overlays above the tabs (never tab items). */
-private enum class Overlay { CHAINS, AI_BUILDER, SETTINGS }
+private enum class Overlay { AI_BUILDER, SETTINGS }
 
 private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 
@@ -134,7 +134,7 @@ fun AppRoot(
 ) {
     val setup by setupVm.wizard.collectAsStateWithLifecycle()
     val setupLogText by setupVm.setupLogText.collectAsStateWithLifecycle()
-    val checks by setupVm.checks.collectAsStateWithLifecycle()
+    val connect by setupVm.connect.collectAsStateWithLifecycle()
     val repair by setupVm.repair.collectAsStateWithLifecycle()
     val agentState by agentVm.state.collectAsStateWithLifecycle()
     val dashboard by vm.dashboard.collectAsStateWithLifecycle()
@@ -147,13 +147,14 @@ fun AppRoot(
     val servicesState by vm.services.collectAsStateWithLifecycle()
     val aiConfigState by vm.aiConfig.collectAsStateWithLifecycle()
     val toolFormState by vm.toolForm.collectAsStateWithLifecycle()
-    val chainsState by vm.chains.collectAsStateWithLifecycle()
     val recipes by vm.recipes.collectAsStateWithLifecycle()
     val artifactsState by vm.artifacts.collectAsStateWithLifecycle()
     var screen by remember { mutableStateOf(Screen.AGENT) }
     var overlay by remember { mutableStateOf<Overlay?>(null) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var filesLayer by remember { mutableStateOf(false) }
+    var servicesLayer by remember { mutableStateOf(false) }
 
     // Cold-start recipe shortcut (set by MainActivity before composition).
     LaunchedEffect(Unit) {
@@ -176,20 +177,14 @@ fun AppRoot(
     }
 
     when {
-        setup.step != WizardStep.DONE -> SetupScreen(
-            state = setup,
-            checks = checks,
-            onResume = setupVm::recheck,
-            onOpenRunCommandSettings = setupVm::openRunCommandSettings,
-            onOpenTermuxApp = setupVm::openTermuxApp,
-            onConfirmAllowExternal = setupVm::confirmAllowExternal,
-            onBegin = setupVm::beginSetup,
-            onSkipPythonWait = setupVm::skipPythonWait,
-            onRetry = setupVm::retrySetup,
-            onReset = setupVm::resetSetup,
-            existingToken = setupVm.manualToken,
-            onVerifyManualPairing = setupVm::verifyManualPairing,
+        setup.step != WizardStep.DONE -> ConnectScreen(
+            state = connect,
+            manualToken = setupVm.manualToken,
             setupLog = setupLogText,
+            onCheckNow = setupVm::checkNow,
+            onRefreshLog = setupVm::refreshSetupLog,
+            onStartPolling = setupVm::startConnectPolling,
+            onStopPolling = setupVm::stopConnectPolling,
         )
 
         else -> {
@@ -246,6 +241,45 @@ fun AppRoot(
                     onReplayOutput = vm::replayOutput,
                     onOpenArtifact = vm::openArtifact,
                 )
+            } else if (filesLayer) {
+                // Files as a root layer (redesign v2): reached from the
+                // Work tab and from a tool form's path picker — it sits
+                // ABOVE the form, so picking a path returns straight to it.
+                BackHandler {
+                    if (!vm.filesUp()) filesLayer = false
+                }
+                LaunchedEffect(Unit) {
+                    vm.clearFilesNotice()
+                    if (filesState.entries.isEmpty()) vm.openPath(filesState.path)
+                }
+                val pickArg = toolFormState.pathArg
+                FilesScreen(
+                    state = filesState,
+                    onOpenPath = vm::openPath,
+                    onUp = { vm.filesUp() },
+                    onRefresh = vm::refreshFiles,
+                    onMakeDir = vm::makeDir,
+                    onRename = vm::renameEntry,
+                    onDelete = vm::deleteEntry,
+                    onDownload = vm::downloadEntry,
+                    onUpload = vm::uploadFromUri,
+                    onOpenFile = { vm.openEntry(it, false) },
+                    onShareFile = { vm.openEntry(it, true) },
+                    pickFile = pickArg?.let { arg ->
+                        toolFormState.schema?.args
+                            ?.firstOrNull { it.name == arg }
+                            ?.let { it.path_kind != "dir" }
+                    },
+                    onPicked = { path ->
+                        vm.pathPicked(path)
+                        filesLayer = false
+                    },
+                    onCancelPick = {
+                        vm.cancelPathPick()
+                        filesLayer = false
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else if (toolForm.schema != null) {
                 // The form renders above the tab content; closing it returns
                 // to whichever tab opened it (Toolbox, Chains, or Dashboard).
@@ -256,7 +290,7 @@ fun AppRoot(
                     onEdit = vm::editFieldValue,
                     onBrowsePath = { arg ->
                         vm.pickPathFor(arg)
-                        screen = Screen.FILES
+                        filesLayer = true
                     },
                     onExample = { ex: ToolExample ->
                         vm.openToolForm(toolForm.schema.id,
@@ -267,31 +301,42 @@ fun AppRoot(
                     onSaveRecipe = vm::saveRecipeFromForm,
                     onSaveService = vm::saveServiceFromForm,
                 )
+            } else if (servicesLayer) {
+                // Services as a root layer (redesign v2): opened from the
+                // Tools tab — no longer a bottom-nav tab of its own.
+                BackHandler { servicesLayer = false }
+                LaunchedEffect(Unit) { vm.loadServices() }
+                Column(Modifier.fillMaxSize()) {
+                    TrmxTopBar(
+                        title = "Services",
+                        onBack = { servicesLayer = false },
+                        actions = {
+                            TrmxIconButton(
+                                icon = Icons.Outlined.Refresh,
+                                contentDescription = "refresh",
+                                onClick = vm::loadServices)
+                        })
+                    ServicesScreen(
+                        state = servicesState,
+                        onStart = vm::startService,
+                        onStop = vm::stopService,
+                        onRestart = vm::restartService,
+                        onToggleAutostart = vm::setServiceAutostart,
+                        onDelete = vm::deleteService,
+                        onOpenJob = { vm.selectJob(it) },
+                        onOpenToolbox = {
+                            servicesLayer = false
+                            screen = Screen.TOOLS
+                        },
+                        onRefresh = vm::loadServices,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             } else if (currentOverlay != null) {
-                // Advanced surfaces: Chains, AI builder, Settings — overlays,
+                // Advanced surfaces: AI builder, Settings — overlays,
                 // never tabs.
                 BackHandler { overlay = null }
                 when (currentOverlay) {
-                    Overlay.CHAINS -> Column(Modifier.fillMaxSize()) {
-                        TrmxTopBar(title = "Chains", onBack = { overlay = null })
-                        ChainsScreen(
-                            state = chainsState,
-                            tools = toolsState.tools,
-                            jobs = dashboard.jobs,
-                            onNew = vm::newChainBuilder,
-                            onEditDef = vm::editChainDef,
-                            onDeleteDef = vm::deleteChainDef,
-                            onRun = vm::runChain,
-                            onResume = vm::resumeChain,
-                            onStopRun = vm::stopChainRun,
-                            onSetTitle = vm::setChainTitle,
-                            onAddStep = vm::addChainStep,
-                            onRemoveStep = vm::removeChainStep,
-                            onEditStep = { i -> vm.editChainStep(i) },
-                            onSaveDef = vm::saveChainDef,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
                     Overlay.AI_BUILDER -> {
                         LaunchedEffect(Unit) {
                             vm.loadTools()
@@ -327,7 +372,12 @@ fun AppRoot(
                         connected = dashboard.error == null,
                         repair = repair,
                         aiConfig = aiConfigState,
-                        onRepair = setupVm::runRepair,
+                        onRepair = {
+                            vm.resetAppState()
+                            setupVm.resetSetup()
+                            overlay = null
+                        },
+                        onApplyLocalPreset = vm::applyLocalGgufPreset,
                         onDismissRepair = setupVm::dismissRepair,
                         onRerunSetup = {
                             vm.resetAppState()
@@ -350,17 +400,9 @@ fun AppRoot(
                             title = when (screen) {
                                 Screen.AGENT -> "Agent"
                                 Screen.TOOLS -> "Tools"
-                                Screen.HOME -> "TRMX"
-                                Screen.FILES -> "Files"
-                                Screen.SERVICES -> "Services"
+                                Screen.HOME -> "Work"
                             },
                             actions = {
-                                if (screen == Screen.SERVICES) {
-                                    TrmxIconButton(
-                                        icon = Icons.Outlined.Refresh,
-                                        contentDescription = "refresh",
-                                        onClick = vm::loadServices)
-                                }
                                 TrmxIconButton(
                                     icon = Icons.Filled.MoreVert,
                                     contentDescription = "more",
@@ -368,18 +410,6 @@ fun AppRoot(
                                 DropdownMenu(
                                     expanded = menuOpen,
                                     onDismissRequest = { menuOpen = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("Chains") },
-                                        onClick = {
-                                            menuOpen = false
-                                            overlay = Overlay.CHAINS
-                                        })
-                                    DropdownMenuItem(
-                                        text = { Text("AI builder") },
-                                        onClick = {
-                                            menuOpen = false
-                                            overlay = Overlay.AI_BUILDER
-                                        })
                                     DropdownMenuItem(
                                         text = { Text("Diagnostics") },
                                         onClick = {
@@ -397,9 +427,9 @@ fun AppRoot(
                         )
                     },
                     bottomBar = {
-                        // Monochrome M3 NavigationBar: OLED black, 24 dp
+                        // NavigationBar (redesign v2): AMOLED black, 24 dp
                         // vector icons (outlined -> filled when selected),
-                        // white active tint, grey inactive.
+                        // amber active tint, warm grey inactive.
                         NavigationBar(
                             containerColor = Color(0xFF000000),
                             tonalElevation = 0.dp,
@@ -438,37 +468,7 @@ fun AppRoot(
                                         contentDescription = null,
                                         modifier = Modifier.size(24.dp))
                                 },
-                                label = { Text("Home", style = MaterialTheme.typography.labelSmall) },
-                                colors = TrmxNavItemColors())
-                            NavigationBarItem(
-                                selected = screen == Screen.FILES,
-                                onClick = {
-                                    vm.clearFilesNotice()
-                                    screen = Screen.FILES
-                                },
-                                icon = {
-                                    Icon(
-                                        if (screen == Screen.FILES) Icons.Filled.Folder
-                                        else Icons.Outlined.Folder,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp))
-                                },
-                                label = { Text("Files", style = MaterialTheme.typography.labelSmall) },
-                                colors = TrmxNavItemColors())
-                            NavigationBarItem(
-                                selected = screen == Screen.SERVICES,
-                                onClick = {
-                                    vm.clearServicesNotice()
-                                    screen = Screen.SERVICES
-                                },
-                                icon = {
-                                    Icon(
-                                        if (screen == Screen.SERVICES) Icons.Filled.Dns
-                                        else Icons.Outlined.Dns,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp))
-                                },
-                                label = { Text("Services", style = MaterialTheme.typography.labelSmall) },
+                                label = { Text("Work", style = MaterialTheme.typography.labelSmall) },
                                 colors = TrmxNavItemColors())
                         }
                     },
@@ -488,38 +488,6 @@ fun AppRoot(
                                 modifier = Modifier.padding(padding),
                             )
                         }
-                        Screen.FILES -> {
-                            // Back walks up the directory tree first; the tab
-                            // bar handles leaving (BackHandler above → Agent).
-                            BackHandler {
-                                if (!vm.filesUp()) screen = Screen.AGENT
-                            }
-                            LaunchedEffect(Unit) {
-                                if (filesState.entries.isEmpty()) vm.openPath(filesState.path)
-                            }
-                            val pickArg = toolFormState.pathArg
-                            FilesScreen(
-                                state = filesState,
-                                onOpenPath = vm::openPath,
-                                onUp = { vm.filesUp() },
-                                onRefresh = vm::refreshFiles,
-                                onMakeDir = vm::makeDir,
-                                onRename = vm::renameEntry,
-                                onDelete = vm::deleteEntry,
-                                onDownload = vm::downloadEntry,
-                                onUpload = vm::uploadFromUri,
-                                onOpenFile = { vm.openEntry(it, false) },
-                                onShareFile = { vm.openEntry(it, true) },
-                                pickFile = pickArg?.let { arg ->
-                                    toolFormState.schema?.args
-                                        ?.firstOrNull { it.name == arg }
-                                        ?.let { it.path_kind != "dir" }
-                                },
-                                onPicked = { path -> vm.pathPicked(path) },
-                                onCancelPick = { vm.cancelPathPick() },
-                                modifier = Modifier.padding(padding),
-                            )
-                        }
                         Screen.TOOLS -> {
                             LaunchedEffect(Unit) { vm.loadTools() }
                             ToolboxScreen(
@@ -535,7 +503,7 @@ fun AppRoot(
                                 onDeleteRecipe = vm::deleteRecipe,
                                 onShareRecipe = vm::shareRecipe,
                                 onImportRecipe = vm::importRecipe,
-                                onOpenChains = { overlay = Overlay.CHAINS },
+                                onOpenServices = { servicesLayer = true },
                                 onOpenSchemaBuilder = { overlay = Overlay.AI_BUILDER },
                                 onSubmitName = vm::editName,
                                 onSubmitArgv = vm::editArgvText,
@@ -546,21 +514,6 @@ fun AppRoot(
                                 modifier = Modifier.padding(padding),
                             )
                         }
-                        Screen.SERVICES -> {
-                            LaunchedEffect(Unit) { vm.loadServices() }
-                            ServicesScreen(
-                                state = servicesState,
-                                onStart = vm::startService,
-                                onStop = vm::stopService,
-                                onRestart = vm::restartService,
-                                onToggleAutostart = vm::setServiceAutostart,
-                                onDelete = vm::deleteService,
-                                onOpenJob = { vm.selectJob(it) },
-                                onOpenToolbox = { screen = Screen.TOOLS },
-                                onRefresh = vm::loadServices,
-                                modifier = Modifier.padding(padding),
-                            )
-                        }
                         Screen.HOME -> {
                             LaunchedEffect(Unit) { if (dashboard.info == null) vm.refresh() }
                             DashboardScreen(
@@ -568,8 +521,15 @@ fun AppRoot(
                                 repair = repair,
                                 onJobClick = vm::selectJob,
                                 onCancelJob = vm::cancelJob,
-                                onRepair = setupVm::runRepair,
+                                onRepair = {
+                                    // The old in-app repair ran the intent
+                                    // pipeline, which cannot act on this
+                                    // device — repair IS the connect flow.
+                                    vm.resetAppState()
+                                    setupVm.resetSetup()
+                                },
                                 onNewJob = { screen = Screen.AGENT },
+                                onOpenFiles = { filesLayer = true },
                                 modifier = Modifier.padding(padding),
                             )
                         }
