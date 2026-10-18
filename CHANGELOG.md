@@ -6,6 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+### Fixed — startup screen overhaul: no invisible text, no dead progress bar (2026-10-18)
+Deep analysis of the startup/setup code after device round 2 (the
+screen sat at a bare progress bar, immune to force-stop):
+- Root cause A: `TRMXTheme` set no base surface, so every setup text
+  outside a card rendered black-on-black (header, stage title, status
+  lines were present but invisible). The theme now wraps content in a
+  Surface with the palette's background/content colors — no screen
+  can repeat this.
+- Root cause B: consent events cleared `failure` unconditionally, and
+  consent re-checks fire on every app resume — so every failure card
+  (including the persisted-progress "interrupted" card) erased itself
+  the moment the user returned from Settings/Termux, leaving a
+  progress bar with no buttons and no way forward. Consent events now
+  clear failures only at WELCOME (unit-tested both ways).
+- Self-healing: on every resume, a pipeline step whose job is gone
+  restarts itself; a parked step with no failure gains one. No zombie
+  state can persist.
+- UX: the checklist collapses to a one-row "Ready" summary once
+  everything is done (details one tap away); a failure auto-scrolls
+  into view; the diagnostics log is reachable in every pipeline
+  state; the retry button is labelled "Try again".
+
 ### Changed — setup flow back to English + pair-link one-command connect (2026-10-17)
 - The setup flow's user-facing strings are English again (the Hindi
   setup screen of the easy-pairing update was reverted on the owner's

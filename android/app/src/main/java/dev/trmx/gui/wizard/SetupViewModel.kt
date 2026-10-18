@@ -171,7 +171,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             consentAllowExternal = true,
             busy = false,
             failure = "Setup was interrupted — the app was closed.\n" +
-                "Tap 'Retry this step' below — setup continues from where it stopped.")
+                "Tap 'Try again' below — setup continues from where it stopped.")
         slog("RESTORE interrupted setup at step $step")
         return true
     }
@@ -193,6 +193,31 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         }
         applyEvent(WizardEvent.ConsentTermux(termux))
         applyEvent(WizardEvent.ConsentRunCommand(runCmd))
+        healStalledPipeline()
+    }
+
+    /**
+     * No dead setup screen may survive a resume (device round 2:
+     * a pipeline whose coroutine died — e.g. a command send rejected
+     * while the app was backgrounded — sat at a bare progress bar
+     * forever, and a failure erased by an early build's consent
+     * re-check left the same zombie). On every resume: a pipeline step
+     * that claims to be busy but has no live job restarts itself; a
+     * pipeline step parked with neither job nor failure becomes an
+     * honest, actionable failure card.
+     */
+    private fun healStalledPipeline() {
+        val s = _wizard.value
+        if (s.step == WizardStep.WELCOME || s.step == WizardStep.DONE) return
+        if (sequenceJob?.isActive == true) return
+        if (s.busy) {
+            slog("RESUME-HEAL restarting stalled pipeline at ${s.step}")
+            sequenceJob = viewModelScope.launch { runPipeline(fromStep = s.step) }
+        } else if (s.failure == null) {
+            slog("RESUME-HEAL parked step ${s.step} had no failure — surfacing one")
+            applyEvent(WizardEvent.StepFailed(
+                "Setup stopped here. Tap 'Try again' — it continues from this step."))
+        }
     }
 
     /** Deep-link: TRMX's own App info — RUN_COMMAND hides under
