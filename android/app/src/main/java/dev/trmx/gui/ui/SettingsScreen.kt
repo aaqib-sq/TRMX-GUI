@@ -178,9 +178,27 @@ fun SettingsScreen(
                                 kind = TrmxButtonKind.Secondary)
                         }
                     }
-                    TrmxButton(label = "Use a local GGUF model (this phone)",
-                               onClick = onApplyLocalPreset,
-                               kind = TrmxButtonKind.Secondary)
+                    aiConfig.notice?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall,
+                             color = P.TextSecondary)
+                    }
+                    aiConfig.error?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall,
+                             color = P.Danger)
+                    }
+                    val presetOn = aiConfig.mode == "http_api" &&
+                        aiConfig.provider == "openai_compatible" &&
+                        aiConfig.endpoint.contains("127.0.0.1:8080") &&
+                        aiConfig.model == "local-gguf"
+                    TrmxButton(
+                        label = when {
+                            aiConfig.saving -> "Saving\u2026"
+                            presetOn -> "Local GGUF is on"
+                            else -> "Use a local GGUF model (this phone)"
+                        },
+                        onClick = onApplyLocalPreset,
+                        enabled = !aiConfig.saving && !presetOn,
+                        kind = TrmxButtonKind.Secondary)
                     Text("Full backend settings live in Tools → AI Schema Builder.",
                          style = MaterialTheme.typography.labelSmall,
                          color = P.TextMuted)
