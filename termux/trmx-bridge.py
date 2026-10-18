@@ -215,7 +215,13 @@ class Config:
         """Generate a token if none exists. Returns True if it generated one."""
         if self.token:
             return False
-        self.data["token"] = secrets.token_urlsafe(32)  # 256-bit
+        # Never mint a token starting with '-' or '_': a leading dash is
+        # parsed as a flag by command-line tooling and broke manual
+        # pairing on device (2026-10-18). First char: letter or digit.
+        token = secrets.token_urlsafe(32)  # 256-bit
+        while token[0] in "-_":
+            token = secrets.token_urlsafe(32)
+        self.data["token"] = token
         self.data["token_generated"] = True
         self.save()
         return True
