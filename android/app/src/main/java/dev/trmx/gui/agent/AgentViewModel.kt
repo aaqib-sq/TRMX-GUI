@@ -139,15 +139,21 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                     startStream(r.data.job_id)
                 }
                 is BridgeResult.HttpError -> {
-                    val msg = if (r.status == 404)
-                        "This bridge doesn't support the agent yet — update the bridge first."
-                    else "HTTP ${r.status}: ${r.message}"
+                    val msg = when (r.status) {
+                        404 -> "This bridge doesn't support the agent yet — " +
+                            "update the bridge first."
+                        401 -> "The bridge rejected this app's token. " +
+                            "Repair the connection from the Work tab."
+                        else -> "The bridge answered with an error " +
+                            "(HTTP ${r.status})."
+                    }
                     _state.update { it.copy(sending = false, sendError = msg) }
                 }
                 is BridgeResult.NetworkError ->
                     _state.update {
                         it.copy(sending = false,
-                                sendError = "Bridge unreachable: ${r.cause.message}")
+                                sendError = "Can't reach the bridge — it may " +
+                                    "be stopped. In Termux run: ~/.trmx/trmx start")
                     }
             }
         }
@@ -232,23 +238,23 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                     (if (e.model.isNotEmpty()) " · ${e.model}" else "")))
             is AgentEvent.Plan -> addRow(AgentRow(
                 AgentRowKind.THINKING,
-                title = "सोच रहा हूँ…",
+                title = "Thinking…",
                 detail = e.thought.ifEmpty { e.describe.ifEmpty { null } },
                 // step kept out of the row — the VM doesn't need it
             ))
             is AgentEvent.Action -> addRow(AgentRow(
                 AgentRowKind.DOING,
-                title = "ये करने जा रहा हूँ: ${e.describe}"))
+                title = "I'm about to do this: ${e.describe}"))
             is AgentEvent.Result -> addRow(if (e.ok) AgentRow(
                 AgentRowKind.RESULT_OK,
-                title = if (e.excerpt.isNotEmpty()) "✓ ${e.excerpt}" else "हो गया")
+                title = if (e.excerpt.isNotEmpty()) "✓ ${e.excerpt}" else "Done")
             else AgentRow(
                 AgentRowKind.RESULT_FAIL,
-                title = if (e.excerpt.isNotEmpty()) "✗ ${e.excerpt}" else "नाकाम रहा"))
+                title = if (e.excerpt.isNotEmpty()) "✗ ${e.excerpt}" else "Failed"))
             is AgentEvent.ConfirmNeeded -> {
                 addRow(AgentRow(
                     AgentRowKind.DOING,
-                    title = "इजाज़त चाहिए: ${e.describe}"))
+                    title = "Permission needed: ${e.describe}"))
                 _state.update {
                     it.copy(confirm = AgentConfirm(
                         describe = e.describe, tool = e.tool, why = e.why))
@@ -258,14 +264,14 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(active = false, confirm = null) }
                 addRow(AgentRow(
                     AgentRowKind.DONE,
-                    title = "हो गया" +
+                    title = "Done" +
                         (if (e.summary.isNotEmpty()) ": ${e.summary}" else "")))
             }
             is AgentEvent.Failed -> {
                 _state.update { it.copy(active = false, confirm = null) }
                 addRow(AgentRow(
                     AgentRowKind.FAILED,
-                    title = "रुक गया" +
+                    title = "Stopped" +
                         (if (e.error.isNotEmpty()) ": ${e.error}" else "")))
             }
             is AgentEvent.Note -> addRow(AgentRow(AgentRowKind.NOTE, title = e.text))
@@ -302,13 +308,15 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                         it.copy(confirm = null, confirmBusy = false,
                                 streamError = if (r.status == 409)
                                     "Nothing was waiting for an answer."
-                                else "HTTP ${r.status}: ${r.message}")
+                                else "The bridge answered with an error " +
+                                    "(HTTP ${r.status}).")
                     }
                 }
                 is BridgeResult.NetworkError ->
                     _state.update {
                         it.copy(confirmBusy = false,
-                                streamError = "Bridge unreachable: ${r.cause.message}")
+                                streamError = "Can't reach the bridge — it may " +
+                                    "be stopped. In Termux run: ~/.trmx/trmx start")
                     }
             }
         }
@@ -324,7 +332,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
             when (val r = client().cancelJob(jobId)) {
                 is BridgeResult.Success -> {
                     _state.update { it.copy(active = false) }
-                    addRow(AgentRow(AgentRowKind.FAILED, title = "रुक गया (stopped)"))
+                    addRow(AgentRow(AgentRowKind.FAILED, title = "Stopped"))
                 }
                 is BridgeResult.HttpError ->
                     _state.update { st -> st.copy(streamError = "Stop failed: HTTP ${r.status}") }

@@ -86,6 +86,16 @@ data class RepairState(
     val finished: Boolean = false,
 )
 
+/** Redesign v2 connect phases — derived only from data-plane probes. */
+enum class ConnectPhase { NEEDS_INSTALL, NEEDS_PAIR, CONNECTED }
+
+data class ConnectState(
+    val phase: ConnectPhase = ConnectPhase.NEEDS_INSTALL,
+    val bridgeSeen: Boolean = false,
+    val checking: Boolean = false,
+    val message: String? = null,
+)
+
 class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     private val appContext = app
@@ -337,6 +347,106 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                             "Last error: ${r.cause.message}"))
             }
         }
+    }
+
+    // ---- redesign v2: the 2-paste connect flow -----------------------------
+    // The intent pipeline UI is retired: on the owner's device the
+    // RUN_COMMAND intents are accepted but never executed (proven over
+    // three on-device rounds), so the honest setup is two pastes in
+    // Termux — the install line, then pair-link — while this app POLLS
+    // the data plane and finishes by itself. Phases derive ONLY from
+    // probe results: 200 -> connected, 401 -> the bridge is there but
+    // the token differs (pair), silence -> not installed/started yet.
+
+    private val _connect = MutableStateFlow(ConnectState())
+    val connect = _connect.asStateFlow()
+    private var connectJob: Job? = null
+
+    fun startConnectPolling() {
+        if (connectJob?.isActive == true) return
+        connectJob = viewModelScope.launch {
+            slog("CONNECT polling started")
+            while (true) {
+                if (_wizard.value.step == WizardStep.DONE) break
+                val before = _connect.value.phase
+                when (probe(quiet = true)) {
+                    is BridgeResult.Success -> {
+                        _connect.update {
+                            it.copy(phase = ConnectPhase.CONNECTED, bridgeSeen = true)
+                        }
+                        slog("CONNECT phase -> CONNECTED (probe 200)")
+                        applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
+                        break
+                    }
+                    is BridgeResult.HttpError ->
+                        _connect.update {
+                            it.copy(phase = ConnectPhase.NEEDS_PAIR, bridgeSeen = true)
+                        }
+                    is BridgeResult.NetworkError ->
+                        _connect.update {
+                            it.copy(phase = ConnectPhase.NEEDS_INSTALL, bridgeSeen = false)
+                        }
+                }
+                if (_connect.value.phase != before)
+                    slog("CONNECT phase -> ${_connect.value.phase}")
+                delay(2500)
+            }
+            slog("CONNECT polling stopped")
+        }
+    }
+
+    fun stopConnectPolling() {
+        connectJob?.cancel()
+        connectJob = null
+    }
+
+    /**
+     * The help-section Check: poll for up to ~15 s with visible progress.
+     * A single 3 s probe produced false "did not answer" verdicts on
+     * device — the bridge sometimes needs 2-3 s to respond.
+     */
+    fun checkNow() {
+        if (_connect.value.checking) return
+        sequenceJob?.cancel()
+        sequenceJob = viewModelScope.launch {
+            _connect.update { it.copy(checking = true, message = null) }
+            slog("=== CONNECT check-now (15 s poll) ===")
+            val r = Handshaker(
+                probe = { probe() },
+                pollIntervalMs = 1000,
+                maxAttempts = 20,
+                maxDurationMs = 15_000,
+            ).awaitHandshake()
+            when (r) {
+                is BridgeResult.Success -> {
+                    _connect.update {
+                        it.copy(checking = false, phase = ConnectPhase.CONNECTED,
+                            bridgeSeen = true)
+                    }
+                    applyEvent(WizardEvent.StepSucceeded(WizardStep.DONE))
+                }
+                is BridgeResult.HttpError ->
+                    _connect.update {
+                        it.copy(checking = false, bridgeSeen = true,
+                            phase = ConnectPhase.NEEDS_PAIR,
+                            message = "The bridge is running, but this token does " +
+                                "not match. Use Step 2 (pair-link) — or the pair " +
+                                "line below.")
+                    }
+                is BridgeResult.NetworkError ->
+                    _connect.update {
+                        it.copy(checking = false, bridgeSeen = false,
+                            phase = ConnectPhase.NEEDS_INSTALL,
+                            message = "Still no answer after 15 seconds. In Termux " +
+                                "run: ~/.trmx/trmx start — then check again.")
+                    }
+            }
+        }
+    }
+
+    /** Re-read the diagnostics log from disk (the sheet can go stale). */
+    fun refreshSetupLog() {
+        _setupLogText.value = setupLog.read()
     }
 
     fun retrySetup() {
@@ -641,19 +751,21 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      *  this is the evidence line a shared log is judged by: what was
      *  asked, what came back, how long it took, and WHICH token family
      *  was sent (length + prefix only, never the token itself). */
-    private suspend fun probe(): BridgeResult<SystemInfo> {
+    private suspend fun probe(quiet: Boolean = false): BridgeResult<SystemInfo> {
         val started = System.currentTimeMillis()
         val r = client().systemInfo()
         val ms = System.currentTimeMillis() - started
-        val tok = SetupLog.describeToken(store.token)
-        when (r) {
-            is BridgeResult.Success ->
-                slog("PROBE /v1/system/info -> 200 (${ms}ms) $tok")
-            is BridgeResult.HttpError ->
-                slog("PROBE /v1/system/info -> HTTP ${r.status} ${r.code} (${ms}ms) $tok")
-            is BridgeResult.NetworkError ->
-                slog("PROBE /v1/system/info -> NETWORK " +
-                    "${r.cause.javaClass.simpleName}: ${r.cause.message} (${ms}ms) $tok")
+        if (!quiet) {
+            val tok = SetupLog.describeToken(store.token)
+            when (r) {
+                is BridgeResult.Success ->
+                    slog("PROBE /v1/system/info -> 200 (${ms}ms) $tok")
+                is BridgeResult.HttpError ->
+                    slog("PROBE /v1/system/info -> HTTP ${r.status} ${r.code} (${ms}ms) $tok")
+                is BridgeResult.NetworkError ->
+                    slog("PROBE /v1/system/info -> NETWORK " +
+                        "${r.cause.javaClass.simpleName}: ${r.cause.message} (${ms}ms) $tok")
+            }
         }
         return r
     }

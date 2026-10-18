@@ -27,6 +27,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import dev.trmx.gui.AiConfigState
 import dev.trmx.gui.wizard.RepairState
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -40,10 +42,12 @@ fun SettingsScreen(
     onDismissRepair: () -> Unit,
     onRerunSetup: () -> Unit,
     onLoadAiConfig: () -> Unit,
+    onApplyLocalPreset: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LaunchedEffect(Unit) { onLoadAiConfig() }
+    val clipboard = LocalClipboardManager.current
 
     Column(modifier = modifier.fillMaxSize()) {
         TrmxTopBar(title = "Settings", onBack = onBack)
@@ -107,7 +111,7 @@ fun SettingsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
                     Text("Setup", fontWeight = FontWeight.Bold,
                          style = MaterialTheme.typography.titleMedium)
-                    Text("Walk through the setup again (permissions, install, pairing).",
+                    Text("Connect again — the 2-paste flow (install line, then pair).",
                          style = MaterialTheme.typography.bodySmall,
                          color = P.TextSecondary)
                     TrmxButton(label = "Re-run setup", onClick = onRerunSetup,
@@ -136,15 +140,48 @@ fun SettingsScreen(
                     } else {
                         Text(backendSummary(aiConfig),
                              style = MaterialTheme.typography.bodyMedium)
+                        val localEndpoint =
+                            aiConfig.endpoint.contains("127.0.0.1") ||
+                                aiConfig.endpoint.contains("localhost")
                         Text(
-                            if (aiConfig.mode == "http_api")
-                                "API mode — every agent step spends API money."
-                            else "Local mode — free, runs on this phone.",
+                            when {
+                                aiConfig.mode != "http_api" ->
+                                    "Local mode — free, runs on this phone."
+                                localEndpoint ->
+                                    "Local server on this phone — free, no " +
+                                        "internet, no API money."
+                                else ->
+                                    "API mode — every agent step spends API money."
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (aiConfig.mode == "http_api") P.Danger
-                                    else P.TextSecondary)
+                            color = if (aiConfig.mode == "http_api" && !localEndpoint)
+                                P.Danger else P.TextSecondary)
+                        if (localEndpoint) {
+                            Text("Start the model server in Termux (llama.cpp), " +
+                                    "then the agent can use it:",
+                                 style = MaterialTheme.typography.bodySmall,
+                                 color = P.TextSecondary)
+                            Text("llama-server -m MODEL.gguf --port 8080",
+                                 style = MaterialTheme.typography.bodySmall,
+                                 color = P.TextMuted)
+                            Text("Replace MODEL.gguf with your .gguf file's " +
+                                    "full path — the same file PocketPal / " +
+                                    "ChatterUI use works, no copy needed.",
+                                 style = MaterialTheme.typography.labelSmall,
+                                 color = P.TextMuted)
+                            TrmxButton(
+                                label = "Copy the server command",
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(
+                                        "llama-server -m MODEL.gguf --port 8080"))
+                                },
+                                kind = TrmxButtonKind.Secondary)
+                        }
                     }
-                    Text("To change the backend, use the AI builder in the advanced menu.",
+                    TrmxButton(label = "Use a local GGUF model (this phone)",
+                               onClick = onApplyLocalPreset,
+                               kind = TrmxButtonKind.Secondary)
+                    Text("Full backend settings live in Tools → AI Schema Builder.",
                          style = MaterialTheme.typography.labelSmall,
                          color = P.TextMuted)
                 }

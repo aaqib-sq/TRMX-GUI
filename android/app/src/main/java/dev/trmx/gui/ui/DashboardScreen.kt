@@ -23,7 +23,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -52,6 +55,7 @@ fun DashboardScreen(
     onCancelJob: (String) -> Unit,
     onRepair: () -> Unit,
     onNewJob: () -> Unit,
+    onOpenFiles: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -110,6 +114,26 @@ fun DashboardScreen(
         state.error?.let {
             Text(it, style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.error)
+        }
+
+        // Files live here in the redesign (Work tab) — no separate tab.
+        Text("Files",
+             style = MaterialTheme.typography.titleMedium,
+             fontWeight = FontWeight.Bold)
+        TrmxCard(modifier = Modifier.fillMaxWidth(), onClick = onOpenFiles) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Sp.m)) {
+                Icon(Icons.Outlined.Folder, contentDescription = null,
+                     tint = P.Accent, modifier = Modifier.size(22.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+                    Text("Browse files",
+                         style = MaterialTheme.typography.titleSmall,
+                         fontWeight = FontWeight.SemiBold)
+                    Text("Termux home and shared storage.",
+                         style = MaterialTheme.typography.bodySmall,
+                         color = P.TextSecondary)
+                }
+            }
         }
     }
 }
