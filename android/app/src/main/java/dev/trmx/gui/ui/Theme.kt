@@ -8,13 +8,16 @@ package dev.trmx.gui.ui
  * TrmxColors, TrmxFieldColors). Dark is the identity (no toggle).
  */
 
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -127,6 +130,20 @@ fun TRMXTheme(content: @Composable () -> Unit) {
         colorScheme = TrmxScheme,
         typography = Typography(),
         shapes = TrmxShapes,
-        content = content,
-    )
+    ) {
+        // A bare MaterialTheme sets NO content color: any Text composed
+        // outside a Card/Scaffold then falls back to LocalContentColor's
+        // default — black — and renders invisible on the black window
+        // background (device round 2, 2026-10-17: the setup screen's
+        // header, stage title and status lines were all present but
+        // black-on-black; only card contents showed). The theme itself
+        // must own the base surface so no screen can repeat this.
+        Surface(
+            color = P.Background,
+            contentColor = P.TextPrimary,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            content()
+        }
+    }
 }

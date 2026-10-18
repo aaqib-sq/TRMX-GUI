@@ -56,12 +56,22 @@ sealed interface WizardEvent {
 class WizardEngine {
 
     fun reduce(state: WizardState, event: WizardEvent): WizardState = when (event) {
+        // Consent re-checks fire on EVERY app resume (SetupViewModel
+        // .recheck). They may clear a failure only at WELCOME — clearing
+        // one mid-pipeline erased the failure card (and its Retry /
+        // Start over buttons) the moment the user returned from
+        // Settings or Termux, leaving a dead progress bar with no way
+        // forward (device round 2, 2026-10-17/18; the restored
+        // "interrupted" failure died the same way on first resume).
         is WizardEvent.ConsentTermux ->
-            state.copy(consentTermux = event.given, failure = null)
+            state.copy(consentTermux = event.given,
+                       failure = if (state.step == WizardStep.WELCOME) null else state.failure)
         is WizardEvent.ConsentRunCommand ->
-            state.copy(consentRunCommand = event.given, failure = null)
+            state.copy(consentRunCommand = event.given,
+                       failure = if (state.step == WizardStep.WELCOME) null else state.failure)
         is WizardEvent.ConsentAllowExternal ->
-            state.copy(consentAllowExternal = event.given, failure = null)
+            state.copy(consentAllowExternal = event.given,
+                       failure = if (state.step == WizardStep.WELCOME) null else state.failure)
         is WizardEvent.BaseUrlChanged ->
             state.copy(baseUrl = event.url.trim())
         is WizardEvent.Begin -> {
