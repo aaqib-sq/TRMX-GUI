@@ -24,7 +24,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
@@ -63,7 +63,7 @@ fun ToolboxScreen(
     onDeleteRecipe: (String) -> Unit,
     onShareRecipe: (Recipe) -> Unit,
     onImportRecipe: (android.net.Uri) -> Unit,
-    onOpenChains: () -> Unit,
+    onOpenServices: () -> Unit,
     onOpenSchemaBuilder: () -> Unit,
     onSubmitName: (String) -> Unit,
     onSubmitArgv: (String) -> Unit,
@@ -199,9 +199,9 @@ fun ToolboxScreen(
             }
         }
 
-        TrmxButton(label = "Chains — visual pipelines",
-                   leading = { Icon(Icons.Outlined.AccountTree, contentDescription = null) },
-                   onClick = onOpenChains, modifier = Modifier.fillMaxWidth(),
+        TrmxButton(label = "Services — long-running tools",
+                   leading = { Icon(Icons.Outlined.Dns, contentDescription = null) },
+                   onClick = onOpenServices, modifier = Modifier.fillMaxWidth(),
                    kind = TrmxButtonKind.Secondary)
     }
 
