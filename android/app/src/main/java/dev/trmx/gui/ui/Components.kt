@@ -13,6 +13,8 @@ package dev.trmx.gui.ui
  *   CopyableId    — monospace id that copies on tap
  */
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -363,4 +365,50 @@ fun CopyableId(id: String, modifier: Modifier = Modifier) {
         Icon(Icons.Outlined.ContentCopy, contentDescription = "copy",
              tint = P.TextMuted, modifier = Modifier.size(12.dp))
     }
+}
+
+// ---- v3 shared pieces: status badge, icon tile, section label -------------
+
+enum class BadgeTone { Neutral, Danger, Muted }
+
+/** One status pill: big, bold, readable at a glance (redesign v3). */
+@Composable
+fun TrmxBadge(text: String, tone: BadgeTone = BadgeTone.Neutral) {
+    val (bg, fg) = when (tone) {
+        BadgeTone.Neutral -> P.AccentContainer to P.TextPrimary
+        BadgeTone.Danger -> P.DangerContainer to P.OnDangerContainer
+        BadgeTone.Muted -> P.SteelContainer to P.TextSecondary
+    }
+    Box(
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(999.dp))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(text, fontSize = 12.5.sp, fontWeight = FontWeight.ExtraBold, color = fg)
+    }
+}
+
+/** 54 dp rounded tile holding one vector icon (redesign v3). */
+@Composable
+fun TrmxIconTile(icon: ImageVector, tint: Color = P.TextPrimary) {
+    Box(
+        modifier = Modifier
+            .size(54.dp)
+            .background(P.SurfaceHigh, RoundedCornerShape(14.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(28.dp))
+    }
+}
+
+/** Quiet uppercase section label (redesign v3). */
+@Composable
+fun TrmxSectionLabel(text: String) {
+    Text(
+        text.uppercase(),
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.7.sp,
+        color = P.TextMuted,
+    )
 }

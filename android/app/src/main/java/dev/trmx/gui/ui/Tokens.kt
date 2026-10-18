@@ -9,7 +9,7 @@ package dev.trmx.gui.ui
  * Palette: true-black AMOLED ground, warm dark-amber-tinted surfaces,
  * one amber accent for primary actions. Chosen by the owner on
  * 2026-10-18 (preview-approved): NO white background, NO blue/navy,
- * minimal and calm. Warm off-white primary text, warm grey metadata,
+ * minimal and calm. Warm off-white primary text, neutral grey metadata,
  * semantic red ONLY for critical failures.
  */
 
@@ -21,30 +21,30 @@ object Tokens {
     /** Ground + elevated surfaces (AMOLED black, warm amber tint). */
     object Palette {
         val Background = Color(0xFF000000)     // true AMOLED black (ground)
-        val Surface = Color(0xFF100D07)        // cards
-        val FieldFill = Color(0xFF0A0803)      // input field fill
-        val SurfaceHigh = Color(0xFF171208)    // sheets / secondary surfaces
-        val SurfaceHighest = Color(0xFF201809) // menus, pressed states
-        val Border = Color(0xFF2C2312)         // 1 px outlines
-        val BorderStrong = Color(0xFF54431C)   // focused/active outlines
+        val Surface = Color(0xFF161616)        // cards (neutral grey, no tint)
+        val FieldFill = Color(0xFF0A0A0A)      // input field fill
+        val SurfaceHigh = Color(0xFF1C1C1C)    // sheets / secondary surfaces
+        val SurfaceHighest = Color(0xFF262626) // menus, pressed states
+        val Border = Color(0xFF2B2B2B)         // 1 px outlines
+        val BorderStrong = Color(0xFF454545)   // focused/active outlines
 
         /** Text. */
-        val TextPrimary = Color(0xFFF7F3EA)    // warm off-white
-        val TextSecondary = Color(0xFFC0B49A)  // warm grey
-        val TextMuted = Color(0xFF877A5F)      // faint metadata
+        val TextPrimary = Color(0xFFFFFFFF)    // pure white
+        val TextSecondary = Color(0xFFC4C4C4)  // neutral grey
+        val TextMuted = Color(0xFF8A8A8A)      // faint metadata
 
         /** Accent — amber. Primary actions are amber-on-black, the ONE
          *  loud element per screen. (Owner's pick, 2026-10-18.) */
-        val Accent = Color(0xFFF2B33D)
-        val OnAccent = Color(0xFF1D1303)
-        val AccentContainer = Color(0xFF2A2110)
-        val OnAccentContainer = Color(0xFFFFC95E)
+        val Accent = Color(0xFFFFFFFF)
+        val OnAccent = Color(0xFF000000)
+        val AccentContainer = Color(0xFF242424)
+        val OnAccentContainer = Color(0xFFFFFFFF)
 
         /** Warm grey — calm secondary / completed. */
-        val Steel = Color(0xFFCBBB9E)
-        val SteelDim = Color(0xFF97876A)
-        val SteelContainer = Color(0xFF1D1810)
-        val OnSteelContainer = Color(0xFFEFE6D2)
+        val Steel = Color(0xFFC4C4C4)
+        val SteelDim = Color(0xFF8A8A8A)
+        val SteelContainer = Color(0xFF1E1E1E)
+        val OnSteelContainer = Color(0xFFF2F2F2)
 
         /** Semantic red — critical failures ONLY. */
         val Danger = Color(0xFFFF8A7A)
@@ -66,6 +66,6 @@ object Tokens {
     object Radius {
         val s = 8.dp
         val m = 12.dp   // fields (the established FieldShape)
-        val l = 16.dp   // cards
+        val l = 16.dp   // cards (neutral grey, no tint)
     }
 }

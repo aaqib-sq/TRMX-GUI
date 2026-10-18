@@ -1,14 +1,14 @@
 package dev.trmx.gui.ui
 
 /*
- * Home (revival): "my work", not "the whole runtime". A monochrome status
- * card (connected / not, one-tap repair), big running-job cards with live
- * progress and one-tap cancel, one big white "+ New job" button, and a
- * quiet recent list. No intent grid, no console aesthetic.
+ * Work (redesign v3): the approved final look — pure-black ground, neutral
+ * grey BIG cards, one status pill per job, vector icons only. A slim status
+ * strip on top (dot + word + repair), running jobs as cards with progress,
+ * recent jobs as cards with DONE / FAILED / CANCELLED badges, files as one
+ * big nav card. No duplicate heading (the shell top bar already says Work).
  */
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -62,18 +63,18 @@ fun DashboardScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(Sp.m),
-        verticalArrangement = Arrangement.spacedBy(Sp.m),
+            .padding(horizontal = 20.dp, vertical = Sp.m),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("TRMX", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        StatusStrip(state = state, repair = repair, onRepair = onRepair)
 
-        StatusCard(state = state, repair = repair, onRepair = onRepair)
+        if (repair.running || repair.failure != null || repair.finished || state.error != null) {
+            RepairCard(state = state, repair = repair, onRepair = onRepair)
+        }
 
         val running = state.jobs.filter { it.status in ACTIVE }
         if (running.isNotEmpty()) {
-            Text("Running now",
-                 style = MaterialTheme.typography.titleMedium,
-                 fontWeight = FontWeight.Bold)
+            TrmxSectionLabel("Running now")
             running.forEach { job ->
                 RunningJobCard(
                     job = job,
@@ -82,13 +83,11 @@ fun DashboardScreen(
                 )
             }
         } else {
-            TrmxCard(modifier = Modifier.fillMaxWidth()) {
+            TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 20.dp) {
                 Text("Nothing running.",
-                     style = MaterialTheme.typography.bodyMedium,
-                     color = P.TextSecondary)
+                     fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Text("Start something from the Agent tab — or tap + New job.",
-                     style = MaterialTheme.typography.bodySmall,
-                     color = P.TextMuted)
+                     fontSize = 14.sp, color = P.TextSecondary)
             }
         }
 
@@ -103,11 +102,9 @@ fun DashboardScreen(
 
         val recent = state.jobs.filter { it.status in TERMINAL }.take(5)
         if (recent.isNotEmpty()) {
-            Text("Recent",
-                 style = MaterialTheme.typography.titleMedium,
-                 fontWeight = FontWeight.Bold)
+            TrmxSectionLabel("Recent")
             recent.forEach { job ->
-                RecentRow(job = job, onOpen = { onJobClick(job.job_id) })
+                RecentCard(job = job, onOpen = { onJobClick(job.job_id) })
             }
         }
 
@@ -116,92 +113,96 @@ fun DashboardScreen(
                  color = MaterialTheme.colorScheme.error)
         }
 
-        // Files live here in the redesign (Work tab) — no separate tab.
-        Text("Files",
-             style = MaterialTheme.typography.titleMedium,
-             fontWeight = FontWeight.Bold)
-        TrmxCard(modifier = Modifier.fillMaxWidth(), onClick = onOpenFiles) {
+        TrmxSectionLabel("Files")
+        TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 20.dp, onClick = onOpenFiles) {
             Row(verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Sp.m)) {
-                Icon(Icons.Outlined.Folder, contentDescription = null,
-                     tint = P.Accent, modifier = Modifier.size(22.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-                    Text("Browse files",
-                         style = MaterialTheme.typography.titleSmall,
-                         fontWeight = FontWeight.SemiBold)
+                TrmxIconTile(Icons.Outlined.Folder)
+                Column(modifier = Modifier.weight(1f),
+                       verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+                    Text("Browse files", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     Text("Termux home and shared storage.",
-                         style = MaterialTheme.typography.bodySmall,
-                         color = P.TextSecondary)
+                         fontSize = 14.sp, color = P.TextSecondary)
+                }
+                Icon(Icons.Outlined.ChevronRight, contentDescription = null,
+                     tint = P.TextMuted, modifier = Modifier.size(26.dp))
+            }
+        }
+    }
+}
+
+/** Slim status strip: dot + word + bridge version / repair shortcut. */
+@Composable
+private fun StatusStrip(
+    state: DashboardState,
+    repair: RepairState,
+    onRepair: () -> Unit,
+) {
+    val connected = state.error == null
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(11.dp)
+                .background(if (connected) P.Accent else P.Danger, CircleShape))
+        Spacer(Modifier.width(12.dp))
+        Text(
+            if (connected) "Connected" else "Not connected",
+            fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.weight(1f))
+        when {
+            state.refreshing -> CircularProgressIndicator(
+                strokeWidth = 2.dp, color = P.TextSecondary,
+                modifier = Modifier.size(16.dp))
+            connected && !repair.running && repair.failure == null -> {
+                state.info?.bridge_version?.takeIf { it.isNotEmpty() }?.let { v ->
+                    Text("bridge $v", fontSize = 13.sp, color = P.TextMuted)
+                    Spacer(Modifier.width(4.dp))
+                }
+                TextButton(onClick = onRepair) {
+                    Text("Repair", color = P.TextSecondary, fontSize = 14.sp)
                 }
             }
         }
     }
 }
 
-/** Monochrome connection card: state + one-tap repair. */
+/** Repair detail card — only shown while repair matters. */
 @Composable
-private fun StatusCard(
+private fun RepairCard(
     state: DashboardState,
     repair: RepairState,
     onRepair: () -> Unit,
 ) {
-    val connected = state.error == null
-    TrmxCard(modifier = Modifier.fillMaxWidth()) {
+    TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 20.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(
-                            if (connected) P.Accent else P.Danger,
-                            CircleShape))
-                Spacer(Modifier.width(Sp.s))
-                Text(
-                    if (connected) "Connected" else "Not connected",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f))
-                if (state.refreshing) {
-                    CircularProgressIndicator(
-                        strokeWidth = 2.dp,
-                        color = P.TextSecondary,
-                        modifier = Modifier.size(16.dp))
-                }
-            }
-            state.info?.let { info ->
-                val running = info.load?.jobs_running ?: 0
-                if (running > 0) {
-                    Text("$running job${if (running == 1) "" else "s"} running",
-                         style = MaterialTheme.typography.bodySmall,
-                         color = P.TextSecondary)
-                }
-            }
             when {
                 repair.running -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(
-                            strokeWidth = 2.dp,
-                            color = P.TextSecondary,
+                            strokeWidth = 2.dp, color = P.TextSecondary,
                             modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(Sp.s))
                         Text(repair.label.ifEmpty { "Repairing…" },
-                             style = MaterialTheme.typography.bodySmall,
-                             color = P.TextSecondary)
+                             fontSize = 14.sp, color = P.TextSecondary)
                     }
                 }
                 repair.failure != null -> {
-                    Text(repair.failure,
-                         style = MaterialTheme.typography.bodySmall,
+                    Text(repair.failure, fontSize = 14.sp,
                          color = MaterialTheme.colorScheme.error)
                     TrmxButton(label = "Try repair again", onClick = onRepair,
                                kind = TrmxButtonKind.Secondary)
                 }
+                repair.finished -> {
+                    Text("Connection repaired.", fontSize = 14.sp, color = P.TextSecondary)
+                }
                 else -> {
-                    if (repair.finished) {
-                        Text("Connection repaired.",
-                             style = MaterialTheme.typography.bodySmall,
-                             color = P.TextSecondary)
-                    }
+                    Text("The bridge is not answering.",
+                         fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     TrmxButton(label = "Repair connection", onClick = onRepair,
                                kind = TrmxButtonKind.Secondary)
                 }
@@ -210,7 +211,19 @@ private fun StatusCard(
     }
 }
 
-/** One running job = one big card: label, live progress, one-tap cancel. */
+private fun badgeFor(status: String): Pair<String, BadgeTone> = when (status) {
+    "COMPLETED" -> "DONE" to BadgeTone.Neutral
+    "FAILED" -> "FAILED" to BadgeTone.Danger
+    "CANCELLED" -> "CANCELLED" to BadgeTone.Muted
+    "LOST" -> "LOST" to BadgeTone.Muted
+    "RUNNING" -> "RUNNING" to BadgeTone.Neutral
+    "QUEUED" -> "QUEUED" to BadgeTone.Muted
+    "STARTING" -> "STARTING" to BadgeTone.Neutral
+    "CANCELLING" -> "CANCELLING" to BadgeTone.Danger
+    else -> status to BadgeTone.Muted
+}
+
+/** One running job = one big card: label, badge, live progress, cancel. */
 @Composable
 private fun RunningJobCard(
     job: JobSummary,
@@ -219,24 +232,21 @@ private fun RunningJobCard(
 ) {
     TrmxCard(
         modifier = Modifier.fillMaxWidth(),
+        contentPadding = 20.dp,
         onClick = onOpen,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     JobLabels.taskLabel(job),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                Text(
-                    JobLabels.statusVerb(job.status),
-                    color = TrmxColors.status(job.status),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                )
+                val (label, tone) = badgeFor(job.status)
+                TrmxBadge(label, tone)
             }
             if (job.progress_pct != null) {
                 LinearProgressIndicator(
@@ -249,39 +259,37 @@ private fun RunningJobCard(
                     color = P.TextMuted, trackColor = P.SurfaceHighest)
             }
             job.progress_detail?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall,
-                     color = P.TextSecondary,
+                Text(it, fontSize = 14.sp, color = P.TextSecondary,
                      maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             TextButton(onClick = onCancel) {
-                Text("Cancel", color = MaterialTheme.colorScheme.error)
+                Text("Cancel", color = MaterialTheme.colorScheme.error, fontSize = 15.sp)
             }
         }
     }
 }
 
-/** Quiet recent row: name + status, nothing more. */
+/** One recent job = one big card: title, one meta line, status badge. */
 @Composable
-private fun RecentRow(job: JobSummary, onOpen: () -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpen)
-            .padding(vertical = Sp.xs),
+private fun RecentCard(job: JobSummary, onOpen: () -> Unit) {
+    TrmxCard(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = 20.dp,
+        onClick = onOpen,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(JobLabels.taskLabel(job),
-                 style = MaterialTheme.typography.bodyMedium,
-                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(JobLabels.subtitle(job),
-                 style = MaterialTheme.typography.bodySmall,
-                 color = P.TextSecondary,
-                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f),
+                   verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+                Text(JobLabels.taskLabel(job),
+                     fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(JobLabels.subtitle(job),
+                     fontSize = 14.sp, color = P.TextSecondary,
+                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.width(Sp.s))
+            val (label, tone) = badgeFor(job.status)
+            TrmxBadge(label, tone)
         }
-        Spacer(Modifier.width(Sp.s))
-        Text(JobLabels.statusVerb(job.status),
-             style = MaterialTheme.typography.labelSmall,
-             color = TrmxColors.status(job.status))
     }
 }
