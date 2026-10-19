@@ -1570,3 +1570,5 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private val TERMINAL = setOf("COMPLETED", "FAILED", "CANCELLED", "LOST")
     }
 }
+
+// CI re-run probe (no behavior change).
