@@ -871,6 +871,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun forgetAiKey() = _aiConfig.update { it.copy(clearKey = true, apiKeyInput = "") }
     fun clearAiNotice() = _aiConfig.update { it.copy(notice = null, error = null) }
 
+    /**
+     * Redesign v2: one-tap LOCAL GGUF preset. The bridge talks to a
+     * llama.cpp server (OpenAI-compatible) running on this phone — the
+     * SAME .gguf file the owner already has (PocketPal/ChatterUI use it
+     * read-only from shared storage), no copy, no internet, no API money.
+     * A dummy key is stored because openai_compatible expects one;
+     * llama-server ignores it.
+     */
+    fun applyLocalGgufPreset() {
+        _aiConfig.update {
+            it.copy(mode = "http_api", provider = "openai_compatible",
+                endpoint = "http://127.0.0.1:8080/v1/chat/completions",
+                model = "local-gguf", apiKeyInput = "local",
+                clearKey = false, error = null)
+        }
+        saveAiConfig()
+    }
+
     fun saveAiConfig() {
         val s0 = _aiConfig.value
         if (s0.saving) return
@@ -1570,5 +1588,3 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private val TERMINAL = setOf("COMPLETED", "FAILED", "CANCELLED", "LOST")
     }
 }
-
-// CI re-run probe (no behavior change).
