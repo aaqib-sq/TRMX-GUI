@@ -90,7 +90,9 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                         "http_api" -> {
                             val p = c.http_api?.provider?.ifEmpty { null } ?: "api"
                             val m = c.http_api?.model?.ifEmpty { null } ?: ""
-                            ("http_api · $p" + if (m.isNotEmpty()) " · $m" else "") to false
+                            val ep = c.http_api?.endpoint ?: ""
+                            val local = ep.contains("127.0.0.1") || ep.contains("localhost")
+                            ("http_api · $p" + if (m.isNotEmpty()) " · $m" else "") to local
                         }
                         else -> {
                             val cmd = c.cli?.command?.joinToString(" ")
@@ -272,9 +274,29 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                 addRow(AgentRow(
                     AgentRowKind.FAILED,
                     title = "Stopped" +
-                        (if (e.error.isNotEmpty()) ": ${e.error}" else "")))
+                        (if (e.error.isNotEmpty()) ": ${humanAgentError(e.error)}" else "")))
             }
             is AgentEvent.Note -> addRow(AgentRow(AgentRowKind.NOTE, title = e.text))
+        }
+    }
+
+/** Bridge/agent failures in plain words — never a raw errno string. */
+    private fun humanAgentError(raw: String): String {
+        val e = raw.lowercase()
+        return when {
+            "cannot reach" in e || "connection refused" in e || "connecterror" in e ->
+                if ("127.0.0.1" in e || "localhost" in e)
+                    "the local model server is not running. Start it " +
+                        "(Tools \u2192 Services) and ask again."
+                else
+                    "the AI service could not be reached. Check the " +
+                        "internet connection and try again."
+            "401" in e || "unauthorized" in e || "invalid api key" in e ->
+                "the AI service rejected the API key. Check it in Settings."
+            "timed out" in e || "timeout" in e ->
+                "the model took too long to answer. It may still be " +
+                    "loading \u2014 give it a moment and ask again."
+            else -> raw
         }
     }
 
