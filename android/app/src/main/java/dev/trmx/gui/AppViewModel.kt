@@ -733,6 +733,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             applyStepArgs(f.stepIndex, args)
             return
         }
+        // One live job per tool. The Run button used to stack duplicates
+        // without a word — for a server-style tool that is a port war
+        // (device lesson, 2026-10-19: a pile of llama-server jobs racing
+        // :8080 while the owner thought nothing had started).
+        val running = _dashboard.value.jobs.firstOrNull {
+            it.tool == schema.id && (it.status == "RUNNING" || it.status == "QUEUED")
+        }
+        if (running != null) {
+            _toolForm.update {
+                it.copy(error = null,
+                        notice = "already running — job ${running.job_id}. " +
+                            "Cancel it from Work if you want a fresh start.")
+            }
+            return
+        }
         _toolForm.update { it.copy(submitting = true, error = null, notice = null) }
         viewModelScope.launch {
             val req = ToolSubmitRequest(
