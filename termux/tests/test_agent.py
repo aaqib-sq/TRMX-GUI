@@ -222,12 +222,23 @@ class AgentTestBase(unittest.TestCase):
         self.assertNotIn(TOKEN, json.dumps(events))
 
     def test_11_invalid_model_json(self):
-        self.queue_responses("this is not json at all")
+        # One bad reply earns a corrective retry (small local models wrap
+        # JSON in prose); TWO bad replies in a row still fail the task.
+        self.queue_responses("this is not json at all",
+                             "still not json, sorry")
         t = self.create_task("do something")
         got = self.wait_task(t["task_id"], {"failed"})
         self.assertIn("rejected", got["error"])
         events = self.agent_events(t["job_id"])
         self.assertTrue(any(e["t"] == "failed" for e in events))
+
+    def test_11b_invalid_then_valid_recovers(self):
+        self.queue_responses(
+            "let me think out loud... no json here",
+            json.dumps({"op": "done", "summary": "recovered and done"}))
+        t = self.create_task("do something")
+        got = self.wait_task(t["task_id"], {"done"})
+        self.assertEqual(got["summary"], "recovered and done")
 
     def test_12_confirm_allow_runs_tool(self):
         self.queue_responses(
@@ -268,11 +279,13 @@ class AgentTestBase(unittest.TestCase):
         self.assertIn("denied", got["error"])
 
     def test_14_agent_cannot_submit_itself(self):
-        self.queue_responses(
-            json.dumps({"op": "do", "tool": "submit_tool",
-                        "args": {"tool": "agent",
-                                 "args": {"task_id": "AT-nope"}},
-                        "describe": "spawn another agent"}))
+        # The forbidden action is rejected, retried once like any invalid
+        # output, rejected again -- and NEVER executed either time.
+        bad = json.dumps({"op": "do", "tool": "submit_tool",
+                          "args": {"tool": "agent",
+                                   "args": {"task_id": "AT-nope"}},
+                          "describe": "spawn another agent"})
+        self.queue_responses(bad, bad)
         t = self.create_task("recurse")
         got = self.wait_task(t["task_id"], {"failed"})
         self.assertIn("itself", got["error"])
