@@ -470,7 +470,26 @@ class Policy:
     def file_roots(self) -> list[Path]:
         # realpath()-ed at call time (spec: resolved at policy load; we
         # resolve per request — same effect, tolerates dirs appearing later)
-        return [r.resolve() for r in self.roots if r.exists()]
+        out: list[Path] = []
+        for r in self.roots:
+            if not r.exists():
+                continue
+            out.append(r.resolve())
+            if r.name == "storage":
+                # termux-setup-storage on modern Android makes ~/storage a
+                # REAL directory whose children (downloads, shared, dcim, ...)
+                # are symlinks into shared storage. Resolving the storage
+                # dir alone therefore never contains a file beneath it --
+                # each child's TARGET is a policy root in its own right
+                # (device-found 2026-10-19: every shared-storage path arg
+                # was PATH_DENIED while `ls ~/storage/...` worked fine).
+                try:
+                    for child in sorted(r.iterdir()):
+                        if child.is_dir():
+                            out.append(child.resolve())
+                except OSError:
+                    pass
+        return out
 
     def resolve_in_roots(self, raw: str, for_write: bool = False) -> Path:
         """Expand a user path and enforce §6.1 containment.
@@ -517,7 +536,7 @@ class Policy:
         if not expanded.is_dir():
             raise BridgeError(400, "NOT_A_DIRECTORY", f"cwd is not a directory: {raw}", field="cwd")
         if self.termux:
-            real_roots = [r.resolve() for r in self.roots]
+            real_roots = self.file_roots()
             if not any(expanded == r or r in expanded.parents for r in real_roots):
                 raise BridgeError(403, "PATH_DENIED", f"cwd outside policy roots: {raw}", field="cwd")
         return expanded

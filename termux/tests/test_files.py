@@ -339,3 +339,45 @@ if __name__ == "__main__":
     print(f"bridge under test: {Path(BridgeProc.__module__ and '.') or ''}"
           f"{Path(HERE).parent / 'trmx-bridge.py'}")
     unittest.main(verbosity=2)
+
+
+class TestStorageSymlinkRoots(unittest.TestCase):
+    """Regression (device, 2026-10-19): on modern Android, ~/storage is a
+    REAL directory whose children are symlinks into shared storage
+    (termux-setup-storage). The §6.1 roots must include each child's
+    resolved target, or every shared-storage path arg is PATH_DENIED
+    even though the file is right there."""
+
+    def _policy(self, home: Path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "trmx_bridge", HERE.parent / "trmx-bridge.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        policy = mod.Policy(home / ".trmx")
+        policy.user_home = home
+        policy.roots = [home, home / "storage"]
+        return mod, policy
+
+    def test_child_symlink_target_counts_as_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            home = base / "home"; home.mkdir()
+            (home / "storage").mkdir()
+            shared_dl = base / "shared" / "Download"; shared_dl.mkdir(parents=True)
+            (shared_dl / "model.gguf").write_bytes(b"gguf")
+            (home / "storage" / "downloads").symlink_to(shared_dl, target_is_directory=True)
+            mod, policy = self._policy(home)
+            got = policy.resolve_in_roots("~/storage/downloads/model.gguf")
+            self.assertTrue(str(got).endswith("model.gguf"))
+
+    def test_outside_still_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            home = base / "home"; home.mkdir()
+            (home / "storage").mkdir()
+            outside = base / "outside.txt"; outside.write_text("x")
+            mod, policy = self._policy(home)
+            with self.assertRaises(mod.BridgeError) as cm:
+                policy.resolve_in_roots(str(outside))
+            self.assertEqual(cm.exception.status, 403)
