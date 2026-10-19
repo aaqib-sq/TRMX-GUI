@@ -69,6 +69,15 @@ def emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def note(text: str) -> None:
+    """Plain progress line. The app renders non-JSON stdout lines as muted
+    notes -- so the chat can show life DURING a long model call instead of
+    staying blank until the step completes (device lesson, 2026-10-19:
+    the server logs looked alive while the chat showed nothing)."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 def _sigterm(signum, frame):  # noqa: ARG001
     try:
         emit({"t": "failed", "error": "cancelled by user"})
@@ -325,6 +334,7 @@ class Agent:
         self.step = 0
         self.deadline = time.time() + TASK_TIMEOUT_S
         self.consec_failures = 0
+        self.parse_failures = 0
 
     # -- task file ------------------------------------------------
 
@@ -509,6 +519,8 @@ class Agent:
             history = "\n".join(self.history[-8:]) or "(nothing yet)"
             prompt = PROMPT_TEMPLATE.format(
                 tools=tools_line, instruction=self.instruction, history=history)
+            note(f"step {self.step}: asking the model -- on this phone a "
+                 "slow local model can take a minute or two per step")
             buf = io.StringIO()
             try:
                 with redirect_stderr(buf):
@@ -520,9 +532,23 @@ class Agent:
                                  f"{re.sub(r'^trmx:\\s*', '', msg)}")
             try:
                 action = validate_action(extract_json(text))
+                self.parse_failures = 0
             except ValueError as e:
-                return self.fail(f"model output rejected at step {self.step}: "
-                                 f"{e}")
+                # A small local model often wraps the JSON in prose or
+                # breaks the shape. One corrective retry (with the rule
+                # restated in history) instead of dying on the spot --
+                # two bad replies in a row still fail the task.
+                self.parse_failures += 1
+                if self.parse_failures >= 2:
+                    return self.fail(f"model output rejected at step "
+                                     f"{self.step}: {e}")
+                note(f"step {self.step}: the model's reply was not valid "
+                     "JSON -- asking again")
+                self.history.append(
+                    "system: your last reply was not one valid JSON object. "
+                    "Reply with exactly one JSON object in the required "
+                    "shape, no prose, no markdown fences.")
+                continue
             op = action["op"]
             if op == "say":
                 emit({"t": "result", "step": self.step, "ok": True,

@@ -268,7 +268,11 @@ def call_http(spec: dict, prompt: str) -> str:
         headers = {"Content-Type": "application/json",
                    "Authorization": f"Bearer {spec['key']}"}
         body = {"model": spec["model"],
-                "messages": [{"role": "user", "content": prompt}]}
+                "messages": [{"role": "user", "content": prompt}],
+                # Cap the reply: an uncapped small model rambles for
+                # hundreds of tokens per agent step (626 seen on device),
+                # and every token is seconds on a phone CPU.
+                "max_tokens": 512}
     req = urllib.request.Request(
         spec["url"], data=json.dumps(body).encode("utf-8"),
         headers=headers, method="POST")
