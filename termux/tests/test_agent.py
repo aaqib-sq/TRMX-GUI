@@ -843,6 +843,28 @@ class TestDestructivePatterns(unittest.TestCase):
             self.agent.action_hash("AT-1", 4, "submit_tool", args))
 
 
+class TestBridgeErrorUnwrap(unittest.TestCase):
+    """PROTOCOL §10 errors are nested {"error": {"code", "message"}}.
+    The agent's client used to read the top level and report every
+    bridge failure as "HTTP <status>: None" (device screenshot,
+    2026-10-20) — neither the model nor the user saw the reason."""
+
+    def test_nested_error_envelope_is_unwrapped(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / "bridge.json").write_text(
+                json.dumps({"token": "tok"}))
+            bridge = trmx_agent.Bridge(home)
+            bridge.call = lambda *a, **k: (404, {"error": {
+                "code": "PATH_NOT_FOUND",
+                "message": "no such path: ~/Downloads",
+                "field": "path", "details": None}})
+            with self.assertRaises(trmx_agent.AgentError) as cm:
+                bridge.check("GET", "/v1/files?path=~/Downloads")
+            self.assertIn("PATH_NOT_FOUND", str(cm.exception))
+            self.assertIn("no such path: ~/Downloads", str(cm.exception))
+
+
 class TestSayGuard(AgentTestBase):
     """The say-loop guard (device report, 2026-10-20). A separate
     class on purpose: AgentStepCapTest re-runs AgentTestBase under

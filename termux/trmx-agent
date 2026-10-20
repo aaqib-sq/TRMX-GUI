@@ -179,9 +179,17 @@ class Bridge:
               timeout: int = 30) -> dict:
         st, data = self.call(method, path, body, timeout)
         if not (200 <= st < 300):
-            code = data.get("code") if isinstance(data, dict) else None
-            msg = (data.get("message") if isinstance(data, dict)
-                   else str(data)[:300])
+            # PROTOCOL §10 errors are nested: {"error": {"code",
+            # "message", ...}}. Reading the top level instead reported
+            # every failure as "HTTP <st>: None" (device, 2026-10-20) —
+            # the model (and the user) never saw the actual reason.
+            err = data.get("error") if isinstance(data, dict) else None
+            if isinstance(err, dict):
+                code, msg = err.get("code"), err.get("message")
+            else:
+                code = data.get("code") if isinstance(data, dict) else None
+                msg = (data.get("message") if isinstance(data, dict)
+                       else str(data)[:300])
             raise AgentError(f"{method} {path} -> HTTP {st}"
                              + (f" {code}: {msg}" if code else f": {msg}"))
         if not isinstance(data, dict):
@@ -371,7 +379,7 @@ Tool menu:
 - submit_tool {{"tool":"<tool id>","args":{{...}},"name"?: "<short job name>"}} — run a registered tool. Available tools: {tools}
 - list_jobs {{"status"?: "active", "limit"?: 1..50}} — recent jobs
 - job_output {{"job_id": "...", "tail_chars"?: 1..8000}} — last output of a job
-- list_files {{"path"?: "~"}} — list a directory
+- list_files {{"path"?: "~"}} — list a directory. "~" is the Termux home. Shared phone storage is under "~/storage": "~/storage/downloads" is the Downloads folder, "~/storage/shared" the internal-storage root, "~/storage/dcim" the camera photos
 - service_action {{"service_id": "...", "action": "start"|"stop"|"restart"}}
 - cancel_job {{"job_id": "..."}} — cancel a running job
 

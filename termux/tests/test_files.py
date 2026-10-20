@@ -389,6 +389,34 @@ class TestStorageSymlinkRoots(unittest.TestCase):
                               side_effect=lambda p: android_dl if p == link else resolve(p)):
                 self.assertIn(android_dl, policy.file_roots())
 
+    def test_home_downloads_alias_maps_to_storage(self):
+        # Device report (2026-10-20): the agent asked for "~/Downloads"
+        # and got a bare 404 — on Android the folder is
+        # ~/storage/downloads. The alias resolves the natural name.
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"; home.mkdir()
+            dl = home / "storage" / "downloads"; dl.mkdir(parents=True)
+            (dl / "song.mp3").write_bytes(b"x")
+            mod, policy = self._policy(home)
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                self.assertEqual(policy.resolve_in_roots("~/Downloads"), dl)
+                self.assertEqual(policy.resolve_in_roots("~/Download"), dl)
+
+    def test_home_downloads_without_storage_stays_literal(self):
+        # No termux-setup-storage -> nothing to alias to; the literal
+        # path comes back and the caller answers its normal 404.
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"; home.mkdir()
+            (home / "storage").mkdir()
+            mod, policy = self._policy(home)
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                self.assertEqual(policy.resolve_in_roots("~/Downloads"),
+                                 home / "Downloads")
+
     def test_outside_still_denied(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
