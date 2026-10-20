@@ -480,13 +480,19 @@ class Policy:
                 # REAL directory whose children (downloads, shared, dcim, ...)
                 # are symlinks into shared storage. Resolving the storage
                 # dir alone therefore never contains a file beneath it --
-                # each child's TARGET is a policy root in its own right
+                # only known children targeting /storage/emulated/ are roots
                 # (device-found 2026-10-19: every shared-storage path arg
                 # was PATH_DENIED while `ls ~/storage/...` worked fine).
                 try:
                     for child in sorted(r.iterdir()):
-                        if child.is_dir():
-                            out.append(child.resolve())
+                        if child.name not in {
+                            "shared", "downloads", "dcim", "pictures", "music", "movies",
+                            "audiobooks", "documents", "external", "media",
+                        } or not child.is_dir():
+                            continue
+                        target = child.resolve()
+                        if Path("/storage/emulated") in target.parents:
+                            out.append(target)
                 except OSError:
                     pass
         return out

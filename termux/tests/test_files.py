@@ -335,12 +335,6 @@ class TestFiles(unittest.TestCase):
         self.assertEqual(status, 404, raw)
 
 
-if __name__ == "__main__":
-    print(f"bridge under test: {Path(BridgeProc.__module__ and '.') or ''}"
-          f"{Path(HERE).parent / 'trmx-bridge.py'}")
-    unittest.main(verbosity=2)
-
-
 class TestStorageSymlinkRoots(unittest.TestCase):
     """Regression (device, 2026-10-19): on modern Android, ~/storage is a
     REAL directory whose children are symlinks into shared storage
@@ -368,8 +362,15 @@ class TestStorageSymlinkRoots(unittest.TestCase):
             (shared_dl / "model.gguf").write_bytes(b"gguf")
             (home / "storage" / "downloads").symlink_to(shared_dl, target_is_directory=True)
             mod, policy = self._policy(home)
-            got = policy.resolve_in_roots("~/storage/downloads/model.gguf")
-            self.assertTrue(str(got).endswith("model.gguf"))
+            # Simulate Android's resolved target without requiring /storage
+            # to exist on the Linux test host.
+            from unittest.mock import patch
+            resolve = Path.resolve
+            link = home / "storage" / "downloads"
+            android_dl = Path("/storage/emulated/0/Download")
+            with patch.object(Path, "resolve", autospec=True,
+                              side_effect=lambda p: android_dl if p == link else resolve(p)):
+                self.assertIn(android_dl, policy.file_roots())
 
     def test_outside_still_denied(self):
         with tempfile.TemporaryDirectory() as td:
@@ -381,3 +382,35 @@ class TestStorageSymlinkRoots(unittest.TestCase):
             with self.assertRaises(mod.BridgeError) as cm:
                 policy.resolve_in_roots(str(outside))
             self.assertEqual(cm.exception.status, 403)
+
+    def test_hostile_planted_symlink_rejected(self):
+        for name in ("evil", "downloads"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                home = Path(td) / "home"
+                (home / "storage").mkdir(parents=True)
+                (home / "storage" / name).symlink_to("/", target_is_directory=True)
+                mod, policy = self._policy(home)
+                self.assertNotIn(Path("/"), policy.file_roots())
+                with self.assertRaises(mod.BridgeError) as cm:
+                    policy.resolve_in_roots(str(home / "storage" / name / "etc/passwd"))
+                self.assertEqual(cm.exception.status, 403)
+
+    def test_unknown_name_under_shared_storage_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            (home / "storage").mkdir(parents=True)
+            link = home / "storage" / "evil"
+            link.symlink_to("/", target_is_directory=True)
+            mod, policy = self._policy(home)
+            from unittest.mock import patch
+            resolve = Path.resolve
+            target = Path("/storage/emulated/0")
+            with patch.object(Path, "resolve", autospec=True,
+                              side_effect=lambda p: target if p == link else resolve(p)):
+                self.assertNotIn(target, policy.file_roots())
+
+
+if __name__ == "__main__":
+    print(f"bridge under test: {Path(BridgeProc.__module__ and '.') or ''}"
+          f"{Path(HERE).parent / 'trmx-bridge.py'}")
+    unittest.main(verbosity=2)
