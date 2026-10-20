@@ -636,6 +636,52 @@ class ToolRegistry:
 SERVICE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
+# -- service liveness + port probes (§3-M1)
+
+def _pgid_alive(pgid) -> bool:
+    """Signal-0 liveness probe for a process group."""
+    try:
+        os.killpg(pgid, 0)
+    except (OSError, TypeError):   # dead pgid, or pgid None
+        return False
+    return bool(pgid)
+
+
+def _port_holder(port: int, job: dict | None, store: Store):
+    """(port_open, kind, holder_job_id) via /proc; kind ∈ self/other_job/
+    unknown; port_open None when /proc is unreadable."""
+    inodes = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            lines = Path(f"/proc/net/{name}").read_text().splitlines()[1:]
+        except OSError:
+            lines = []
+        for line in lines:
+            p = line.split()
+            if len(p) > 9 and p[3] == "0A" \
+                    and p[1].rsplit(":", 1)[1] == "%04X" % port:
+                inodes.add(p[9])
+    if not inodes:
+        return (None if not Path("/proc/net/tcp").exists() else False), "unknown", None
+    for j in store.active_jobs():
+        if not j["pid"]:
+            continue
+        try:
+            fds = list((Path("/proc") / str(j["pid"]) / "fd").iterdir())
+        except OSError:
+            continue
+        for f in fds:
+            try:
+                tgt = os.readlink(f)
+            except OSError:
+                continue
+            if tgt.startswith("socket:[") and tgt[8:-1] in inodes:
+                if job and j["job_id"] == job["job_id"]:
+                    return True, "self", None
+                return True, "other_job", j["job_id"]
+    return True, "unknown", None
+
+
 class ServiceRegistry:
     """Named long-running services (protocol 1.1, PROTOCOL §14).
 
@@ -658,6 +704,7 @@ class ServiceRegistry:
         self.defs: dict[str, dict] = {}
         self.bindings: dict[str, str] = {}      # service id -> last started job id
         self.errors: list[str] = []
+        self._start_locks: dict[str, asyncio.Lock] = {}
         self._load()
 
     def _load(self) -> None:
@@ -732,6 +779,8 @@ class ServiceRegistry:
         self.registry.synth_argv(schema, args)
         if not isinstance(d.get("autostart", False), bool):
             raise ValueError("autostart must be a boolean")
+        if (p := d.get("port")) is not None and (type(p) is not int or not 1 <= p <= 65535):
+            raise ValueError("port must be an int in 1..65535")
 
     def _write_def(self, d: dict) -> None:
         path = self.home / "services" / f"{d['id']}.json"
@@ -749,6 +798,26 @@ class ServiceRegistry:
         job_id = self.bindings.get(sid)
         job = self.store.get_job(job_id) if job_id else None
         state = "running" if (job and job["status"] in ACTIVE_STATES) else "stopped"
+        port = d.get("port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            port = d.get("args", {}).get("port")
+            if type(port) is not int or not 1 <= port <= 65535:
+                port = None
+        pid_alive = port_open = port_holder = diagnosis = detail = None
+        if job and job["status"] in ACTIVE_STATES:
+            pid_alive = _pgid_alive(job.get("pgid") or job.get("pid"))
+            if not pid_alive:
+                diagnosis = "process_dead"
+                detail = f"{job_id} {job['status']} in DB, pgid {job.get('pgid')} gone"
+        if port is not None:
+            port_open, port_holder, holder_job = _port_holder(port, job, self.store)
+            if port_open and port_holder != "self" and diagnosis is None:
+                diagnosis = f"port_in_use_by_{port_holder}"
+                who = (f"job {holder_job}" if port_holder == "other_job"
+                       else "an unknown process")
+                detail = f"port {port} is held by {who}"
+                if job and job["status"] in TERMINAL_STATES:
+                    detail += f" — last run ended {job['status']}; bind conflict likely"
         return {
             "id": d["id"], "name": d["name"], "tool": d["tool"],
             "args": d.get("args", {}),
@@ -759,6 +828,9 @@ class ServiceRegistry:
             "last_job_id": job_id,
             "last_status": job["status"] if job else None,
             "last_exit_code": job["exit_code"] if job else None,
+            "port": port, "pid_alive": pid_alive, "port_open": port_open,
+            "port_holder": port_holder, "diagnosis": diagnosis,
+            "diagnosis_detail": detail,
         }
 
     def list_status(self) -> list[dict]:
@@ -779,7 +851,7 @@ class ServiceRegistry:
                               f"service '{sid}' is running — stop it before replacing it")
         clean = {"id": sid, "name": d["name"], "tool": d["tool"],
                  "args": d.get("args", {}), "autostart": bool(d.get("autostart", False)),
-                 "created_at": now_iso()}
+                 "port": d.get("port"), "created_at": now_iso()}
         self._write_def(clean)
         self.defs[sid] = clean          # binding (last job) survives a replace
         self.store.audit("service.create", f"{sid} (tool {clean['tool']})")
@@ -805,19 +877,21 @@ class ServiceRegistry:
         d = self.defs.get(sid)
         if d is None:
             raise BridgeError(404, "SERVICE_NOT_FOUND", f"no service with id '{sid}'")
-        if self.status(sid)["state"] == "running":
-            raise BridgeError(409, "SERVICE_RUNNING",
-                              f"service '{sid}' is already running "
-                              f"(job {self.bindings.get(sid)})")
-        job, _ = await self.manager.submit({"name": f"service: {d['name']}",
-                                            "type": "tool", "tool": d["tool"],
-                                            "args": d.get("args", {}), "cwd": "~"})
-        self.bindings[sid] = job["job_id"]
-        self._save_bindings()
-        self.store.audit("service.start", f"{sid} -> {job['job_id']}")
-        st = self.status(sid)
-        self.bus.publish("service.updated", st)
-        return st
+        # §3-M9: 409 check + submit must be atomic per service
+        async with self._start_locks.setdefault(sid, asyncio.Lock()):
+            if self.status(sid)["state"] == "running":
+                raise BridgeError(409, "SERVICE_RUNNING",
+                                  f"service '{sid}' is already running "
+                                  f"(job {self.bindings.get(sid)})")
+            job, _ = await self.manager.submit({"name": f"service: {d['name']}",
+                                                "type": "tool", "tool": d["tool"],
+                                                "args": d.get("args", {}), "cwd": "~"})
+            self.bindings[sid] = job["job_id"]
+            self._save_bindings()
+            self.store.audit("service.start", f"{sid} -> {job['job_id']}")
+            st = self.status(sid)
+            self.bus.publish("service.updated", st)
+            return st
 
     async def stop(self, sid: str) -> dict:
         if sid not in self.defs:
@@ -873,3 +947,20 @@ class ServiceRegistry:
                 await self.start(sid)
             except BridgeError as e:
                 self.store.audit("service.autostart", f"{sid} FAILED: {e.message}")
+
+
+# --------------------------------------------------------------------------- AI backend config (protocol 1.1)
+
+# Mirrors trmx-ai's defaults/template (docs/AI-CONFIG.md). The bridge never
+# interprets the config — it only reads/validates/writes the file for the
+# app; trmx-ai remains the sole consumer.
+AI_PROVIDERS = ("openai", "groq", "gemini", "openai_compatible")
+AI_DEFAULT_CONFIG = {
+    "mode": "cli",
+    "cli": {"command": ["ollama", "run", "llama3.2"], "timeout_s": 180},
+    "http_api": {"provider": "groq", "endpoint": "", "api_key": "",
+                 "api_key_env": "GROQ_API_KEY", "model": "llama-3.3-70b-versatile",
+                 "timeout_s": 120},
+}
+
+
