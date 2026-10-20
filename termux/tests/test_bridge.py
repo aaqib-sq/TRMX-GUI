@@ -499,6 +499,26 @@ class TestBridge(unittest.TestCase):
         self.assertEqual(json.loads(raw)["job_id"], j1)
         self.assertEqual(headers.get("Idempotent-Replay"), "true")
 
+    def test_09b_idempotency_survives_restart(self):
+        # audit §3-H4: the in-memory dedup dict dies with the process —
+        # re-submitting the same key after a restart must return the
+        # original job, not spawn a duplicate.
+        key = "idem-restart-" + str(time.time_ns())
+        j1 = self.submit(["echo", "one"], idempotency_key=key)
+        self.wait_status(j1, TERMINAL)
+        self.bridge.kill9()                      # wipes the in-memory dict
+        TestBridge.bridge = BridgeProc(self.home, self.port)
+        TestBridge.bridge.start()
+        s, headers, raw = self.http("POST", "/v1/jobs",
+                                    {"type": "argv", "argv": ["echo", "two"],
+                                     "idempotency_key": key})
+        self.assertEqual(s, 201)
+        self.assertEqual(json.loads(raw)["job_id"], j1)
+        self.assertEqual(headers.get("Idempotent-Replay"), "true")
+        dupes = [j["job_id"] for j in self._list_all()
+                 if j.get("idempotency_key") == key]
+        self.assertEqual(dupes, [j1], "no duplicate job may be created")
+
     # ---- 10: queueing ----------------------------------------------------
 
     def test_10_queue_and_concurrency(self):

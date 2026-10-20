@@ -68,6 +68,7 @@ if str(_here) not in sys.path:
     sys.path.insert(0, str(_here))
 from trmx_bridge_lib import (
     ACTIVE_STATES,
+    IDEM_TTL_S,
     TERMINAL_STATES,
     BridgeError,
     Policy,
@@ -347,6 +348,16 @@ class Store:
         r = self.db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         return self.row_to_job(r) if r else None
 
+    def find_by_idempotency_key(self, key: str) -> str | None:
+        """Newest job_id submitted under `key` within the dedup TTL."""
+        cutoff = (dt.datetime.now(dt.timezone.utc)
+                  - dt.timedelta(seconds=IDEM_TTL_S)).isoformat(
+                      timespec="milliseconds").replace("+00:00", "Z")
+        r = self.db.execute(
+            "SELECT job_id FROM jobs WHERE idempotency_key=? AND created_at>?"
+            " ORDER BY n DESC LIMIT 1", (key, cutoff)).fetchone()
+        return r["job_id"] if r else None
+
     def list_jobs(self, status: str | None, before_n: int | None, limit: int) -> tuple[list, int | None]:
         q = "SELECT * FROM jobs"
         conds, args = [], []
@@ -617,8 +628,17 @@ class JobManager:
                               "idempotency_key must be a string <=128 chars", field="idempotency_key")
         if idem:
             hit = self.idem.get(idem)
-            if hit and time.time() - hit[1] < 86400:
+            if hit and time.time() - hit[1] < IDEM_TTL_S:
                 job = self.store.get_job(hit[0])
+                if job:
+                    return job, True
+            # Audit §3-H4: the dict above dies with the process — restarts
+            # are routine on a phone. The DB persists idempotency_key per
+            # job, so a re-submit after a restart must still dedup here
+            # instead of spawning a duplicate.
+            prior = self.store.find_by_idempotency_key(idem)
+            if prior:
+                job = self.store.get_job(prior)
                 if job:
                     return job, True
         # PROTOCOL §3.2 / audit §4-H3: raw argv is tier "destructive" and
