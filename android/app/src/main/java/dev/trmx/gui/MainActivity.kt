@@ -52,6 +52,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.trmx.gui.agent.AgentViewModel
@@ -229,6 +231,12 @@ fun AppRoot(
             // Live events while the app is open (dashboard updates everywhere;
             // the self-healing toolbox install rides on this).
             LaunchedEffect(Unit) { vm.startEvents() }
+
+            // §6-H4: never reconnect the events stream while backgrounded.
+            // (MainActivity is the live-browser owner of these effects; the
+            // LaunchedEffect above covers the cold-start case.)
+            LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.stopEvents() }
+            LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.startEvents() }
 
             if (detailState != null) {
                 BackHandler { vm.selectJob(null) }
