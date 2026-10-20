@@ -95,6 +95,16 @@ CI (`.github/workflows/android.yml`) runs the conformance check, the debug
 build and the unit tests on every push and PR. The debug APK is uploaded as a
 build artifact.
 
+## Signing
+
+No signing key is committed to this repo. Debug builds use the standard
+per-developer local debug key that AGP generates on each machine. Builds
+that are **distributed** (shared APKs, releases) must be signed with a
+proper release key kept outside the repo. Note: a debug keystore was
+committed in this repo's early history and remains reachable in git
+history — anything signed with it must never be trusted as a genuine
+distributed build.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). [CHANGELOG.md](CHANGELOG.md) tracks releases.

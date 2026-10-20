@@ -158,15 +158,17 @@ check("no blanket cleartext fallback in manifest",
       'android:usesCleartextTraffic="true"' not in manifest)
 check("INTERNET permission declared (loopback sockets need it too)",
       'android:name="android.permission.INTERNET"' in manifest)
-# stable debug signing: ephemeral CI runners must not mint a new key per build
+# no committed signing key (audit §4-H2): a public keystore lets anyone
+# sign a malicious "update" for the app package. Debug builds must fall
+# back to AGP's per-developer local debug key; no build config may point
+# at a keystore inside the repo.
 ks = REPO / "android" / "config" / "debug.keystore"
-check("stable debug keystore committed", ks.is_file())
-if ks.is_file():
-    check("keystore is PKCS12 with the debug alias+password conventions",
-          ks.read_bytes()[:2] == b"\x30\x82")   # DER/ASN.1 header
+check("no keystore committed under android/config", not ks.is_file(),
+      "android/config/debug.keystore must not exist in the repo")
 app_gradle = (REPO / "android" / "app" / "build.gradle.kts").read_text("utf-8")
-check("debug build type uses the committed keystore",
-      'config/debug.keystore' in app_gradle and 'storeType = "PKCS12"' in app_gradle)
+check("no build config references a committed keystore",
+      'config/debug.keystore' not in app_gradle,
+      "build.gradle.kts must not reference config/debug.keystore")
 
 # --- 5. Kotlin comment balance (nested comments!) ---------------------------
 
