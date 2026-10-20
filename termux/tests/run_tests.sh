@@ -3,7 +3,7 @@
 # (Ph9) + ai wrapper + ai config (AI round) + services (protocol 1.1) +
 # agent tasks (revival).
 # Works on any Linux with python3 — including Termux:  pkg install python
-# Usage: run_tests.sh [bridge|files|bootstrap|tools|ai|aicfg|services|agent|cancel-starting|all]  (default: all)
+# Usage: run_tests.sh [bridge|files|bootstrap|tools|ai|aicfg|services|agent|cancel-starting|retention|all]  (default: all)
 set -e
 cd "$(dirname "$0")/../.."
 SUITES="${1:-all}"
@@ -17,6 +17,7 @@ case "$SUITES" in
   services)  exec python3 termux/tests/test_services.py ;;
   agent)     exec python3 termux/tests/test_agent.py ;;
   cancel-starting) exec python3 termux/tests/test_cancel_starting.py ;;
+  retention) exec python3 termux/tests/test_retention.py ;;
   all)
     python3 termux/tests/test_bridge.py
     python3 termux/tests/test_files.py
@@ -26,6 +27,7 @@ case "$SUITES" in
     python3 termux/tests/test_services.py
     python3 termux/tests/test_agent.py
     python3 termux/tests/test_cancel_starting.py
+    python3 termux/tests/test_retention.py
     exec python3 termux/tests/test_bootstrap.py ;;
-  *) echo "usage: $0 [bridge|files|bootstrap|tools|ai|aicfg|services|agent|cancel-starting|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [bridge|files|bootstrap|tools|ai|aicfg|services|agent|cancel-starting|retention|all]" >&2; exit 2 ;;
 esac

@@ -64,3 +64,24 @@ after Android kills Termux or the phone reboots:
   dev-lenient so the tests can run on any Linux box.
 - Intent contract for the app: [docs/CONTROL-PLANE.md](../docs/CONTROL-PLANE.md).
 - Implemented TRMX-P/1 subset + deviations: [ADR-004](../docs/decisions/ADR-004-phase2-poc.md).
+
+## Retention (audit §6-H2/H3, §3-M14)
+
+The bridge keeps job state, frame logs and audit rows on phone storage, so
+it prunes them under one policy, implemented in
+`JobManager.apply_retention()` / `_schedule_runtime_eviction()` in
+`trmx-bridge.py`. All limits are tunables in `~/.trmx/bridge.json`
+(`DEFAULT_CONFIG`):
+
+| What | Rule | Default |
+| --- | --- | --- |
+| Finished-job memory (`runtimes`) | entry evicted after a grace period once the job is terminal; the on-disk frame log keeps `/output` replay working | `runtime_evict_grace_s` = 300 |
+| Terminal job rows + `logs/<job_id>/` | pruned when `ended_at` is older than the limit, at bridge start | `retention_days` = 30 |
+| Terminal-job floor | the newest terminal jobs are ALWAYS kept, whatever their age | `retention_keep_terminal` = 50 |
+| Audit table | only the newest rows kept, at bridge start | `audit_max_rows` = 5000 |
+| Agent task files (`agent/tasks/`, plus their `agent/pending/` confirm file) | pruned when older than the TTL, at bridge start | `agent_task_ttl_days` = 30 |
+
+Never pruned: ACTIVE (QUEUED/STARTING/RUNNING/CANCELLING) jobs and their
+logs, agent task files whose job is still ACTIVE, and files the bridge
+cannot read (kept for a human to see). The prune counts of each start are
+written to the bridge log (`retention: pruned {...}`).
