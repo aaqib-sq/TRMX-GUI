@@ -320,6 +320,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 env = null,
                 timeout_s = timeout,
                 idempotency_key = UUID.randomUUID().toString(),
+                // §3.2: SubmitDialog only invokes this after its own
+                // second-stage "Run this command?" confirmation
+                confirm = true,
             )
             when (val r = client().submitJob(request)) {
                 is BridgeResult.Success -> {
@@ -638,7 +641,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val r = client().submitJob(dev.trmx.gui.model.SubmitRequest(
                 name = "install ${pkg}", type = "argv",
-                argv = listOf("pkg", "install", "-y", pkg), cwd = "~"))) {
+                argv = listOf("pkg", "install", "-y", pkg), cwd = "~",
+                // §3.2: the toolbox's Install dialog already confirmed this
+                confirm = true))) {
                 is BridgeResult.Success -> {
                     installWatch = r.data.response.job_id
                     _tools.update {

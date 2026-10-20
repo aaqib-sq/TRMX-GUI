@@ -150,7 +150,7 @@ Request body (one of three execution models):
   "idempotency_key": "8f14e45f-…-cea4" }
 ```
 
-- `type:"argv"` — the bridge executes the **first element as an allowlisted executable** (must resolve in `$PREFIX/bin` or `~/.trmx/bin`) and passes the rest as literal arguments. **No shell exists in this path.**
+- `type:"argv"` — the bridge executes the **first element as an allowlisted executable** (must resolve in `$PREFIX/bin` or `~/.trmx/bin`) and passes the rest as literal arguments. **No shell exists in this path.** Raw argv is always classified risk tier **destructive** (it can run any allowlisted binary, including shells): the request must set `"confirm": true`, otherwise the bridge rejects with `400 CONFIRM_REQUIRED`. The GUI's New-job dialog therefore shows a second "Run this command?" confirmation — with a destructive-pattern warning when the argv matches the agent's destructive verb list — before submitting.
 - `type:"tool"` — `"tool": "yt-dlp", "args": { "url": "…", "format": "mp4" }` (object form). The bridge validates args against the tool schema (§7) and **synthesizes the argv** — this is the form the GUI uses.
 - `type:"shell"` — `"script": "…"` executed by `$PREFIX/bin/bash -c`. **V1.5, behind a client-side confirmation**; bridge still accepts and audit-logs it distinctly.
 
@@ -160,7 +160,7 @@ Response `201`: `{ "job_id": "J-1A2B", "status": "QUEUED" }` · Header `Location
 
 **Idempotency:** if `idempotency_key` was seen within 24 h, the bridge replays the original response (same `job_id`) with header `Idempotent-Replay: true`. The client MUST set a key for every user-initiated submission (protects against retry duplicates after reconnects).
 
-Rejections: `QUEUE_FULL`, `CONCURRENCY_LIMIT` (both `429`, §10), `VALIDATION_FAILED`, `TOOL_UNKNOWN`, `ARG_INVALID`, `PATH_DENIED`, `PATH_NOT_FOUND`.
+Rejections: `QUEUE_FULL`, `CONCURRENCY_LIMIT` (both `429`, §10), `VALIDATION_FAILED`, `TOOL_UNKNOWN`, `ARG_INVALID`, `PATH_DENIED`, `PATH_NOT_FOUND`, `CONFIRM_REQUIRED` (raw argv without `confirm:true`).
 
 ### 3.3 `GET /v1/jobs` — list/history
 Query: `status` (optional, one of the enums), `limit` (1–200, default 50), `before` (cursor = `job_id`, pages newest-first).

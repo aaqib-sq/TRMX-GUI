@@ -75,6 +75,12 @@ data class SubmitRequest(
     val env: Map<String, String>? = null,
     val timeout_s: Long? = null,
     val idempotency_key: String? = null,
+    // §3.2: raw argv is always tier destructive — the bridge rejects the
+    // submit with 400 CONFIRM_REQUIRED unless the caller sets this to
+    // true. The New-job dialog sets it only after the second-stage
+    // "Run this command?" confirmation; programmatic callers (toolbox
+    // self-install) set it where their own confirmation already happened.
+    val confirm: Boolean = false,
 )
 
 /** POST /v1/jobs/{id}/cancel request body. */

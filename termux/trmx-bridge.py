@@ -1170,6 +1170,16 @@ class JobManager:
                 job = self.store.get_job(hit[0])
                 if job:
                     return job, True
+        # PROTOCOL §3.2 / audit §4-H3: raw argv is tier "destructive" and
+        # can run ANY allowlisted binary (including shells), so it must
+        # arrive through the same explicit confirmation the app shows for
+        # destructive tool submits — like the recursive-delete guard
+        # requiring confirm:true. Tool submits carry their schema tier and
+        # are unaffected.
+        if jtype != "tool" and not payload.get("confirm"):
+            raise BridgeError(400, "CONFIRM_REQUIRED",
+                              "raw argv submits are tier destructive and "
+                              "require confirm:true")
         if len(self.queue) >= int(self.config["queue_depth"]):
             raise BridgeError(429, "QUEUE_FULL",
                               f"job queue is full ({self.config['queue_depth']} pending)")
@@ -1195,7 +1205,10 @@ class JobManager:
             self.store.audit("job.submit",
                              f"{job_id} tool={tool_id} tier={tier} {shlex_join(argv)}")
         else:
-            self.store.audit("job.submit", f"{job_id} {shlex_join(argv)}")
+            # raw argv is always tier destructive (audit §4-H3): it rides
+            # the same "tier=…" audit shape as tool submits
+            self.store.audit("job.submit",
+                             f"{job_id} tier=destructive {shlex_join(argv)}")
         self.bus.publish("job.updated", job)
         self.queue.append(job_id)
         await self._try_start_next()

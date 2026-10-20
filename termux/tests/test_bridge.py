@@ -241,7 +241,10 @@ class TestBridge(unittest.TestCase):
 
     @classmethod
     def submit(cls, argv, **kw) -> str:
-        payload = {"type": "argv", "argv": argv, "name": kw.pop("name", "test job")}
+        # raw argv is tier destructive (§3.2) — every client submission,
+        # tests included, must carry the explicit confirmation
+        payload = {"type": "argv", "argv": argv, "confirm": True,
+                   "name": kw.pop("name", "test job")}
         payload.update(kw)
         status, _, raw = cls.http("POST", "/v1/jobs", payload)
         assert status == 201, (status, raw)
@@ -369,6 +372,25 @@ class TestBridge(unittest.TestCase):
         # wrong method on the route -> 405
         s, _, _ = self.http("POST", f"/v1/proof?nonce={nonce}")
         self.assertEqual(s, 405)
+    def test_02e_raw_argv_requires_confirm(self):
+        # §3.2 / audit §4-H3: raw argv is tier destructive — without an
+        # explicit confirm the bridge must not run anything at all.
+        before = len(self._list_all())
+        s, _, raw = self.http("POST", "/v1/jobs",
+                              {"type": "argv", "argv": ["echo", "nope"],
+                               "name": "unconfirmed"})
+        self.assertEqual((s, json.loads(raw)["error"]["code"]),
+                         (400, "CONFIRM_REQUIRED"))
+        s, _, raw = self.http("POST", "/v1/jobs",
+                              {"type": "argv", "argv": ["echo", "nope"],
+                               "confirm": False})
+        self.assertEqual(s, 400)
+        self.assertEqual(len(self._list_all()), before,
+                         "no job may be created by an unconfirmed raw submit")
+        # and with confirm:true it runs like any other job
+        job_id = self.submit(["echo", "confirmed"])
+        job = self.wait_status(job_id, TERMINAL)
+        self.assertEqual(job["status"], "COMPLETED")
 
     # ---- 03..04: lifecycle ---------------------------------------------
 

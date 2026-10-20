@@ -53,4 +53,18 @@ object SubmitValidator {
      */
     fun parseArgvText(text: String): List<String> =
         text.split('\n').map { it.trimEnd('\r') }.filter { it.isNotEmpty() }
+
+    /**
+     * The destructive verb list — the SAME list the agent loop uses
+     * (termux/trmx-agent `DESTRUCTIVE_RE`), so the New-job dialog warning
+     * and the agent's pause agree on what counts as destructive. The
+     * bridge is the authority (argv always submits at tier destructive,
+     * §3.2); this is the client-side warning UX for it.
+     */
+    private val DESTRUCTIVE_VERB = Regex(
+        "\\b(rm|delete|kill|format|mkfs|dd|shred)\\b", RegexOption.IGNORE_CASE)
+
+    /** True when the joined argv text matches a destructive verb. */
+    fun looksDestructive(argv: List<String>): Boolean =
+        DESTRUCTIVE_VERB.containsMatchIn(argv.joinToString(" "))
 }
