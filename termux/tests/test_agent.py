@@ -232,6 +232,22 @@ class AgentTestBase(unittest.TestCase):
         events = self.agent_events(t["job_id"])
         self.assertTrue(any(e["t"] == "failed" for e in events))
 
+    def test_11c_prose_block_then_action_picked(self):
+        # audit §2-M3: a chatty model puts a prose/example object FIRST
+        # and the real action LAST. The first block below parses as JSON
+        # but is NOT a valid action (a "say" with no text). The old
+        # first-block extract_json handed it to validate_action, which
+        # rejected it and burned the one corrective retry — with only
+        # ONE queued response that retry would hit an empty queue and
+        # fail the task. The validator-aware extract must pick the
+        # trailing valid action on the first reply.
+        self.queue_responses(
+            'Sure! An action looks like {"op": "say"} — here is mine: '
+            '{"op": "done", "summary": "picked the real action"}')
+        t = self.create_task("do something")
+        got = self.wait_task(t["task_id"], {"done"})
+        self.assertEqual(got["summary"], "picked the real action")
+
     def test_11b_invalid_then_valid_recovers(self):
         self.queue_responses(
             "let me think out loud... no json here",
@@ -403,6 +419,64 @@ class AgentTestBase(unittest.TestCase):
         report = json.loads(r.stdout)
         self.assertEqual(report["verdict"], "unpaired")
         self.assertFalse(report["token_set"])
+
+
+sys.path.insert(0, str(TERMUX))
+import trmx_ai_lib  # noqa: E402
+
+
+def _action_shape(obj: dict) -> None:
+    """Stand-in for trmx-agent's validate_action: the op whitelist and
+    its mandatory companion field, nothing more."""
+    need = {"say": "text", "done": "summary", "cannot": "reason"}.get(
+        obj.get("op"))
+    if obj.get("op") == "do":
+        if not (isinstance(obj.get("tool"), str)
+                and isinstance(obj.get("args"), dict)
+                and isinstance(obj.get("describe"), str)):
+            raise ValueError("do needs tool/args/describe")
+    elif need is None or not isinstance(obj.get(need), str):
+        raise ValueError("not an action object")
+
+
+class TestExtractJson(unittest.TestCase):
+    """Direct unit tests for trmx_ai_lib.extract_json (audit §2-M3)."""
+
+    def test_first_block_default_unchanged(self):
+        out = trmx_ai_lib.extract_json('pre {"a": 1} post {"b": 2}')
+        self.assertEqual(out, {"a": 1})
+
+    def test_no_validator_errors_unchanged(self):
+        with self.assertRaises(ValueError):
+            trmx_ai_lib.extract_json("no json at all")
+        with self.assertRaises(ValueError):
+            trmx_ai_lib.extract_json('{"a": 1')          # unbalanced
+        with self.assertRaises(ValueError):
+            trmx_ai_lib.extract_json('{not json} {"a": 1}')
+
+    def test_prose_block_then_action_picks_action(self):
+        text = ('thinking out loud {"op": "say"} — no wait, do this: '
+                '{"op": "done", "summary": "real one"}')
+        out = trmx_ai_lib.extract_json(text, validator=_action_shape)
+        self.assertEqual(out, {"op": "done", "summary": "real one"})
+
+    def test_last_valid_candidate_wins(self):
+        text = ('{"op": "say", "text": "first"} '
+                '{"op": "done", "summary": "second"}')
+        out = trmx_ai_lib.extract_json(text, validator=_action_shape)
+        self.assertEqual(out["op"], "done")
+
+    def test_unparseable_block_skipped_with_validator(self):
+        text = '{oops} {"op": "done", "summary": "ok"}'
+        out = trmx_ai_lib.extract_json(text, validator=_action_shape)
+        self.assertEqual(out["summary"], "ok")
+
+    def test_none_valid_falls_back_to_first_block(self):
+        # neither block is an action: current behaviour — first block,
+        # parsed, returned for the caller to reject with its own error
+        out = trmx_ai_lib.extract_json('{"a": 1} {"b": 2}',
+                                       validator=_action_shape)
+        self.assertEqual(out, {"a": 1})
 
 
 class AgentStepCapTest(AgentTestBase):
