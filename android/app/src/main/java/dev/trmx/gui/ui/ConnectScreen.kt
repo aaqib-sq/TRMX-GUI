@@ -62,7 +62,7 @@ import dev.trmx.gui.wizard.ConnectState
 import kotlinx.coroutines.delay
 
 private const val INSTALL_LINE =
-    "curl -fsSL https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/main/termux/install.sh | sh"
+    "curl -fsSL https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/main/termux/install.sh | sh"
 private const val PAIR_LINK_CMD = "~/.trmx/trmx pair-link"
 private const val STATUS_CMD = "~/.trmx/trmx status"
 

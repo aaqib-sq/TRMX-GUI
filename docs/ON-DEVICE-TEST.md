@@ -15,7 +15,7 @@ backend code currently lives on `arena/01a07bc5-trmx-gui`. Until the branch is
 merged, **edit the base URL in the wizard** (step 4 below), replacing `main`:
 
 ```
-https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/arena/01a07bc5-trmx-gui/termux
+https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/arena/01a07bc5-trmx-gui/termux
 ```
 
 (If you already merged to main, keep the default.)
@@ -48,7 +48,7 @@ https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/arena/01a07bc5-trmx-gui/te
 
 ```sh
 pkg install -y python curl git
-git clone -b arena/01a07bc5-trmx-gui https://github.com/sq987in-wq/TRMX-GUI
+git clone -b arena/01a07bc5-trmx-gui https://github.com/aaqib-sq/TRMX-GUI
 cd TRMX-GUI
 sh termux/install.sh --source termux     # → "checksums verified", "installed"
 ~/.trmx/trmx start                       # bridge on 127.0.0.1:27342

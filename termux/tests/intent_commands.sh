@@ -8,7 +8,7 @@ set -euo pipefail
 
 PREFIX=/data/data/com.termux/files/usr
 TRMX=/data/data/com.termux/files/home/.trmx
-BASE="${TRMX_BASE:-https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/main/termux}"
+BASE="${TRMX_BASE:-https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/main/termux}"
 TOKEN="${TRMX_TOKEN:-<paste-app-token>}"
 
 emit() { # op path args...
