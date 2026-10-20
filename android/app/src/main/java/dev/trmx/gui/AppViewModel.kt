@@ -94,6 +94,10 @@ data class FileBrowserState(
     val opPending: Boolean = false,
     val transfer: Transfer? = null,
     val pendingOpen: PendingOpen? = null,
+    /** Next page offset from the bridge's paged listing (§6), or null
+     *  when this folder fit in one page — see loadMoreFiles(). */
+    val nextOffset: Int? = null,
+    val loadingMore: Boolean = false,
 )
 
 /** One in-flight file transfer (download / upload / open / share). */
@@ -380,11 +384,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- file browser (Phase 7) ------------------------------------------
 
     fun openPath(path: String) {
-        _files.update { it.copy(path = path, loading = true, error = null, notice = null) }
+        _files.update { it.copy(path = path, loading = true, error = null, notice = null,
+                                nextOffset = null, loadingMore = false) }
         viewModelScope.launch {
             when (val r = client().listFiles(path)) {
                 is BridgeResult.Success ->
-                    _files.update { it.copy(entries = r.data.entries, loading = false) }
+                    _files.update { it.copy(entries = r.data.entries, loading = false,
+                                            nextOffset = r.data.next_offset) }
                 is BridgeResult.HttpError ->
                     _files.update { it.copy(loading = false, error = "HTTP ${r.status}: ${r.code} — ${r.message}") }
                 is BridgeResult.NetworkError ->
@@ -394,6 +400,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshFiles() = openPath(_files.value.path)
+
+    /**
+     * Append the next page of the current folder (Arena finding 17): the
+     * bridge's §6 listing is paged (offset + next_offset), but the screen
+     * used to stop at the first page, silently truncating folders with
+     * more than a page of entries. Appends to [FileBrowserState.entries];
+     * a failure keeps the loaded entries and surfaces the error.
+     */
+    fun loadMoreFiles() {
+        val s = _files.value
+        val offset = s.nextOffset ?: return
+        if (s.loading || s.loadingMore) return
+        _files.update { it.copy(loadingMore = true, error = null) }
+        viewModelScope.launch {
+            when (val r = client().listFiles(s.path, offset = offset)) {
+                is BridgeResult.Success ->
+                    _files.update {
+                        // another openPath may have won the race — only
+                        // append while we are still on the same folder
+                        if (it.path != s.path) it.copy(loadingMore = false)
+                        else it.copy(entries = it.entries + r.data.entries,
+                                     loadingMore = false,
+                                     nextOffset = r.data.next_offset)
+                    }
+                is BridgeResult.HttpError ->
+                    _files.update { it.copy(loadingMore = false,
+                        error = "HTTP ${r.status}: ${r.code} — ${r.message}") }
+                is BridgeResult.NetworkError ->
+                    _files.update { it.copy(loadingMore = false,
+                        error = "bridge unreachable: ${r.cause.message}") }
+            }
+        }
+    }
 
     /** @return true when we moved up, false at the root (caller may pop). */
     fun filesUp(): Boolean {

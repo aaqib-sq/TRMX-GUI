@@ -270,6 +270,7 @@ fun AppRoot(
                     onOpenPath = vm::openPath,
                     onUp = { vm.filesUp() },
                     onRefresh = vm::refreshFiles,
+                    onLoadMore = vm::loadMoreFiles,
                     onMakeDir = vm::makeDir,
                     onRename = vm::renameEntry,
                     onDelete = vm::deleteEntry,

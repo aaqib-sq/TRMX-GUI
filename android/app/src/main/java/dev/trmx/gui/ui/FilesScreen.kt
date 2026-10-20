@@ -81,6 +81,7 @@ fun FilesScreen(
     onOpenPath: (String) -> Unit,
     onUp: () -> Unit,
     onRefresh: () -> Unit,
+    onLoadMore: () -> Unit = {},
     onMakeDir: (String) -> Unit,
     onRename: (FileEntry, String) -> Unit,
     onDelete: (FileEntry) -> Unit,
@@ -285,6 +286,32 @@ fun FilesScreen(
                         }
                         Icon(Icons.Outlined.MoreVert, contentDescription = "actions",
                              tint = P.TextMuted, modifier = Modifier.size(18.dp))
+                    }
+                }
+                // Paged listing (§6): the bridge returns one page at a
+                // time; offer the next page instead of silently stopping
+                // at the first (Arena finding 17).
+                if (state.nextOffset != null) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = Sp.s),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(Sp.s),
+                        ) {
+                            Text(
+                                "This folder has more entries.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = P.TextSecondary)
+                            TrmxButton(
+                                label = if (state.loadingMore) "Loading…"
+                                        else "Load more",
+                                onClick = onLoadMore,
+                                kind = TrmxButtonKind.Secondary,
+                                enabled = !state.loadingMore,
+                                modifier = Modifier.fillMaxWidth())
+                        }
                     }
                 }
             }
