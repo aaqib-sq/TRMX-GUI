@@ -16,9 +16,10 @@ local.properties
 captures/
 *.jks
 *.keystore
-# committed on purpose: the stable CI debug-signing test key (public
-# passwords, debug builds only — ADR-006); must not be ignored
-!android/config/debug.keystore
+# NO keystore may be committed (audit §4-H2): a public signing key lets
+# anyone sign a malicious "update" for the app package. Debug builds use
+# the standard per-developer local debug key; distributed builds must use
+# release signing (see README "Signing").
 
 # editors / OS
 .vscode/
