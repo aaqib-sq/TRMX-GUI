@@ -220,12 +220,37 @@ def api_stop(cfg: dict, port: int) -> bool:
         return False
 
 
+def pid_is_bridge(pid: int) -> bool:
+    """Is `pid` really the bridge? (audit §5-M1)
+
+    The pidfile goes stale whenever the bridge dies uncleanly (phantom
+    kill, SIGKILL) and pids are recycled — signalling whatever now owns
+    the number could kill a stranger process. Verify the identity via
+    /proc/<pid>/cmdline (present on Android/Termux and Linux): the
+    bridge is always launched as `python… trmx-bridge.py …`. Where
+    /proc is unavailable entirely (non-Linux dev hosts), identity
+    cannot be checked — keep the historical behaviour there.
+    """
+    if not Path("/proc").is_dir():
+        return True
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False   # no such process (or not readable) — not our bridge
+    return b"trmx-bridge" in cmdline
+
+
 def cmd_stop(args) -> int:
     home = trmx_home()
     cfg = load_config()
     port = int(cfg.get("port", 27342))
     pidfile = home / "bridge.pid"
-    pid = int(pidfile.read_text()) if pidfile.exists() else None
+    pid = None
+    if pidfile.exists():
+        try:
+            pid = int(pidfile.read_text().strip())
+        except ValueError:
+            pid = None
     if api_stop(cfg, port):
         for _ in range(100):
             if not port_open(port, timeout=0.2):
@@ -233,6 +258,13 @@ def cmd_stop(args) -> int:
             time.sleep(0.05)
         print("trmx stop: bridge stopped (API)")
         return 0
+    if pid and not pid_is_bridge(pid):
+        # Audit §5-M1: refuse to signal a stranger. The pidfile is
+        # stale; the API stop above already failed, so there is no
+        # verified bridge left to stop.
+        print(f"trmx stop: pidfile pid {pid} is not the bridge "
+              "(stale pidfile?) — refusing to signal it")
+        return 1
     if pid:
         import signal
         try:

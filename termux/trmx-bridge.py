@@ -77,7 +77,7 @@ from trmx_bridge_lib import (
     now_iso,
 )
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 PROTOCOL_VERSIONS = [1]
 
 LOG = logging.getLogger("trmx-bridge")
@@ -1040,7 +1040,24 @@ class JobManager:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
-    async def _timeout_watch(self, job_id: str, timeout_s: int) -> None:
+    @staticmethod
+    def _timeout_remaining_s(job: dict) -> float:
+        """Seconds left on a job's timeout, counted from its ORIGINAL
+        start (audit §5-M2) — a re-adopted job must not gain a fresh,
+        full timeout, and one already overdue fires immediately."""
+        timeout_s = float(job["timeout_s"])
+        started = job.get("started_at")
+        if not started:
+            return timeout_s
+        try:
+            start_dt = dt.datetime.fromisoformat(
+                str(started).replace("Z", "+00:00"))
+        except ValueError:
+            return timeout_s
+        elapsed = (dt.datetime.now(dt.timezone.utc) - start_dt).total_seconds()
+        return max(0.0, timeout_s - elapsed)
+
+    async def _timeout_watch(self, job_id: str, timeout_s: float) -> None:
         await asyncio.sleep(timeout_s)
         job = self.store.get_job(job_id)
         if not job or job["status"] in TERMINAL_STATES:
@@ -1093,6 +1110,24 @@ class JobManager:
                 self._emit_info(rt, {"type": "reattached"})
                 self.bus.publish("job.updated", job)
                 self._track(rt, self._probe_adopted(job_id))
+                # Audit §5-M2: _grace / _timeout_watch are in-memory
+                # asyncio tasks, so a restart silently dropped them — an
+                # adopted CANCELLING job whose SIGTERM was ignored could
+                # sit forever (the probe below only finalizes a job whose
+                # pgid dies; it never re-escalates), and an adopted
+                # RUNNING job lost its timeout entirely. Re-arm both:
+                # grace with the configured cancel grace, timeout with
+                # the time REMAINING from the original start.
+                if job["status"] == "CANCELLING":
+                    grace_ms = int(self.config["cancel_grace_ms"])
+                    self._track(rt, self._grace(job_id, job["pgid"], grace_ms))
+                    LOG.info("reconcile: re-armed grace timer for %s "
+                             "(%s ms)", job_id, grace_ms)
+                elif job.get("timeout_s"):
+                    remaining = self._timeout_remaining_s(job)
+                    self._track(rt, self._timeout_watch(job_id, remaining))
+                    LOG.info("reconcile: re-armed timeout for %s "
+                             "(%s s remaining)", job_id, remaining)
                 LOG.info("reconcile: re-adopted %s (pgid %s)", job_id, job["pgid"])
                 readopted += 1
             else:
@@ -1488,6 +1523,7 @@ class BridgeApp:
                          "scheduler": False,
                          "tool_schema_errors": list(self.registry.schema_errors),
                          "service_registry": True,          # protocol 1.1 (§14)
+                         "agent_tasks": True,               # protocol 1.1 (§16, bridge >= 0.6.0)
                          "service_errors": list(self.services.errors)},
             "tools_detected": len(self.registry.schemas)
         })
