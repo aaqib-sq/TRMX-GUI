@@ -306,6 +306,76 @@ class AgentTestBase(unittest.TestCase):
                             {"decision": "maybe"})
         self.assertEqual(st, 400)
 
+
+    def _restart_with_deadline(self, seconds: int) -> None:
+        self.bridge.stop()
+        self.bridge = BridgeProc(self.home, self.port, {
+            **self.extra_env, "TRMX_FAKE_LLM_QUEUE": str(self.queue),
+            "TRMX_AGENT_TASK_TIMEOUT_S": str(seconds)})
+        self.bridge.start()
+
+    def _submit_sleeping_child(self) -> tuple[dict, str]:
+        (Path(self.home) / "tools" / "test-sleep.json").write_text(json.dumps({
+            "id": "test-sleep", "name": "Test sleeper", "binary": "sleep",
+            "risk_tier": "safe", "fixed_argv": ["60"], "args": []}))
+        self.api("POST", "/v1/tools/refresh", {})
+        self.queue_responses(json.dumps({
+            "op": "do", "tool": "submit_tool", "args": {"tool": "test-sleep"},
+            "describe": "Wait briefly"}))
+        task = self.create_task("wait briefly")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            _, resp = self.api("GET", "/v1/jobs")
+            children = [j for j in resp["jobs"] if j.get("tool") == "test-sleep"]
+            if children:
+                return task, children[0]["job_id"]
+            time.sleep(0.05)
+        self.fail("agent did not submit child job")
+
+    def _assert_child_cancelled(self, job_id: str) -> None:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            _, child = self.api("GET", f"/v1/jobs/{job_id}")
+            if child["status"] == "CANCELLED":
+                return
+            time.sleep(0.05)
+        self.fail(f"child job was orphaned: {child}")
+
+    def test_15b_stop_cancels_child(self):
+        task, child = self._submit_sleeping_child()
+        self.api("POST", f"/v1/jobs/{task['job_id']}/cancel", {})
+        self._assert_child_cancelled(child)
+        self.wait_task(task["task_id"], {"failed", "cancelled"})
+
+    def test_15c_task_deadline_cancels_child(self):
+        self._restart_with_deadline(3)
+        task, child = self._submit_sleeping_child()
+        got = self.wait_task(task["task_id"], {"failed"}, timeout=10)
+        self.assertIn("task timed out", got["error"])
+        self._assert_child_cancelled(child)
+        self.assertTrue(any(e.get("error") == "task timed out"
+                            for e in self.agent_events(task["job_id"])))
+
+    def test_15d_task_deadline_during_confirm(self):
+        self._restart_with_deadline(3)
+        self.queue_responses(json.dumps({
+            "op": "do", "tool": "submit_tool", "args": {"tool": "test-noop"},
+            "describe": "Delete a test item"}))
+        task = self.create_task("ask me before deleting")
+        got = self.wait_task(task["task_id"], {"failed"}, timeout=10)
+        self.assertIn("task timed out", got["error"])
+        self.assertFalse((Path(self.home) / "agent" / "pending" /
+                          f"{task['task_id']}.json").exists())
+        self.assertTrue(any(e["t"] == "confirm-needed"
+                            for e in self.agent_events(task["job_id"])))
+
+    def test_15e_task_deadline_during_model_call(self):
+        self._restart_with_deadline(3)
+        self.fake.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+        task = self.create_task("wait for a stuck model")
+        got = self.wait_task(task["task_id"], {"failed"}, timeout=10)
+        self.assertIn("task timed out", got["error"])
+
     def test_16_no_backend_configured(self):
         (Path(self.home) / "ai.json").unlink()
         t = self.create_task("hello")

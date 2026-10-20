@@ -79,11 +79,7 @@ def note(text: str) -> None:
 
 
 def _sigterm(signum, frame):  # noqa: ARG001
-    try:
-        emit({"t": "failed", "error": "cancelled by user"})
-    except Exception:  # noqa: BLE001
-        pass
-    sys.exit(2)
+    raise AgentCancelled()
 
 
 signal.signal(signal.SIGTERM, _sigterm)
@@ -91,6 +87,18 @@ signal.signal(signal.SIGTERM, _sigterm)
 
 class AgentError(Exception):
     pass
+
+
+class AgentCancelled(BaseException):
+    pass
+
+
+class TaskTimeout(AgentError):
+    pass
+
+
+def _task_timeout(signum, frame):  # noqa: ARG001
+    raise TaskTimeout("task timed out")
 
 
 # ---------------------------------------------------------------- bridge client
@@ -332,7 +340,8 @@ class Agent:
         self.bridge = Bridge(home)
         self.history: list[str] = []
         self.step = 0
-        self.deadline = time.time() + TASK_TIMEOUT_S
+        self.deadline = time.monotonic() + TASK_TIMEOUT_S
+        self.child_job_id: str | None = None
         self.consec_failures = 0
         self.parse_failures = 0
 
@@ -355,24 +364,56 @@ class Agent:
 
     # -- tools ----------------------------------------------------
 
+    def _remaining(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TaskTimeout("task timed out")
+        return remaining
+
+    def _cancel_child_job(self) -> None:
+        if self.child_job_id is None:
+            return
+        job_id, self.child_job_id = self.child_job_id, None
+        try:
+            self.bridge.check("POST", f"/v1/jobs/{job_id}/cancel", {}, timeout=2)
+        except Exception as e:  # noqa: BLE001 — cleanup must still let the agent exit
+            note(f"could not cancel child job {job_id}: {e}")
+
     def _wait_job(self, job_id: str) -> dict:
-        deadline = time.time() + STEP_JOB_WAIT_S
-        while time.time() < deadline:
-            job = self.bridge.check("GET", f"/v1/jobs/{job_id}")
+        deadline = time.monotonic() + STEP_JOB_WAIT_S
+        while time.monotonic() < deadline:
+            remaining = self._remaining()
+            job = self.bridge.check("GET", f"/v1/jobs/{job_id}",
+                                    timeout=min(30, remaining))
+            self._remaining()
             if job.get("status") in ("COMPLETED", "FAILED", "CANCELLED", "LOST"):
                 return job
-            time.sleep(2)
+            time.sleep(min(2, self._remaining()))
+        self._remaining()
         raise AgentError(f"timed out waiting for job {job_id}")
 
     def tool_submit_tool(self, args: dict) -> str:
         payload = {"type": "tool", "tool": args["tool"], "args": args.get("args", {})}
         if args.get("name"):
             payload["name"] = args["name"]
-        resp = self.bridge.check("POST", "/v1/jobs", payload)
-        job_id = resp["job_id"]
-        job = self._wait_job(job_id)
+        remaining = self._remaining()
+        # Defer cancellation until the submitted job id is recorded.
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK,
+                                      {signal.SIGTERM, signal.SIGINT, signal.SIGALRM})
+        try:
+            resp = self.bridge.check("POST", "/v1/jobs", payload,
+                                     timeout=min(30, remaining))
+            job_id = self.child_job_id = resp["job_id"]
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+        try:
+            job = self._wait_job(job_id)
+            self.child_job_id = None  # terminal: no running child remains
+        finally:
+            self._cancel_child_job()
         out = self.bridge.sse_text(
-            f"/v1/jobs/{job_id}/output?follow=0&stream=both")
+            f"/v1/jobs/{job_id}/output?follow=0&stream=both",
+            timeout=min(120, self._remaining()))
         tail = out[-4000:]
         status = job.get("status")
         if status != "COMPLETED":
@@ -441,8 +482,9 @@ class Agent:
         emit({"t": "confirm-needed", "step": self.step, "describe": describe,
               "tool": tool, "why": why})
         dp = self._decision_path()
-        deadline = time.time() + CONFIRM_TIMEOUT_S
-        while time.time() < deadline:
+        deadline = time.monotonic() + CONFIRM_TIMEOUT_S
+        while time.monotonic() < deadline:
+            self._remaining()
             if dp.is_file():
                 try:
                     dec = json.loads(dp.read_text(encoding="utf-8"))
@@ -454,7 +496,8 @@ class Agent:
                 except OSError:
                     pass
                 return dec.get("decision") == "allow"
-            time.sleep(1)
+            time.sleep(min(1, self._remaining()))
+        self._remaining()
         try:
             pp.unlink(missing_ok=True)
         except OSError:
@@ -514,7 +557,7 @@ class Agent:
             for t in tools for s in [t.get("schema", {})]
             if s.get("id") != "agent") or "(none)"
 
-        while self.step < MAX_STEPS and time.time() < self.deadline:
+        while self.step < MAX_STEPS and time.monotonic() < self.deadline:
             self.step += 1
             history = "\n".join(self.history[-8:]) or "(nothing yet)"
             prompt = PROMPT_TEMPLATE.format(
@@ -525,6 +568,7 @@ class Agent:
             try:
                 with redirect_stderr(buf):
                     text, _ = call_backend(cfg, None, prompt, tool="trmx-agent")
+                self._remaining()
             except SystemExit:
                 err = buf.getvalue().strip().splitlines()
                 msg = err[-1] if err else "backend failed"
@@ -576,7 +620,11 @@ class Agent:
             emit({"t": "action", "step": self.step, "tool": tool,
                   "describe": describe})
             try:
+                self._remaining()
                 result = getattr(self, f"tool_{tool}")(args)
+                self._remaining()
+            except TaskTimeout:
+                raise
             except AgentError as e:
                 result = f"FAILED: {e}"
                 self.consec_failures += 1
@@ -620,7 +668,19 @@ def main(argv: list[str]) -> int:
     except AgentError as e:
         emit({"t": "failed", "error": str(e)})
         return 2
-    return agent.run()
+    try:
+        try:
+            signal.signal(signal.SIGALRM, _task_timeout)
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, agent._remaining()))
+            return agent.run()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            agent._cancel_child_job()
+            agent._pending_path().unlink(missing_ok=True)
+    except TaskTimeout:
+        return agent.fail("task timed out")
+    except (AgentCancelled, KeyboardInterrupt):
+        return agent.fail("cancelled by user")
 
 
 if __name__ == "__main__":
