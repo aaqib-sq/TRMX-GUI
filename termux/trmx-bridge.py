@@ -1641,6 +1641,11 @@ class ServiceRegistry:
         sdir = self.home / "services"
         sdir.mkdir(parents=True, exist_ok=True)
         for p in sorted(sdir.glob("*.json")):
+            # "_" prefix is the reserved state namespace (e.g.
+            # _bindings.json) — never a definition (service ids must start
+            # with [A-Za-z0-9])
+            if p.name.startswith("_"):
+                continue
             try:
                 d = json.loads(p.read_text(encoding="utf-8"))
                 self._validate_def(d)
@@ -1648,6 +1653,36 @@ class ServiceRegistry:
                 self.errors.append(f"{p.name}: {e}")
                 continue
             self.defs[d["id"]] = d
+        # audit §5-H1: bindings (service -> job) live on disk, not in RAM
+        # only — reconcile() re-links them to surviving jobs at startup
+        self._load_bindings()
+
+    def _bindings_path(self) -> Path:
+        return self.home / "services" / "_bindings.json"
+
+    def _load_bindings(self) -> None:
+        p = self._bindings_path()
+        if not p.exists():
+            self.bindings = {}
+            return
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if not (isinstance(raw, dict)
+                    and all(isinstance(k, str) and isinstance(v, str)
+                            for k, v in raw.items())):
+                raise ValueError("not a string->string map")
+            # drop bindings whose definition is gone (file deleted by hand)
+            self.bindings = {k: v for k, v in raw.items() if k in self.defs}
+        except Exception as e:  # noqa: BLE001
+            self.errors.append(f"{p.name}: {e}")
+            self.bindings = {}
+
+    def _save_bindings(self) -> None:
+        path = self._bindings_path()
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.bindings, indent=2, ensure_ascii=False)
+                       + "\n", encoding="utf-8")
+        os.replace(tmp, path)
 
     def _validate_def(self, d: dict) -> None:
         if not isinstance(d, dict):
@@ -1737,6 +1772,7 @@ class ServiceRegistry:
         (self.home / "services" / f"{sid}.json").unlink(missing_ok=True)
         del self.defs[sid]
         self.bindings.pop(sid, None)
+        self._save_bindings()
         self.store.audit("service.delete", sid)
         self.bus.publish("service.updated", {"id": sid, "deleted": True})
         return {"ok": True, "id": sid}
@@ -1753,6 +1789,7 @@ class ServiceRegistry:
                                             "type": "tool", "tool": d["tool"],
                                             "args": d.get("args", {}), "cwd": "~"})
         self.bindings[sid] = job["job_id"]
+        self._save_bindings()
         self.store.audit("service.start", f"{sid} -> {job['job_id']}")
         st = self.status(sid)
         self.bus.publish("service.updated", st)
