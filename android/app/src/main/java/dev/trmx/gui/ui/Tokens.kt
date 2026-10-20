@@ -1,16 +1,16 @@
 package dev.trmx.gui.ui
 
 /*
- * TRMX design tokens (redesign v2: AMOLED black + amber identity) — the
- * SINGLE source of truth for every visual constant in the app. Screens and
- * components may not hardcode colors, radii or spacing; they reference
- * Tokens.
+ * TRMX design tokens (redesign v2: AMOLED black + white-neutral
+ * identity) — the SINGLE source of truth for every visual constant in
+ * the app. Screens and components may not hardcode colors, radii or
+ * spacing; they reference Tokens.
  *
- * Palette: true-black AMOLED ground, warm dark-amber-tinted surfaces,
- * one amber accent for primary actions. Chosen by the owner on
- * 2026-10-18 (preview-approved): NO white background, NO blue/navy,
- * minimal and calm. Warm off-white primary text, neutral grey metadata,
- * semantic red ONLY for critical failures.
+ * Palette: true-black AMOLED ground, neutral grey surfaces (no tint),
+ * one white accent for primary actions. Chosen by the owner on
+ * 2026-10-19 (amber rejected; preview-approved): NO white background,
+ * NO blue/navy, minimal and calm. Pure-white primary text, neutral grey
+ * metadata, semantic red ONLY for critical failures.
  */
 
 import androidx.compose.ui.graphics.Color
@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.dp
 
 object Tokens {
 
-    /** Ground + elevated surfaces (AMOLED black, warm amber tint). */
+    /** Ground + elevated surfaces (AMOLED black, neutral grey, no tint). */
     object Palette {
         val Background = Color(0xFF000000)     // true AMOLED black (ground)
         val Surface = Color(0xFF161616)        // cards (neutral grey, no tint)
@@ -33,14 +33,15 @@ object Tokens {
         val TextSecondary = Color(0xFFC4C4C4)  // neutral grey
         val TextMuted = Color(0xFF8A8A8A)      // faint metadata
 
-        /** Accent — amber. Primary actions are amber-on-black, the ONE
-         *  loud element per screen. (Owner's pick, 2026-10-18.) */
+        /** Accent — white. Primary actions are white-on-black, the ONE
+         *  loud element per screen. (Owner's pick, 2026-10-19: white
+         *  neutral identity; the earlier amber direction was rejected.) */
         val Accent = Color(0xFFFFFFFF)
         val OnAccent = Color(0xFF000000)
         val AccentContainer = Color(0xFF242424)
         val OnAccentContainer = Color(0xFFFFFFFF)
 
-        /** Warm grey — calm secondary / completed. */
+        /** Neutral grey — calm secondary / completed. */
         val Steel = Color(0xFFC4C4C4)
         val SteelDim = Color(0xFF8A8A8A)
         val SteelContainer = Color(0xFF1E1E1E)

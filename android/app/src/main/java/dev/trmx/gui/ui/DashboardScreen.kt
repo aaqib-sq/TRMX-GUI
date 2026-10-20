@@ -86,13 +86,13 @@ fun DashboardScreen(
             TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 20.dp) {
                 Text("Nothing running.",
                      fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Text("Start something from the Agent tab — or tap + New job.",
+                Text("Tap Ask the agent below to start something.",
                      fontSize = 14.sp, color = P.TextSecondary)
             }
         }
 
         TrmxButton(
-            label = "+ New job",
+            label = "Ask the agent",
             onClick = onNewJob,
             kind = TrmxButtonKind.Primary,
             modifier = Modifier
@@ -161,13 +161,21 @@ private fun StatusStrip(
             state.refreshing -> CircularProgressIndicator(
                 strokeWidth = 2.dp, color = P.TextSecondary,
                 modifier = Modifier.size(16.dp))
-            connected && !repair.running && repair.failure == null -> {
-                state.info?.bridge_version?.takeIf { it.isNotEmpty() }?.let { v ->
-                    Text("bridge $v", fontSize = 13.sp, color = P.TextMuted)
-                    Spacer(Modifier.width(4.dp))
+            else -> {
+                if (connected) {
+                    state.info?.bridge_version?.takeIf { it.isNotEmpty() }?.let { v ->
+                        Text("bridge $v", fontSize = 13.sp, color = P.TextMuted)
+                        Spacer(Modifier.width(4.dp))
+                    }
                 }
-                TextButton(onClick = onRepair) {
-                    Text("Repair", color = P.TextSecondary, fontSize = 14.sp)
+                // audit §1-L5: the Repair shortcut shows only when there
+                // is something to repair — never as permanent clutter
+                // while everything is healthy.
+                if ((state.error != null || repair.failure != null) &&
+                    !repair.running) {
+                    TextButton(onClick = onRepair) {
+                        Text("Repair", color = P.TextSecondary, fontSize = 14.sp)
+                    }
                 }
             }
         }

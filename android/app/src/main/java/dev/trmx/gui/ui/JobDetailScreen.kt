@@ -186,6 +186,7 @@ private fun OutputCard(
                 items(output.lines) { line ->
                     Text(
                         line.text,
+                        fontFamily = FontFamily.Monospace,
                         fontSize = MaterialTheme.typography.bodySmall.fontSize,
                         color = when {
                             line.isStderr -> P.Danger

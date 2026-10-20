@@ -1,7 +1,7 @@
 package dev.trmx.gui.ui
 
 /*
- * TRMX theme (redesign v2: AMOLED black + amber identity).
+ * TRMX theme (redesign v2: AMOLED black + white-neutral identity).
  *
  * Every constant comes from Tokens — this file only MAPS tokens onto the
  * Material 3 scheme and the legacy compat surface (Sp, FieldShape,

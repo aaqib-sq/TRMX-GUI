@@ -441,7 +441,7 @@ fun AppRoot(
                     bottomBar = {
                         // NavigationBar (redesign v2): AMOLED black, 24 dp
                         // vector icons (outlined -> filled when selected),
-                        // amber active tint, warm grey inactive.
+                        // white active tint, neutral grey inactive.
                         NavigationBar(
                             containerColor = Color(0xFF000000),
                             tonalElevation = 0.dp,

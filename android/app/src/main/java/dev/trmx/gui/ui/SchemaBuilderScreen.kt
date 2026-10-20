@@ -156,7 +156,8 @@ fun SchemaBuilderScreen(
                 TrmxCard(modifier = Modifier.fillMaxWidth()) {
                     Text(
                         "trmx-ai is not installed on the phone — re-run the TRMX " +
-                        "installer (Diagnostics → Install, or the first-run wizard) " +
+                        "installer (⋯ → Diagnostics → Re-run setup, or the " +
+                        "first-run wizard) " +
                         "to add it.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error)

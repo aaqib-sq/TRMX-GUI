@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
@@ -195,11 +197,29 @@ private fun AgentRowCard(row: AgentRow) {
             row.kind == AgentRowKind.RESULT_FAIL
         val capped = isResult && row.title.length > RESULT_CAP
         var expanded by remember(row.title) { mutableStateOf(false) }
-        Text(if (capped && !expanded) row.title.take(RESULT_CAP) + "…" else row.title,
-             style = MaterialTheme.typography.bodyMedium,
-             fontWeight = if (row.kind == AgentRowKind.DOING ||
-                 row.kind == AgentRowKind.DONE) FontWeight.SemiBold else null,
-             color = titleColor)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // Proper vector icons instead of ✓/✗ text glyphs (audit
+            // §1-L2): material-icons-extended already provides Check /
+            // Close equivalents, used across the app.
+            when (row.kind) {
+                AgentRowKind.RESULT_OK -> {
+                    Icon(Icons.Filled.Check, contentDescription = "done",
+                         tint = titleColor, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(Sp.xs))
+                }
+                AgentRowKind.RESULT_FAIL -> {
+                    Icon(Icons.Filled.Close, contentDescription = "failed",
+                         tint = titleColor, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(Sp.xs))
+                }
+                else -> Unit
+            }
+            Text(if (capped && !expanded) row.title.take(RESULT_CAP) + "…" else row.title,
+                 style = MaterialTheme.typography.bodyMedium,
+                 fontWeight = if (row.kind == AgentRowKind.DOING ||
+                     row.kind == AgentRowKind.DONE) FontWeight.SemiBold else null,
+                 color = titleColor)
+        }
         if (capped) {
             TextButton(onClick = { expanded = !expanded }) {
                 Text(if (expanded) "Show less" else "Show more",
