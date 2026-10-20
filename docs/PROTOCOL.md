@@ -503,6 +503,7 @@ Bad decision → `400 VALIDATION_FAILED`.
 | `action` | `{"step":n,"tool":"…","describe":"…"}` — about to execute |
 | `result` | `{"step":n,"ok":bool,"excerpt":"…"}` — what happened |
 | `confirm-needed` | `{"step":n,"describe":"…","tool":"…","why":"risk-tier\|destructive"}` — paused for the app's answer |
+| `confirm-expired` | `{"step":n,"describe":"…","tool":"…","why":"…"}` — the confirm wait timed out unanswered; the app replaces the card with "timed out — nothing was done" |
 | `done` | `{"summary":"…"}` |
 | `failed` | `{"error":"…"}` |
 
@@ -512,7 +513,9 @@ Bad decision → `400 VALIDATION_FAILED`.
 A `submit_tool` whose target tool has `risk_tier` `confirm`/`destructive`,
 or whose description matches a destructive verb, emits `confirm-needed`
 and pauses until the app answers via the confirm endpoint (10-minute
-silence = deny). Cancel = `POST /v1/jobs/{job_id}/cancel` (§3.5).
+silence = the wait expires: a `confirm-expired` event is emitted and
+the task fails as timed out — nothing was done). Cancel =
+`POST /v1/jobs/{job_id}/cancel` (§3.5).
 
 The pairing token is never part of this protocol: the agent reads it from
 `~/.trmx/bridge.json` only to authenticate its own calls (like the `trmx`

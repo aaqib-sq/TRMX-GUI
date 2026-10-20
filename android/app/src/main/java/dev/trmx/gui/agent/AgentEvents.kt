@@ -12,6 +12,7 @@ package dev.trmx.gui.agent
  *   action         {"t":"action","step":n,"tool":"submit_tool","describe":"..."}
  *   result         {"t":"result","step":n,"ok":true|false,"excerpt":"..."}
  *   confirm-needed {"t":"confirm-needed","step":n,"describe":"...","tool":"...","why":"..."}
+ *   confirm-expired {"t":"confirm-expired","step":n,"describe":"...","tool":"...","why":"..."}
  *   done           {"t":"done","summary":"..."}
  *   failed         {"t":"failed","error":"..."}
  */
@@ -29,6 +30,14 @@ sealed interface AgentEvent {
     data class Action(val step: Int, val tool: String, val describe: String) : AgentEvent
     data class Result(val step: Int, val ok: Boolean, val excerpt: String) : AgentEvent
     data class ConfirmNeeded(
+        val step: Int,
+        val describe: String,
+        val tool: String,
+        val why: String,
+    ) : AgentEvent
+    /** The confirm wait timed out unanswered — the card is gone and
+     *  nothing was done (audit §2-M5; distinct from a user denial). */
+    data class ConfirmExpired(
         val step: Int,
         val describe: String,
         val tool: String,
@@ -61,6 +70,9 @@ object AgentEventParser {
                 ok = el["ok"]?.jsonPrimitive?.booleanOrNull ?: false,
                 excerpt = s("excerpt"))
             "confirm-needed" -> AgentEvent.ConfirmNeeded(
+                step = step(), describe = s("describe"),
+                tool = s("tool"), why = s("why"))
+            "confirm-expired" -> AgentEvent.ConfirmExpired(
                 step = step(), describe = s("describe"),
                 tool = s("tool"), why = s("why"))
             "done" -> AgentEvent.Done(summary = s("summary"))

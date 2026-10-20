@@ -424,6 +424,177 @@ class AgentTestBase(unittest.TestCase):
 sys.path.insert(0, str(TERMUX))
 import trmx_ai_lib  # noqa: E402
 
+import contextlib  # noqa: E402
+import importlib.machinery  # noqa: E402
+import importlib.util  # noqa: E402
+import io  # noqa: E402
+import signal  # noqa: E402
+
+# Load trmx-agent (no .py suffix) as a module for direct unit tests of
+# the loop helpers. Importing it installs its SIGTERM handler in this
+# process — restore the previous one; the unit tests never rely on it.
+_loader = importlib.machinery.SourceFileLoader(
+    "trmx_agent_mod", str(TERMUX / "trmx-agent"))
+_spec = importlib.util.spec_from_loader("trmx_agent_mod", _loader)
+trmx_agent = importlib.util.module_from_spec(_spec)
+_old_sigterm = signal.getsignal(signal.SIGTERM)
+_loader.exec_module(trmx_agent)
+signal.signal(signal.SIGTERM, _old_sigterm)
+
+
+def _make_agent(tmp: str) -> "trmx_agent.Agent":
+    """An Agent over a throwaway home (no bridge server needed: the
+    helpers under test either never call it or get a stub instead)."""
+    home = Path(tmp)
+    (home / "agent" / "tasks").mkdir(parents=True)
+    (home / "agent" / "tasks" / "AT-unit.json").write_text(
+        json.dumps({"instruction": "unit test"}))
+    (home / "bridge.json").write_text(json.dumps({"token": "t", "port": 1}))
+    return trmx_agent.Agent(home, "AT-unit")
+
+
+class TestHistoryWorkingSet(unittest.TestCase):
+    """audit §2-M1: last tool output full, older outputs one-liners."""
+
+    def setUp(self):
+        self.agent = _make_agent(tempfile.mkdtemp(prefix="trmx-hist-"))
+
+    def test_last_tool_output_full_older_summarized(self):
+        a = self.agent
+        a.step = 1
+        a._record_tool_result("list the files",
+                              "file-one.txt\n" + "x" * 1000)
+        a.step = 2
+        a._record_tool_result("read the second one",
+                              "second output body " + "y" * 500)
+        text = a._history_text()
+        # the LAST tool output survives far beyond the old 200-char cut
+        self.assertIn("y" * 500, text)
+        # the OLDER output is a one-line summary: head kept, tail gone
+        self.assertIn("file-one.txt", text)
+        self.assertNotIn("x" * 300, text)
+
+    def test_single_tool_output_kept_full(self):
+        a = self.agent
+        a.step = 1
+        a._record_tool_result("only step", "z" * 900)
+        self.assertIn("z" * 900, a._history_text())
+
+    def test_non_tool_entries_render_verbatim(self):
+        a = self.agent
+        a._history_add("step 1: said “hello there”")
+        a.step = 2
+        a._record_tool_result("do a thing", "output " + "q" * 300)
+        text = a._history_text()
+        self.assertIn("hello there", text)
+        self.assertIn("q" * 300, text)
+
+
+class _StubBridge:
+    """Counts check() calls; serves one canned risk_tier (or fails)."""
+
+    def __init__(self, tier: str = "safe", fail: bool = False):
+        self.tier, self.fail, self.calls = tier, fail, 0
+
+    def check(self, method, path, body=None, timeout=30):
+        self.calls += 1
+        if self.fail:
+            raise trmx_agent.AgentError("bridge blip")
+        return {"schema": {"risk_tier": self.tier}}
+
+
+class TestRiskCache(unittest.TestCase):
+    """audit §2-M2: the risk check is cached within one task run."""
+
+    ARGS = {"tool": "some-tool"}
+
+    def test_second_check_is_a_cache_hit(self):
+        b, cache = _StubBridge("safe"), {}
+        self.assertIsNone(trmx_agent.is_destructive(
+            "submit_tool", self.ARGS, "run it", b, cache))
+        self.assertIsNone(trmx_agent.is_destructive(
+            "submit_tool", self.ARGS, "run it again", b, cache))
+        self.assertEqual(b.calls, 1)
+        self.assertEqual(cache, {"some-tool": "safe"})
+
+    def test_confirm_tier_cached_and_reported(self):
+        b, cache = _StubBridge("confirm"), {}
+        for _ in range(2):
+            self.assertEqual(trmx_agent.is_destructive(
+                "submit_tool", self.ARGS, "run it", b, cache), "risk-tier")
+        self.assertEqual(b.calls, 1)
+
+    def test_seeded_cache_needs_no_fetch(self):
+        b = _StubBridge("safe")
+        self.assertEqual(trmx_agent.is_destructive(
+            "submit_tool", self.ARGS, "run it", b,
+            {"some-tool": "destructive"}), "risk-tier")
+        self.assertIsNone(trmx_agent.is_destructive(
+            "submit_tool", self.ARGS, "run it", b, {"some-tool": "safe"}))
+        self.assertEqual(b.calls, 0)
+
+    def test_fetch_failure_fails_closed_and_is_not_cached(self):
+        b, cache = _StubBridge(fail=True), {}
+        self.assertEqual(trmx_agent.is_destructive(
+            "submit_tool", self.ARGS, "run it", b, cache), "risk-tier")
+        self.assertEqual(cache, {})          # a blip is not a tier
+        self.assertEqual(trmx_agent.is_destructive(
+            "submit_tool", self.ARGS, "run it", b, cache), "risk-tier")
+        self.assertEqual(b.calls, 2)         # retried live next step
+
+    def test_no_cache_keeps_live_fetch_per_check(self):
+        b = _StubBridge("safe")
+        trmx_agent.is_destructive("submit_tool", self.ARGS, "run it", b)
+        trmx_agent.is_destructive("submit_tool", self.ARGS, "run it", b)
+        self.assertEqual(b.calls, 2)
+
+
+class TestConfirmExpired(unittest.TestCase):
+    """audit §2-M5: confirm timeout = distinct event, not a denial."""
+
+    def setUp(self):
+        self.agent = _make_agent(tempfile.mkdtemp(prefix="trmx-conf-"))
+
+    def _ask(self, *a):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = self.agent.ask_confirm(*a)
+        events = [json.loads(ln) for ln in buf.getvalue().splitlines()
+                  if ln.startswith("{")]
+        return got, events
+
+    def test_timeout_returns_none_and_emits_confirm_expired(self):
+        old = trmx_agent.CONFIRM_TIMEOUT_S
+        trmx_agent.CONFIRM_TIMEOUT_S = 0
+        try:
+            got, events = self._ask("submit_tool", {"tool": "x"},
+                                    "delete a thing", "destructive")
+        finally:
+            trmx_agent.CONFIRM_TIMEOUT_S = old
+        self.assertIsNone(got)
+        kinds = [e["t"] for e in events]
+        self.assertEqual(kinds, ["confirm-needed", "confirm-expired"])
+        self.assertEqual(events[-1]["step"], self.agent.step)
+        self.assertFalse(self.agent._pending_path().exists())
+
+    def test_deny_returns_false_without_expired_event(self):
+        dp = self.agent._decision_path()
+        dp.parent.mkdir(parents=True, exist_ok=True)
+        dp.write_text(json.dumps({"decision": "deny"}))
+        got, events = self._ask("submit_tool", {"tool": "x"},
+                                "delete a thing", "destructive")
+        self.assertFalse(got)
+        self.assertEqual([e["t"] for e in events], ["confirm-needed"])
+
+    def test_allow_returns_true_without_expired_event(self):
+        dp = self.agent._decision_path()
+        dp.parent.mkdir(parents=True, exist_ok=True)
+        dp.write_text(json.dumps({"decision": "allow"}))
+        got, events = self._ask("submit_tool", {"tool": "x"},
+                                "delete a thing", "destructive")
+        self.assertTrue(got)
+        self.assertEqual([e["t"] for e in events], ["confirm-needed"])
+
 
 def _action_shape(obj: dict) -> None:
     """Stand-in for trmx-agent's validate_action: the op whitelist and
@@ -477,6 +648,35 @@ class TestExtractJson(unittest.TestCase):
         out = trmx_ai_lib.extract_json('{"a": 1} {"b": 2}',
                                        validator=_action_shape)
         self.assertEqual(out, {"a": 1})
+
+
+class AgentConfirmTimeoutTest(AgentTestBase):
+    # 5s: short enough for test_19, longer than the 3s task deadline
+    # the inherited test_15d restarts with (there the TASK timeout must
+    # still win over the confirm expiry).
+    extra_env = {"TRMX_AGENT_CONFIRM_TIMEOUT_S": "5",
+                 "TRMX_AGENT_TASK_TIMEOUT_S": "120"}
+
+    def test_19_confirm_timeout_expires_distinctly(self):
+        # audit §2-M5 end-to-end: nobody answers the confirm, so the
+        # task must fail as TIMED OUT (not "denied by user") and the
+        # stream must carry exactly one distinct confirm-expired event
+        # alongside the single failed event — no double message.
+        self.queue_responses(json.dumps(
+            {"op": "do", "tool": "submit_tool",
+             "args": {"tool": "test-noop", "args": {}},
+             "describe": "delete the old cache files"}))
+        t = self.create_task("clean up")
+        got = self.wait_task(t["task_id"], {"failed"}, timeout=30)
+        self.assertIn("confirmation timed out", got["error"])
+        self.assertNotIn("denied", got["error"])
+        events = self.agent_events(t["job_id"])
+        kinds = [e["t"] for e in events]
+        self.assertEqual(kinds.count("confirm-expired"), 1)
+        self.assertEqual(kinds.count("failed"), 1)
+        expired = next(e for e in events if e["t"] == "confirm-expired")
+        needed = next(e for e in events if e["t"] == "confirm-needed")
+        self.assertEqual(expired["step"], needed["step"])
 
 
 class AgentStepCapTest(AgentTestBase):

@@ -51,26 +51,36 @@ DEFAULT_KEY_ENV = {
     # openai_compatible: no convention — set api_key or api_key_env
 }
 
-# Written to ~/.trmx/ai.json on first run (mode cli) so users have a
-# documented, one-flip-ready config to edit. Annotated in docs/AI-CONFIG.md.
+# Written to ~/.trmx/ai.json on first run so users have a documented,
+# one-flip-ready config to edit. Annotated in docs/AI-CONFIG.md.
+# The DEFAULT is the setup actually used on the device (audit §2-M8):
+# a local GGUF model served by llama-server — http_api /
+# openai_compatible on 127.0.0.1:8080, the same shape the app's
+# Local GGUF preset writes. llama-server ignores the placeholder key.
+# The ollama cli shape survives below as the alternative block, and
+# groq/openai/gemini remain one edit away in the http_api block.
 CONFIG_TEMPLATE = {
     "_help": [
         "TRMX AI backend configuration. Full guide: docs/AI-CONFIG.md",
-        "mode: 'cli' = offline/local model runner | 'http_api' = cloud API.",
+        "Default: local GGUF model via llama-server on this phone "
+        "(http_api / openai_compatible, 127.0.0.1:8080) — no internet, "
+        "no API money; the placeholder key is ignored by llama-server.",
+        "mode: 'http_api' = an OpenAI-shaped endpoint (local or cloud) "
+        "| 'cli' = offline/local model runner (see the cli block).",
         "Unknown keys are ignored. Keep this file private (chmod 600).",
     ],
-    "mode": "cli",
+    "mode": "http_api",
     "cli": {
         "command": ["ollama", "run", "llama3.2"],
         "timeout_s": 180,
     },
     "http_api": {
-        "provider": "groq",
-        "endpoint": "",
-        "api_key": "",
-        "api_key_env": "GROQ_API_KEY",
-        "model": "llama-3.3-70b-versatile",
-        "timeout_s": 120,
+        "provider": "openai_compatible",
+        "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+        "api_key": "local",
+        "api_key_env": "",
+        "model": "local-gguf",
+        "timeout_s": 300,
     },
 }
 
@@ -236,7 +246,14 @@ def run_cli(command: list[str], prompt: str, timeout: int) -> str:
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", "replace")[-500:]
         die(3, f"backend exited {proc.returncode}: {tail.strip()}")
-    return proc.stdout.decode("utf-8", "replace")
+    raw = proc.stdout
+    if len(raw) > MAX_LLM_BYTES:
+        # cli mode has no max_tokens knob to send (audit §2-M6), so cap
+        # the captured output at the same byte budget the http path is
+        # held to before parsing: a rambling model — or a wrapper that
+        # prints progress/warnings to stdout — cannot flood the parser.
+        raw = raw[:MAX_LLM_BYTES]
+    return raw.decode("utf-8", "replace")
 
 
 def _extract_text(payload, provider: str) -> str:

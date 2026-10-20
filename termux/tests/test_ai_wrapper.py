@@ -444,14 +444,22 @@ class TestConfigTemplate(unittest.TestCase):
         h = FakeHome()                       # no ai.json, no backend
         try:
             r = h.run("download a video with video-grab")
-            # default template is cli mode -> ollama missing -> loud 3
+            # default template is the local-GGUF http_api setup actually
+            # used on the device (audit §2-M8) — nothing listens on
+            # 127.0.0.1:8080 in the test sandbox -> loud 3
             self.assertEqual(r.returncode, 3, r.stderr)
             self.assertIn("template", r.stderr)
             path = h.dir / "ai.json"
             self.assertTrue(path.is_file())
             cfg = json.loads(path.read_text())
-            self.assertEqual(cfg["mode"], "cli")
-            self.assertIn("http_api", cfg)   # one flip away from cloud
+            self.assertEqual(cfg["mode"], "http_api")
+            self.assertEqual(cfg["http_api"]["provider"],
+                             "openai_compatible")
+            self.assertEqual(cfg["http_api"]["endpoint"],
+                             "http://127.0.0.1:8080/v1/chat/completions")
+            self.assertEqual(cfg["http_api"]["model"], "local-gguf")
+            self.assertIn("cli", cfg)        # ollama shape kept as the
+                                             # alternative block
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         finally:
             h.cleanup()
@@ -464,6 +472,28 @@ class TestConfigTemplate(unittest.TestCase):
             self.assertFalse((h.dir / "ai.json").exists())
         finally:
             h.cleanup()
+
+
+sys.path.insert(0, str(REPO / "termux"))
+import trmx_ai_lib  # noqa: E402
+
+
+class TestRunCliCap(unittest.TestCase):
+    """audit §2-M6: cli mode has no max_tokens knob, so its captured
+    output is capped at MAX_LLM_BYTES — the same budget the http path
+    is held to before parsing."""
+
+    def test_cli_output_capped_at_max_llm_bytes(self):
+        backend = make_backend("x" * (trmx_ai_lib.MAX_LLM_BYTES + 5000))
+        out = trmx_ai_lib.run_cli([str(backend)], "prompt", 30)
+        self.assertEqual(len(out.encode("utf-8")),
+                         trmx_ai_lib.MAX_LLM_BYTES)
+        self.assertTrue(out.startswith("x" * 100))
+
+    def test_cli_output_under_cap_unchanged(self):
+        backend = make_backend("short answer")
+        out = trmx_ai_lib.run_cli([str(backend)], "prompt", 30)
+        self.assertEqual(out, "short answer")
 
 
 if __name__ == "__main__":
