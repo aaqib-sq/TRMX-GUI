@@ -137,6 +137,8 @@ fun AppRoot(
     vm: AppViewModel = viewModel(),
     setupVm: SetupViewModel = viewModel(),
     agentVm: AgentViewModel = viewModel(),
+    filesVm: FilesViewModel = viewModel(),
+    aiConfigVm: AiConfigViewModel = viewModel(),
 ) {
     val setup by setupVm.wizard.collectAsStateWithLifecycle()
     val setupLogText by setupVm.setupLogText.collectAsStateWithLifecycle()
@@ -147,11 +149,11 @@ fun AppRoot(
     val submitForm by vm.submitForm.collectAsStateWithLifecycle()
     val detail by vm.detail.collectAsStateWithLifecycle()
     val output by vm.output.collectAsStateWithLifecycle()
-    val filesState by vm.files.collectAsStateWithLifecycle()
+    val filesState by filesVm.files.collectAsStateWithLifecycle()
     val toolsState by vm.tools.collectAsStateWithLifecycle()
     val schemaBuilder by vm.schemaBuilder.collectAsStateWithLifecycle()
     val servicesState by vm.services.collectAsStateWithLifecycle()
-    val aiConfigState by vm.aiConfig.collectAsStateWithLifecycle()
+    val aiConfigState by aiConfigVm.aiConfig.collectAsStateWithLifecycle()
     val toolFormState by vm.toolForm.collectAsStateWithLifecycle()
     val recipes by vm.recipes.collectAsStateWithLifecycle()
     val artifactsState by vm.artifacts.collectAsStateWithLifecycle()
@@ -223,12 +225,12 @@ fun AppRoot(
                     }
                     vm.getApplication<android.app.Application>().startActivity(
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    vm.afterOpen(null)
+                    filesVm.afterOpen(null)
                 } catch (e: ActivityNotFoundException) {
-                    vm.afterOpen("no app can open \u201c${File(pending.path).name}\u201d " +
+                    filesVm.afterOpen("no app can open \u201c${File(pending.path).name}\u201d " +
                         "(${pending.mime}) \u2014 try Share instead")
                 } catch (e: SecurityException) {
-                    vm.afterOpen("cannot open: ${e.message}")
+                    filesVm.afterOpen("cannot open: ${e.message}")
                 }
             }
 
@@ -251,33 +253,33 @@ fun AppRoot(
                     onBack = { vm.selectJob(null) },
                     onCancelJob = vm::cancelJob,
                     onReplayOutput = vm::replayOutput,
-                    onOpenArtifact = vm::openArtifact,
+                    onOpenArtifact = { a, share -> filesVm.openRemote(a.path, a.name, share) },
                 )
             } else if (filesLayer) {
                 // Files as a root layer (redesign v2): reached from the
                 // Work tab and from a tool form's path picker — it sits
                 // ABOVE the form, so picking a path returns straight to it.
                 BackHandler {
-                    if (!vm.filesUp()) filesLayer = false
+                    if (!filesVm.filesUp()) filesLayer = false
                 }
                 LaunchedEffect(Unit) {
-                    vm.clearFilesNotice()
-                    if (filesState.entries.isEmpty()) vm.openPath(filesState.path)
+                    filesVm.clearFilesNotice()
+                    if (filesState.entries.isEmpty()) filesVm.openPath(filesState.path)
                 }
                 val pickArg = toolFormState.pathArg
                 FilesScreen(
                     state = filesState,
-                    onOpenPath = vm::openPath,
-                    onUp = { vm.filesUp() },
-                    onRefresh = vm::refreshFiles,
-                    onLoadMore = vm::loadMoreFiles,
-                    onMakeDir = vm::makeDir,
-                    onRename = vm::renameEntry,
-                    onDelete = vm::deleteEntry,
-                    onDownload = vm::downloadEntry,
-                    onUpload = vm::uploadFromUri,
-                    onOpenFile = { vm.openEntry(it, false) },
-                    onShareFile = { vm.openEntry(it, true) },
+                    onOpenPath = filesVm::openPath,
+                    onUp = { filesVm.filesUp() },
+                    onRefresh = filesVm::refreshFiles,
+                    onLoadMore = filesVm::loadMoreFiles,
+                    onMakeDir = filesVm::makeDir,
+                    onRename = filesVm::renameEntry,
+                    onDelete = filesVm::deleteEntry,
+                    onDownload = filesVm::downloadEntry,
+                    onUpload = filesVm::uploadFromUri,
+                    onOpenFile = { filesVm.openEntry(it, false) },
+                    onShareFile = { filesVm.openEntry(it, true) },
                     pickFile = pickArg?.let { arg ->
                         toolFormState.schema?.args
                             ?.firstOrNull { it.name == arg }
@@ -352,7 +354,7 @@ fun AppRoot(
                     Overlay.AI_BUILDER -> {
                         LaunchedEffect(Unit) {
                             vm.loadTools()
-                            vm.loadAiConfig()
+                            aiConfigVm.loadAiConfig()
                         }
                         SchemaBuilderScreen(
                             state = schemaBuilder,
@@ -360,15 +362,15 @@ fun AppRoot(
                                 .firstOrNull { it.schema.id == "ai-schema-builder" }
                                 ?.installed,
                             config = aiConfigState,
-                            onLoadConfig = vm::loadAiConfig,
-                            onSaveConfig = vm::saveAiConfig,
-                            onSetAiMode = vm::setAiMode,
-                            onSetAiProvider = vm::setAiProvider,
-                            onSetAiEndpoint = vm::setAiEndpoint,
-                            onSetAiModel = vm::setAiModel,
-                            onSetAiApiKey = vm::setAiApiKey,
-                            onForgetAiKey = vm::forgetAiKey,
-                            onSetAiCommand = vm::setAiCommand,
+                            onLoadConfig = aiConfigVm::loadAiConfig,
+                            onSaveConfig = aiConfigVm::saveAiConfig,
+                            onSetAiMode = aiConfigVm::setAiMode,
+                            onSetAiProvider = aiConfigVm::setAiProvider,
+                            onSetAiEndpoint = aiConfigVm::setAiEndpoint,
+                            onSetAiModel = aiConfigVm::setAiModel,
+                            onSetAiApiKey = aiConfigVm::setAiApiKey,
+                            onForgetAiKey = aiConfigVm::forgetAiKey,
+                            onSetAiCommand = aiConfigVm::setAiCommand,
                             onEditDescription = vm::editSchemaDescription,
                             onSubmit = vm::submitSchemaBuilder,
                             onOpenToolbox = {
@@ -386,17 +388,19 @@ fun AppRoot(
                         aiConfig = aiConfigState,
                         onRepair = {
                             vm.resetAppState()
+                            filesVm.resetFiles()
                             setupVm.resetSetup()
                             overlay = null
                         },
-                        onApplyLocalPreset = vm::applyLocalGgufPreset,
+                        onApplyLocalPreset = aiConfigVm::applyLocalGgufPreset,
                         onDismissRepair = setupVm::dismissRepair,
                         onRerunSetup = {
                             vm.resetAppState()
+                            filesVm.resetFiles()
                             setupVm.resetSetup()
                             overlay = null
                         },
-                        onLoadAiConfig = vm::loadAiConfig,
+                        onLoadAiConfig = aiConfigVm::loadAiConfig,
                         onBack = { overlay = null },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -527,7 +531,7 @@ fun AppRoot(
                                 onInstall = vm::installTool,
                                 onOpenRecipe = { id -> vm.openRecipe(id) },
                                 onDeleteRecipe = vm::deleteRecipe,
-                                onShareRecipe = vm::shareRecipe,
+                                onShareRecipe = { r -> filesVm.shareRecipe(r) { msg -> vm.reportToolError(msg) } },
                                 onImportRecipe = vm::importRecipe,
                                 onOpenServices = { servicesLayer = true },
                                 onOpenSchemaBuilder = { overlay = Overlay.AI_BUILDER },
@@ -552,6 +556,7 @@ fun AppRoot(
                                     // pipeline, which cannot act on this
                                     // device — repair IS the connect flow.
                                     vm.resetAppState()
+                                    filesVm.resetFiles()
                                     setupVm.resetSetup()
                                 },
                                 onNewJob = { screen = Screen.AGENT },
@@ -570,6 +575,7 @@ fun AppRoot(
                         onStopBridge = vm::stopBridge,
                         onRerunWizard = {
                             vm.resetAppState()
+                            filesVm.resetFiles()
                             setupVm.resetSetup()
                             showDiagnostics = false
                         },
