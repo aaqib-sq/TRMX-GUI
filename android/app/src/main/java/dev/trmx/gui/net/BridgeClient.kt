@@ -41,6 +41,8 @@ import dev.trmx.gui.model.ToolsResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Headers
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
@@ -55,6 +57,9 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 sealed interface BridgeResult<out T> {
     data class Success<T>(val data: T) : BridgeResult<T>
@@ -70,6 +75,87 @@ class BridgeClient(
 
     suspend fun systemInfo(): BridgeResult<SystemInfo> =
         get("/v1/system/info") { body, _ -> jsonFormat.decodeFromString(SystemInfo.serializer(), body) }
+
+    /**
+     * Bridge identity proof (PROTOCOL §2.3, audit §4-H1): BEFORE this
+     * client trusts whatever answers on the bridge port with token-bearing
+     * requests, the server must prove it holds our token — by returning
+     * HMAC-SHA256(token, nonce) for a fresh random nonce. The proof request
+     * itself carries NO Authorization header, so a port squatter learns
+     * nothing from it.
+     *
+     * Outcomes: Success = identity proven. HttpError "PROOF_FAILED" = a
+     * server answered but its HMAC does not match (impostor, or the bridge
+     * holds a different token). HttpError "PROOF_MISSING" = the endpoint
+     * is missing (pre-§2.3 bridge answers 401/404) — the caller must say
+     * "bridge update needed", never silently trust. NetworkError = nothing
+     * is listening (yet).
+     */
+    suspend fun verifyBridgeIdentity(): BridgeResult<Unit> {
+        val nonceBytes = ByteArray(16)
+        SecureRandom().nextBytes(nonceBytes)
+        val nonce = nonceBytes.joinToString("") { "%02x".format(it) }
+        return when (val r = fetchProofMac(nonce)) {
+            is BridgeResult.Success -> {
+                val expected = hmacSha256Hex(token, nonce)
+                // MessageDigest.isEqual compares in constant time
+                if (MessageDigest.isEqual(expected.toByteArray(Charsets.UTF_8),
+                                          r.data.trim().lowercase()
+                                              .toByteArray(Charsets.UTF_8)))
+                    BridgeResult.Success(Unit)
+                else
+                    BridgeResult.HttpError(
+                        403, "PROOF_FAILED",
+                        "bridge identity check failed — the answer on the " +
+                            "bridge port could not prove it holds this " +
+                            "pairing token")
+            }
+            is BridgeResult.HttpError ->
+                if (r.status == 401 || r.status == 404)
+                    BridgeResult.HttpError(
+                        403, "PROOF_MISSING",
+                        "bridge update needed — the Termux side does not " +
+                            "support identity proof; re-run the install " +
+                            "line in Termux to update it")
+                else r
+            is BridgeResult.NetworkError -> r
+        }
+    }
+
+    /** The one request this client makes WITHOUT the bearer token. */
+    private suspend fun fetchProofMac(nonce: String): BridgeResult<String> =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(baseUrl + "/v1/proof?nonce=" + enc(nonce))
+                .header(PROTOCOL_HEADER, PROTOCOL_VERSION)
+                .get()
+                .build()
+            try {
+                client.newCall(request).execute().use { resp ->
+                    val text = resp.body?.string() ?: ""
+                    if (resp.isSuccessful) {
+                        val mac = runCatching {
+                            jsonFormat.parseToJsonElement(text)
+                                .jsonObject["hmac"]?.jsonPrimitive?.content
+                        }.getOrNull()
+                        if (mac != null) BridgeResult.Success(mac)
+                        else BridgeResult.NetworkError(
+                            IOException("proof response carried no hmac"))
+                    } else {
+                        val err = runCatching {
+                            jsonFormat.decodeFromString(ErrorEnvelope.serializer(), text).error
+                        }.getOrNull()
+                        BridgeResult.HttpError(
+                            resp.code, err?.code ?: "HTTP_${resp.code}",
+                            err?.message ?: text.take(200))
+                    }
+                }
+            } catch (e: IOException) {
+                BridgeResult.NetworkError(e)
+            } catch (e: Exception) {
+                BridgeResult.NetworkError(e)
+            }
+        }
 
     suspend fun listJobs(
         limit: Int = 50,
@@ -382,6 +468,14 @@ class BridgeClient(
         val opsJson: Json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = false
+        }
+
+        /** HMAC-SHA256 hex — the app side of the §2.3 identity proof. */
+        fun hmacSha256Hex(key: String, message: String): String {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+            return mac.doFinal(message.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
         }
 
         fun sha256Of(f: File): String {

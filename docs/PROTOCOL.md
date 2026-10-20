@@ -88,6 +88,10 @@ Errors: standard (§10). This endpoint is the client's health probe: no other ca
 ### 2.2 `GET /v1/system/policy` — effective policy mirror
 Response `200`: `{"roots": ["~", "~/storage"], "deny_write": ["$PREFIX"], "log_ring_mb": 2, "max_concurrent_jobs": 4, "queue_depth": 32, "cancel_grace_ms": 5000}`. Read-only view of `~/.trmx/bridge.json` (edited by the user in Termux only; the app never writes policy).
 
+### 2.3 `GET /v1/proof?nonce=<caller-random>` — bridge identity proof
+
+The one route that does **not** require the bearer token. Returns `{"hmac": "<hex>"}` = `HMAC-SHA256(key = the bridge's pairing token, message = nonce)`. The client generates a random nonce, asks for the proof, and verifies the HMAC against its own copy of the token **before** sending the token anywhere — a stranger squatting on the port cannot answer correctly (loopback trust, TRMX-P/1 §1.1). The `X-TRMX-Protocol` header is still required (a missing/foreign endpoint replies 401/404, which the client reads as "bridge update needed", never as success).
+
 ---
 
 ## 3. Jobs

@@ -429,9 +429,22 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     _connect.update {
                         it.copy(checking = false, bridgeSeen = true,
                             phase = ConnectPhase.NEEDS_PAIR,
-                            message = "The bridge is running, but this token does " +
-                                "not match. Use Step 2 (pair-link) — or the pair " +
-                                "line below.")
+                            message = when (r.code) {
+                                "PROOF_FAILED" ->
+                                    "Bridge identity check failed — something " +
+                                    "answered on the bridge port but could not " +
+                                    "prove it holds this token, so the token " +
+                                    "was not sent. Check Termux before pairing."
+                                "PROOF_MISSING" ->
+                                    "Bridge update needed — the Termux side is " +
+                                    "an older version without identity proof. " +
+                                    "Re-run the install line in Termux to " +
+                                    "update, then check again."
+                                else ->
+                                    "The bridge is running, but this token does " +
+                                    "not match. Use Step 2 (pair-link) — or the " +
+                                    "pair line below."
+                            })
                     }
                 is BridgeResult.NetworkError ->
                     _connect.update {
@@ -656,14 +669,18 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             }
             is BridgeResult.HttpError -> {
                 // 401 with a reachable bridge: our token is not the bridge's
-                // token. Self-heal once: re-pair, then re-check.
+                // token. A PROOF_FAILED is the same situation seen from the
+                // identity gate (§2.3): the bridge answers but its token
+                // differs. Self-heal once: re-pair, then re-check.
                 // Since 2026-10-17 the bridge re-reads the token from
                 // bridge.json on every auth, so re-pairing is only a file
                 // write — a live bridge accepts it on the next probe. The
                 // heal deliberately does NOT stop/start the bridge: that
                 // dependency on two more intents landing is what made the
                 // old heal fail all night in round 1.
-                if (r.status == 401 && allowRecovery) {
+                // If the proof still fails after the heal, it is not a
+                // token rotation — failHandshake names the impostor.
+                if ((r.status == 401 || r.code == "PROOF_FAILED") && allowRecovery) {
                     slog("HEAL 401 — re-pair (file write), then re-probe")
                     applyEvent(WizardEvent.StepStarted(
                         "token rejected — re-pairing and checking again…"))
@@ -687,7 +704,23 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun failHandshake(r: BridgeResult.HttpError) {
-        val hint = if (r.status == 401) {
+        val hint = if (r.code == "PROOF_FAILED") {
+            "Bridge identity check failed.\n" +
+                "Something answered on the bridge port, but it could not " +
+                "prove it holds our pairing token — so the token was NOT " +
+                "sent, and no pairing was attempted.\n" +
+                "Check:\n" +
+                "• Nothing else on the phone is answering on port 27342\n" +
+                "• In Termux, run ~/.trmx/trmx status to see the real bridge\n" +
+                "• If the token itself was rotated in Termux, use Step 2 " +
+                "(pair-link) to adopt it, then try again"
+        } else if (r.code == "PROOF_MISSING") {
+            "Bridge update needed.\n" +
+                "The Termux side is an older version without the identity " +
+                "proof (PROTOCOL §2.3) — the app will not trust it.\n" +
+                "• In Termux, re-run the install line to update the bridge\n" +
+                "• Then run setup again"
+        } else if (r.status == 401) {
             "Could not connect — the bridge rejected our token (HTTP 401).\n" +
                 "Check:\n" +
                 "• TRMX holds the Termux:Run Command permission (App info → Permissions)\n" +
@@ -752,6 +785,22 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      *  asked, what came back, how long it took, and WHICH token family
      *  was sent (length + prefix only, never the token itself). */
     private suspend fun probe(quiet: Boolean = false): BridgeResult<SystemInfo> {
+        // Identity proof first (PROTOCOL §2.3, audit §4-H1): never offer
+        // the token to whatever happens to hold the bridge port. A failed
+        // or missing proof is terminal for this probe — the PROOF_* codes
+        // map to a clear message downstream and the probe never falls
+        // through to a token-bearing request. A NetworkError only means
+        // nothing is listening yet (bridge still starting), so fall
+        // through: the system/info probe below produces the reported result.
+        when (val v = client().verifyBridgeIdentity()) {
+            is BridgeResult.HttpError -> {
+                if (!quiet) slog("PROBE /v1/proof -> HTTP ${v.status} ${v.code} — identity gate")
+                return v
+            }
+            is BridgeResult.Success ->
+                if (!quiet) slog("PROBE /v1/proof -> ok")
+            is BridgeResult.NetworkError -> Unit
+        }
         val started = System.currentTimeMillis()
         val r = client().systemInfo()
         val ms = System.currentTimeMillis() - started

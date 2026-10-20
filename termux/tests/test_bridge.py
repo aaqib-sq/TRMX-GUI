@@ -12,6 +12,8 @@ stdlib only (unittest, socket, http.client) — ADR-002 rule.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -315,6 +317,58 @@ class TestBridge(unittest.TestCase):
         self.assertEqual((s, json.loads(raw)["error"]["code"]), (404, "PATH_NOT_FOUND"))
         s, _, raw = self.http("POST", "/v1/jobs", {"type": "argv", "argv": [], "name": "x"})
         self.assertEqual(json.loads(raw)["error"]["code"], "VALIDATION_FAILED")
+
+    def test_02d_proof_of_identity(self):
+        # §2.3 / audit §4-H1: the proof endpoint requires NO bearer token —
+        # it lets the client verify the bridge holds the real token BEFORE
+        # sending the token anywhere (port-squat protection).
+        nonce = "testnonce0123456789abcdef0123"
+        expected = hmac.new(self.token.encode(), nonce.encode(),
+                            hashlib.sha256).hexdigest()
+        # no Authorization header at all — the route must not require one
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"/v1/proof?nonce={nonce}",
+                     headers={"X-TRMX-Protocol": "1", "Connection": "close"})
+        resp = conn.getresponse()
+        body = json.loads(resp.read())
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(body["hmac"], expected)
+        # a garbage bearer is ignored just the same
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"/v1/proof?nonce={nonce}",
+                     headers={"X-TRMX-Protocol": "1",
+                              "Authorization": "Bearer wrong",
+                              "Connection": "close"})
+        resp = conn.getresponse()
+        body2 = json.loads(resp.read())
+        conn.close()
+        self.assertEqual((resp.status, body2["hmac"]), (200, expected))
+        # a caller holding the WRONG key computes a different value — so a
+        # squatter bridge that does not know the token cannot pass either
+        wrong = hmac.new(b"not-the-token", nonce.encode(),
+                         hashlib.sha256).hexdigest()
+        self.assertNotEqual(body["hmac"], wrong)
+        # nonce is required, length-bounded and charset-checked
+        s, _, raw = self.http("GET", "/v1/proof")
+        self.assertEqual((s, json.loads(raw)["error"]["code"]),
+                         (400, "VALIDATION_FAILED"))
+        s, _, raw = self.http("GET", "/v1/proof?nonce=" + "x" * 200)
+        self.assertEqual(s, 400)
+        s, _, raw = self.http("GET", "/v1/proof?nonce=has%20space")
+        self.assertEqual(s, 400)
+        # the protocol header is still required on the proof route
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"/v1/proof?nonce={nonce}",
+                     headers={"Connection": "close"})
+        resp = conn.getresponse()
+        body = json.loads(resp.read())
+        conn.close()
+        self.assertEqual((resp.status, body["error"]["code"]),
+                         (400, "PROTOCOL_MISMATCH"))
+        # wrong method on the route -> 405
+        s, _, _ = self.http("POST", f"/v1/proof?nonce={nonce}")
+        self.assertEqual(s, 405)
 
     # ---- 03..04: lifecycle ---------------------------------------------
 
