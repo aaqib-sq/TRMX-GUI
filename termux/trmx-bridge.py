@@ -10,8 +10,8 @@ Serves a subset of TRMX-P/1 (docs/PROTOCOL.md) on 127.0.0.1:
   GET  /v1/jobs/{id}                   one job (§3.4)
   POST /v1/jobs/{id}/cancel            graceful→forced process-group kill (§3.5)
   GET  /v1/jobs/{id}/output            SSE stream with replay (§4)
-  GET  /v1/events                      global event stream, live only (§5; no
-                                      Last-Event-ID replay yet)
+  GET  /v1/events                      global event stream (§5; Last-Event-ID
+                                      replay from a 1000-event ring buffer)
   POST /v1/system/bridge               stop / restart (§8)
   GET/POST /v1/services                service definitions + live status (§14, protocol 1.1)
   GET/DELETE /v1/services/{id}         one service / remove definition (§14)
@@ -20,7 +20,7 @@ Serves a subset of TRMX-P/1 (docs/PROTOCOL.md) on 127.0.0.1:
 
 Deliberately NOT in this PoC (later phases, see docs/decisions/ADR-004):
   tools/file endpoints, tool-schema argv synthesis, progress regex,
-  Last-Event-ID replay, per-source auth backoff (per-connection only),
+  per-source auth backoff (per-connection only),
   request rate limiting, PTY, scheduler.
 
 Rules honored here (ADR-002): stdlib only, loopback-only bind, bearer token
@@ -482,14 +482,28 @@ class FrameLog:
 # --------------------------------------------------------------------------- event bus
 
 class EventBus:
-    """Fan-out for the global /v1/events stream (PROTOCOL §5)."""
+    """Fan-out for the global /v1/events stream (PROTOCOL §5).
+
+    §3-M6: the last BUFFER_SIZE published events are kept in a ring
+    buffer (PROTOCOL §5.1 already promised "replays up to 1000 buffered
+    events"). A reconnecting subscriber passes its Last-Event-ID to
+    subscribe() and the buffered events after that id are queued for it
+    before any live event. Without an id, the stream is live-only, as
+    before. One event = one global id, shared by every subscriber."""
+
+    BUFFER_SIZE = 1000
 
     def __init__(self):
         self.subs: set[asyncio.Queue] = set()
         self.counter = itertools.count(1)
+        self.buffer: deque = deque(maxlen=self.BUFFER_SIZE)
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, last_event_id: int | None = None) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
+        if last_event_id is not None:
+            for eid, event, data in self.buffer:
+                if eid > last_event_id:
+                    q.put_nowait((eid, event, data))
         self.subs.add(q)
         return q
 
@@ -497,11 +511,61 @@ class EventBus:
         self.subs.discard(q)
 
     def publish(self, event: str, data: dict) -> None:
+        eid = next(self.counter)
+        # snapshot for the replay buffer: job dicts keep mutating after
+        # publish, and a replayed frame must show the state AT publish time
+        self.buffer.append((eid, event, dict(data)))
         for q in list(self.subs):
             try:
-                q.put_nowait((next(self.counter), event, data))
+                q.put_nowait((eid, event, data))
             except asyncio.QueueFull:
                 pass  # slow subscriber: job state remains queryable in SQLite
+
+
+UPLOAD_TMP_PREFIX = ".trmx-upload-"
+
+
+def sweep_upload_temps(roots, max_depth: int = 4) -> int:
+    """§3-M17: remove orphaned upload temp files; returns the count.
+
+    Uploads stream to `.trmx-upload-*` beside the destination and are
+    renamed into place (or unlinked on a handled failure) — but a bridge
+    CRASH mid-upload orphans the temp file, and no later upload ever
+    cleans it up. Run once at bridge start.
+
+    The sweep is BOUNDED so startup never scans the whole device: it
+    walks each root to `max_depth`, does not follow symlinked dirs
+    (shared-storage roots are passed in already resolved, so their top
+    levels are covered), prunes dot-directories other than a root
+    itself, and unlinks only regular files carrying the prefix (never
+    a directory or symlink of that name)."""
+    removed = 0
+    seen: set = set()
+    for root in roots:
+        root = Path(root)
+        try:
+            key = root.resolve()
+        except OSError:
+            continue
+        if key in seen or not root.is_dir():
+            continue
+        seen.add(key)
+        for dirpath, dirnames, filenames in os.walk(root):
+            rel = os.path.relpath(dirpath, root)
+            depth = 0 if rel == "." else len(rel.split(os.sep))
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and depth < max_depth]
+            for name in filenames:
+                if not name.startswith(UPLOAD_TMP_PREFIX):
+                    continue
+                p = Path(dirpath) / name
+                try:
+                    if stat_mod.S_ISREG(p.lstat().st_mode):
+                        p.unlink()
+                        removed += 1
+                except OSError:
+                    pass
+    return removed
 
 
 # --------------------------------------------------------------------------- job runtime
@@ -1087,7 +1151,7 @@ class JobManager:
         # Audit §5-H4: a LOST job carries its cause, not just the badge —
         # reason lands on the job row (cancel_reason) and the whole restart
         # is summarized on the bridge.lifecycle SSE event.
-        lost, readopted, requeued = 0, 0, 0
+        lost, readopted, requeued, cancelled = 0, 0, 0, 0
         for job in self.store.active_jobs():
             job_id = job["job_id"]
             rt = self._runtime(job_id, seq=job["log_seq"])
@@ -1130,14 +1194,41 @@ class JobManager:
                              "(%s s remaining)", job_id, remaining)
                 LOG.info("reconcile: re-adopted %s (pgid %s)", job_id, job["pgid"])
                 readopted += 1
+            elif job["cancel_requested"]:
+                # §3-M4, detectable case: the job was already CANCELLING
+                # when the bridge went down and its process is now gone —
+                # the cancel landed while the bridge was down. Report
+                # CANCELLED (the same call _probe_adopted makes for an
+                # adopted job), not LOST.
+                LOG.info("reconcile: %s CANCELLED (cancel landed while "
+                         "bridge was down)", job_id)
+                self._finalize(job_id, "CANCELLED",
+                               reason=job.get("cancel_reason") or "user")
+                cancelled += 1
             else:
+                # §3-M4: with no reaper, the exit of a process that ended
+                # while the bridge was down is UNOBSERVABLE — it may have
+                # finished successfully (its output/artifacts are on disk)
+                # or died with the bridge. The status stays LOST (never
+                # guess a success), but the reason carries that caveat
+                # instead of implying a certain failure. The one case
+                # that IS distinguishable — the job never got a recorded
+                # process (still STARTING / no pgid) — says so plainly.
+                if job["pgid"]:
+                    reason = ("bridge restarted, process gone — it may "
+                              "have finished while the bridge was down "
+                              "(no exit was observed)")
+                else:
+                    reason = ("bridge restarted while the job was "
+                              "starting; no process was recorded — it "
+                              "may never have started")
                 LOG.info("reconcile: %s LOST (pgid %s gone)", job_id, job["pgid"])
-                self._finalize(job_id, "LOST",
-                               reason="bridge restarted, process gone")
+                self._finalize(job_id, "LOST", reason=reason)
                 lost += 1
         self.last_lifecycle = {"type": "restarted", "jobs_lost": lost,
                                "jobs_readopted": readopted,
-                               "jobs_requeued": requeued}
+                               "jobs_requeued": requeued,
+                               "jobs_cancelled": cancelled}
         self.bus.publish("bridge.lifecycle", self.last_lifecycle)
         await self._try_start_next()
 
@@ -1157,8 +1248,14 @@ class JobManager:
                 if job["cancel_requested"]:
                     self._finalize(job_id, "CANCELLED")
                 else:
+                    # §3-M4 caveat: an adopted job is detached (no
+                    # waitpid), so its exit is unobserved — it may have
+                    # finished on its own rather than died.
                     self._finalize(job_id, "LOST",
-                                   reason="process group gone")
+                                   reason="process group gone after "
+                                          "re-adoption — no exit was "
+                                          "observed; it may have finished "
+                                          "on its own")
                 return
 
 
@@ -1775,7 +1872,17 @@ class BridgeApp:
             raise BridgeError(404, "PATH_NOT_FOUND", f"no such path: {raw}")
         if real.is_dir():
             raise BridgeError(400, "NOT_A_FILE", "cannot download a directory")
-        size = real.stat().st_size
+        # §3-M8: only REGULAR files may be downloaded. open() on a FIFO
+        # blocks until a writer appears — inside the single-threaded event
+        # loop that hangs the whole bridge; devices/sockets are likewise
+        # not streamable content and st_size is meaningless for them.
+        # stat() follows symlinks, so a link TO a regular file stays
+        # downloadable while a link to a FIFO is refused.
+        st = real.stat()
+        if not stat_mod.S_ISREG(st.st_mode):
+            raise BridgeError(400, "NOT_A_FILE",
+                              "only regular files can be downloaded")
+        size = st.st_size
         status, start, length, content_range = 200, 0, size, None
         range_header = req.headers.get("range")
         if range_header:
@@ -1986,9 +2093,19 @@ class BridgeApp:
     async def h_events(self, req, m):
         bus = self.bus
         lifecycle = self.manager.last_lifecycle
+        # §3-M6 / PROTOCOL §5.1: a reconnecting client sends the last event
+        # id it saw; buffered events after it are replayed first. A missing
+        # or unparsable header means live-only (the pre-replay behaviour).
+        last_event_id = None
+        raw_lei = req.headers.get("last-event-id")
+        if raw_lei:
+            try:
+                last_event_id = int(raw_lei)
+            except ValueError:
+                last_event_id = None
 
         async def fn(writer):
-            q = bus.subscribe()
+            q = bus.subscribe(last_event_id)
             if lifecycle is not None:
                 # reconcile() already ran (before the port bound), so its
                 # live publish reached no subscriber — hand the restart
@@ -2382,6 +2499,13 @@ class BridgeApp:
             await asyncio.sleep(30)
 
     async def serve(self) -> None:
+        # §3-M17: sweep upload temps orphaned by a crashed bridge before
+        # anything else — roots are the state home, the user home, and
+        # the resolved policy roots (shared-storage children included).
+        swept = sweep_upload_temps(
+            [self.home, Path.home()] + self.policy.file_roots())
+        if swept:
+            LOG.info("startup: swept %d orphaned upload temp file(s)", swept)
         if self.config.used_last_good:
             # audit §5-H2: the recovery must be visible in the audit log,
             # not just stderr (load() already LOG.error'd it)

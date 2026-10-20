@@ -571,8 +571,13 @@ class TestBridge(unittest.TestCase):
         TestBridge.bridge.start()
         job = self.wait_status(job_id, {"LOST"})
         self.assertEqual(job["status"], "LOST")
-        # audit §5-H4: a LOST job must carry its cause, not just the badge
-        self.assertEqual(job["cancel_reason"], "bridge restarted, process gone")
+        # audit §5-H4: a LOST job must carry its cause, not just the badge;
+        # audit §3-M4: the cause is LOST-with-caveat — the exit was never
+        # observed, so the wording must not imply a certain failure
+        self.assertEqual(job["cancel_reason"],
+                         "bridge restarted, process gone — it may have "
+                         "finished while the bridge was down "
+                         "(no exit was observed)")
 
     def test_11c_restart_lifecycle_event(self):
         # audit §5-H4: restart reconciliation summarizes the outcome on the
@@ -640,6 +645,38 @@ class TestBridge(unittest.TestCase):
         job = self.wait_status(job_id, {"CANCELLED"}, timeout=25)
         self.assertEqual(job["cancel_reason"], "timeout")
 
+    def test_11f_restart_cancel_landed_while_down(self):
+        # §3-M4, the detectable case: the job was already CANCELLING when
+        # the bridge died and its process died during the downtime — the
+        # cancel landed, so reconcile reports CANCELLED, not LOST.
+        job_id = self.submit(
+            ["python3", "-c",
+             "import signal, time\n"
+             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+             "print('ready', flush=True)\n"
+             "time.sleep(60)"],
+            name="cancel then crash")
+        running = self.wait_status(job_id, {"RUNNING"})
+        # RUNNING only proves the spawn — wait until the script itself
+        # reports ready (SIGTERM handler installed) before cancelling,
+        # or the SIGTERM could land before the handler exists
+        sse = SSEClient(self.port, f"/v1/jobs/{job_id}/output?follow=1",
+                        self.token)
+        ready = any("ready" in (d.get("text") or "")
+                    for e, i, d in sse.frames(5) if e == "stdout")
+        sse.close()
+        self.assertTrue(ready, "job script never became ready")
+        s, _, _ = self.http("POST", f"/v1/jobs/{job_id}/cancel",
+                            {"grace_ms": 60000})
+        self.assertEqual(s, 200)
+        self.wait_status(job_id, {"CANCELLING"})
+        self.bridge.kill9()                      # bridge dies mid-cancel
+        os.killpg(running["pgid"], signal.SIGKILL)   # process dies while down
+        TestBridge.bridge = BridgeProc(self.home, self.port)
+        TestBridge.bridge.start()
+        job = self.wait_status(job_id, {"CANCELLED"})
+        self.assertEqual(job["cancel_reason"], "user")
+
     # ---- 12: ring eviction ------------------------------------------------
 
     def test_12_ring_eviction_is_honest(self):
@@ -669,6 +706,34 @@ class TestBridge(unittest.TestCase):
         sse.close()
         self.assertIsNotNone(seen, "job.updated events must reach /v1/events")
         self.assertEqual(seen[1]["status"], "COMPLETED")
+
+    def test_13b_events_replay_on_reconnect(self):
+        # §3-M6 / PROTOCOL §5.1: events published while a client is away
+        # are replayed from the ring buffer when it reconnects with
+        # Last-Event-ID, before the stream continues live.
+        sse = SSEClient(self.port, "/v1/events", self.token)
+        last_id = None
+        for ev, eid, data in sse.frames(5):
+            if eid is not None:
+                last_id = int(eid)
+                break
+        sse.close()
+        self.assertIsNotNone(last_id, "stream frames must carry event ids")
+        job_id = self.submit(["echo", "replay-me"], name="replay job")
+        self.wait_status(job_id, TERMINAL)
+        sse2 = SSEClient(self.port, "/v1/events", self.token,
+                         extra_headers={"Last-Event-ID": str(last_id)})
+        seen = []
+        for ev, eid, data in sse2.frames(5):
+            if ev == "job.updated" and data.get("job_id") == job_id:
+                seen.append((int(eid), data["status"]))
+                if data["status"] in TERMINAL:
+                    break
+        sse2.close()
+        self.assertTrue(seen, "events published while disconnected must "
+                              "be replayed on reconnect")
+        self.assertTrue(all(eid > last_id for eid, _ in seen), seen)
+        self.assertEqual(seen[-1][1], "COMPLETED")
 
     # ---- 14: list / pagination --------------------------------------------
 
