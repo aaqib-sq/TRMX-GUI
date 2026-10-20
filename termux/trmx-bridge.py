@@ -727,6 +727,18 @@ class JobManager:
                            error={"code": "SPAWN_ERROR", "message": str(e)})
             return
         rt.proc = proc
+        # Audit §3-H5: a cancel (or timeout) may have landed while spawn was
+        # awaiting — at that moment pgid was None, so no signal went out.
+        # Re-read the row; never clobber that fresh state with this stale
+        # pre-spawn dict.
+        fresh = self.store.get_job(job_id)
+        if (fresh is None or fresh.get("cancel_requested")
+                or fresh["status"] != "STARTING"):
+            self._signal_pgid(proc.pid, signal.SIGKILL)   # pgid == pid here
+            if fresh is not None and fresh["status"] not in TERMINAL_STATES:
+                self._finalize(job_id, "CANCELLED",
+                               reason=fresh.get("cancel_reason") or "user")
+            return
         self.running.add(job_id)
         job.update(status="RUNNING", started_at=now_iso(), pid=proc.pid, pgid=proc.pid)
         self.store.save_job(job)
