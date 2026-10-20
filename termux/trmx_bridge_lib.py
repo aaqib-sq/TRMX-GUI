@@ -187,9 +187,12 @@ BUNDLED_TOOL_SCHEMAS: list[dict] = [
         "fixed_argv": ["clone", "--progress"],
         "args": [
             {"name": "url", "label": "Repository URL", "type": "url", "required": True,
-             "help": "https:// or git:// URL to clone."},
+             "help": "https:// URL to clone."},
             {"name": "dir", "label": "Target directory", "type": "path", "required": False,
              "help": "Where to clone (created if missing); defaults to the repo name."},
+            {"name": "depth", "label": "Clone depth", "type": "int", "required": False,
+             "min": 1, "default": 1, "argv": ["--depth", "{value}"],
+             "help": "Shallow clone: fetch only the newest N commits (1 = latest only)."},
         ],
         "examples": [
             {"label": "Clone a public repo",
@@ -217,7 +220,7 @@ BUNDLED_TOOL_SCHEMAS: list[dict] = [
         "name": "AI Schema Builder",
         "description": "Describe a command-line tool in plain words; the local LLM wrapper (trmx-ai) drafts a validated schema and installs it to ~/.trmx/tools/. Rescan the toolbox afterwards.",
         "binary": "trmx-ai",           # ~/.trmx/bin — resolve_binary probes it first
-        "risk_tier": "safe",           # fixed pipeline; the GENERATED tool is pinned to "confirm" by the wrapper (ADR-014)
+        "risk_tier": "confirm",        # §3-M16: it installs LLM-drafted executable tooling — "safe" understated it; the GENERATED tool is also pinned to "confirm" (ADR-014, re-asserted at load)
         "fixed_argv": [],
         "args": [
             {"name": "description", "label": "What should the tool do?", "type": "string",
@@ -301,14 +304,14 @@ BUNDLED_TOOL_SCHEMAS: list[dict] = [
         "pkg": "ffmpeg",
         "risk_tier": "confirm",
         "progress_regex": r"time=(\d{2}:\d{2}:\d{2}\.\d{2})",
-        "fixed_argv": ["-hide_banner", "-nostdin"],
+        "fixed_argv": ["-hide_banner", "-nostdin", "-y"],
         "args": [
             {"name": "input", "label": "Input file", "type": "path", "path_kind": "file",
              "required": True, "help": "The file to convert."},
             {"name": "output", "label": "Output file", "type": "path", "path_kind": "file",
              "required": True, "help": "Where to write the result."},
             {"name": "preset", "label": "Speed preset", "type": "enum", "required": False,
-             "enum": ["veryfast", "fast", "medium", "slow"], "default": "medium",
+             "enum": ["veryfast", "fast", "medium", "slow"], "default": "veryfast",
              "argv": ["-preset", "{value}"]},
             {"name": "crf", "label": "Quality (CRF)", "type": "int", "required": False,
              "min": 0, "max": 51, "default": 23, "argv": ["-crf", "{value}"]},
@@ -356,9 +359,13 @@ class ToolRegistry:
     """Bundled + user tool schemas (PROTOCOL §7.2) and availability probing.
 
     Merge precedence: user schemas (~/.trmx/tools/*.json, alphabetical)
-    override bundled schemas with the same id. Malformed user schemas are
-    skipped and reported via system/info.features.tool_schema_errors;
-    a malformed BUNDLED schema is our bug and fails loud.
+    add NEW tool ids; a user schema whose id matches a bundled tool (or
+    the internal "agent") is rejected and reported — bundled ids may not
+    be shadowed and bundled risk_tiers may not be downgraded (§3-M10).
+    AI-generated schemas (ai-*.json) are pinned to at least "confirm" at
+    load (§4-M9). Malformed user schemas are skipped and reported via
+    system/info.features.tool_schema_errors; a malformed BUNDLED schema
+    is our bug and fails loud.
     """
 
     def __init__(self, home: Path, policy: Policy):
@@ -382,6 +389,9 @@ class ToolRegistry:
                     sources.append(("user:" + p.name, json.loads(p.read_text(encoding="utf-8"))))
                 except Exception as e:  # noqa: BLE001
                     self.schema_errors.append(f"user:{p.name}: not valid JSON: {e}")
+        bundled_tiers = {s["id"]: s.get("risk_tier", "safe")
+                         for s in BUNDLED_TOOL_SCHEMAS}
+        tier_rank = {"safe": 0, "confirm": 1, "destructive": 2}
         for origin, schema in sources:
             try:
                 self._validate_schema(schema)
@@ -390,6 +400,34 @@ class ToolRegistry:
                     raise
                 self.schema_errors.append(f"{origin}: {e}")
                 continue
+            if origin != "bundled":
+                sid = schema["id"]
+                # §3-M10 / §4-H4: a user schema may not shadow a bundled
+                # tool id (the internal "agent" id is protected the same
+                # way) — silently replacing a bundled tool could also
+                # downgrade its risk_tier, which drives the app's
+                # confirmation UI. Rejected wholesale, and reported.
+                if sid in bundled_tiers or sid == "agent":
+                    note = ""
+                    if sid in bundled_tiers and tier_rank.get(
+                            schema.get("risk_tier", "safe"), 0) < tier_rank.get(
+                            bundled_tiers[sid], 0):
+                        note = (f" (it also attempted a risk_tier downgrade "
+                                f"{bundled_tiers[sid]} -> "
+                                f"{schema.get('risk_tier', 'safe')})")
+                    self.schema_errors.append(
+                        f"{origin}: user schema id '{sid}' shadows a bundled "
+                        f"tool — shadowing bundled ids is not allowed{note}; "
+                        f"skipped")
+                    continue
+                # §4-M9 / ADR-014: schemas generated by the AI schema
+                # builder (tools/ai-*.json) are pinned to at least
+                # "confirm" — re-asserted HERE, at load, not only at
+                # generation time, so editing the JSON cannot relax a
+                # generated tool below confirm.
+                if origin.startswith("user:ai-") and tier_rank.get(
+                        schema.get("risk_tier", "safe"), 0) < tier_rank["confirm"]:
+                    schema["risk_tier"] = "confirm"
             merged[schema["id"]] = schema
         # The agent runner: bundled tool with a bridge-computed path. It is
         # launched by the bridge itself (POST /v1/agent/tasks) — internal,
@@ -462,11 +500,61 @@ class ToolRegistry:
                     re.compile(a["pattern"])
                 except re.error as e:
                     raise ValueError(f"arg '{a['name']}': bad pattern: {e}") from e
+            if a.get("default") is not None:
+                ToolRegistry._validate_default(a)
         if schema.get("progress_regex"):
             try:
                 re.compile(schema["progress_regex"])
             except re.error as e:
                 raise ValueError(f"bad progress_regex: {e}") from e
+
+    @staticmethod
+    def _validate_default(a: dict) -> None:
+        """§3-M13: a schema `default` must satisfy the arg's own type/range
+        rules at LOAD time — a bad default (wrong type, out of range, not in
+        the enum, pattern mismatch) is a schema bug and is rejected here
+        instead of shipping silently to the app, which may honor it."""
+        name, t, v = a["name"], a.get("type", "string"), a["default"]
+
+        def bad(msg: str) -> None:
+            raise ValueError(f"arg '{name}': bad default: {msg}")
+
+        def range_check() -> None:
+            for key, op in (("min", "below"), ("max", "above")):
+                bound = a.get(key)
+                if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                    continue
+                if (key == "min" and v < bound) or (key == "max" and v > bound):
+                    bad(f"{v} is {op} the {key} of {bound}")
+
+        if t == "bool":
+            if not isinstance(v, bool):
+                bad("must be true or false")
+            return
+        if isinstance(v, bool):
+            bad("must not be a boolean")
+        if t == "int":
+            if not isinstance(v, int):
+                bad("must be an integer")
+            range_check()
+            return
+        if t == "float":
+            if not isinstance(v, (int, float)):
+                bad("must be a number")
+            range_check()
+            return
+        if t == "enum":
+            if v not in a.get("enum", []):
+                bad(f"must be one of {a.get('enum')}")
+            return
+        if not isinstance(v, str) or not v:
+            bad("must be a non-empty string")
+        if t == "url":
+            u = urllib.parse.urlparse(v)
+            if u.scheme not in ("http", "https") or not u.netloc:
+                bad("must be an http(s):// URL")
+        if a.get("pattern") and not re.fullmatch(a["pattern"], v):
+            bad(f"must match pattern {a['pattern']}")
 
     # -- access ----------------------------------------------------------
 
@@ -545,6 +633,10 @@ class ToolRegistry:
             value = self._validate_arg(a, args[name])
             if schema["id"] == "yt-dlp" and name == "format" and args.get("audio") is True:
                 continue  # audio's bestaudio selector replaces the video format
+            if schema["id"] == "ffmpeg" and args.get("audio_only") is True \
+                    and name in ("preset", "crf", "scale"):
+                continue  # §3-M11: video-codec flags are meaningless (and can
+                # error) on an audio-only (-vn) job — suppress them
             if a.get("type") == "bool" and value is False:
                 continue                # bool False -> contributes nothing (§7.2)
             tokens.extend(self._argv_tokens(a, value))

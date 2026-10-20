@@ -115,7 +115,7 @@ The one route that does **not** require the bearer token. Returns `{"hmac": "<he
 | `exit_code` | int \| null | |
 | `signal` | int \| null | signal number if killed |
 | `cancel_requested` | bool | |
-| `cancel_reason` | `user` \| `timeout` \| null | for `LOST` jobs, a free-text cause instead (e.g. `bridge restarted, process gone`) |
+| `cancel_reason` | `user` \| `timeout` \| null | for `LOST` jobs, a free-text cause instead (e.g. `bridge restarted, process gone — it may have finished while the bridge was down (no exit was observed)`) |
 | `error` | `{code, message}` \| null | typed spawn/infra failure (e.g. `ENOENT`) |
 | `timeout_s` | int \| null | default null; hard cap 2 592 000 (30 days) |
 | `progress_pct` | float 0–100 \| null | parsed via tool `progress_regex` when defined |
@@ -136,7 +136,7 @@ The one route that does **not** require the bearer token. Returns `{"hmac": "<he
 | `COMPLETED` | exited with code 0 |
 | `FAILED` | non-zero exit, fatal signal, or spawn error |
 | `CANCELLED` | terminated due to cancellation; `cancel_reason` ∈ `user` \| `timeout` |
-| `LOST` | bridge restarted; recorded process group no longer exists and no exit was observed. Honest admission, never guessed. `cancel_reason` carries the cause (e.g. `bridge restarted, process gone`) |
+| `LOST` | bridge restarted; recorded process group no longer exists and no exit was observed. Honest admission, never guessed — the job may have finished while the bridge was down, and the `cancel_reason` says exactly that instead of implying a certain failure. A job that was already `CANCELLING` when the bridge went down is reported `CANCELLED` (the cancel is detectable), and a job with no recorded process reports that it may never have started. |
 
 ### 3.2 `POST /v1/jobs` — submit
 Request body (one of three execution models):
@@ -214,7 +214,7 @@ One long-lived SSE stream the app holds whenever connected. Event types:
 | `job.updated` | the full Job object |
 | `system.updated` | the `system/info` object (throttled to ≤ 1 per 5 s) |
 | `bridge.stopping` | `{ "reason": "restart" \| "stop" \| "upgrade", "resume_hint_s": 5 }` |
-| `bridge.lifecycle` | `{ "type": "restarted", "jobs_lost": N, "jobs_readopted": N, "jobs_requeued": N }` — emitted by startup reconciliation; also delivered as the first frame to each new `/v1/events` subscriber (reconcile runs before the port binds, so a live-only publish would reach nobody) |
+| `bridge.lifecycle` | `{ "type": "restarted", "jobs_lost": N, "jobs_readopted": N, "jobs_requeued": N, "jobs_cancelled": N }` — emitted by startup reconciliation; also delivered as the first frame to each new `/v1/events` subscriber (reconcile runs before the port binds, so a live-only publish would reach nobody) |
 
 - SSE `id:` = the global `event_id` (§1.5). On reconnect the client passes it via `Last-Event-ID`; the bridge replays up to **1000** buffered events, then continues live.
 - Heartbeat: a `: ping` comment every **15 s** (detects half-dead connections).
@@ -295,7 +295,7 @@ Rules (bridge-enforced at submit for `type:"tool"`):
 - `pattern` (RE2-safe regex) applies to `string`/`url` pre-validated strings.
 - `progress_regex`: first capture group parsed as the percent for `progress_pct`; the matched line populates `progress_detail`. Absent → both null.
 - `risk_tier` ∈ `safe|confirm|destructive` — the *app* renders confirmation UX per tier; the bridge audit-logs the tier with the job. Tiers do not replace path/argv validation.
-- Schemas merge in precedence order: user schemas (`~/.trmx/tools/*.json`, alphabetical) **override** bundled schemas with the same `id`. Malformed user schemas are skipped and reported in `system/info.features.tool_schema_errors`.
+- Schemas merge in precedence order: user schemas (`~/.trmx/tools/*.json`, alphabetical) add **new** tool ids. A user schema whose `id` matches a bundled tool (or the internal `agent`) is **rejected** and reported in `system/info.features.tool_schema_errors` — bundled ids may not be shadowed and bundled `risk_tier`s may not be downgraded. AI-generated schemas (`ai-*.json`) are pinned to at least `confirm` at load. Schema `default` values are type/range-checked at load. Malformed user schemas are skipped and reported the same way.
 
 ## 8. Bridge control
 

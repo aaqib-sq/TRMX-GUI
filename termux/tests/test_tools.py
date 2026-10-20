@@ -2,7 +2,8 @@
 """Phase 9 tool-registry tests — PROTOCOL.md §7 against a real bridge.
 
 Covers: §7.1 list/get/refresh (+ probing via PATH), §7.2 schema merge
-(user overrides bundled; malformed user schemas skipped + reported),
+(user schemas may not shadow bundled ids; malformed user schemas
+skipped + reported),
 argv synthesis rules (positional value, enum/bool/pattern/int bounds,
 path resolution + §6.1 policy), TOOL_UNKNOWN/ARG_INVALID/PATH_* rejections,
 progress_regex -> progress_pct/progress_detail on job + job.updated, and
@@ -266,6 +267,61 @@ class TestTools(unittest.TestCase):
                         if fmt is not None:
                             self.assertEqual(argv[argv.index("-f") + 1], fmt)
 
+    def _registry(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "trmx_bridge", Path(__file__).resolve().parents[1] / "trmx-bridge.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, mod.ToolRegistry(Path(self.home), mod.Policy(Path(self.home)))
+
+    def test_ffmpeg_schema_and_audio_only_suppression(self):
+        # §3-M11: -y so overwriting an existing output works with
+        # -nostdin; veryfast is the phone-sane default preset; on
+        # audio-only jobs the video-codec flags are suppressed entirely
+        mod, registry = self._registry()
+        schema = registry.get("ffmpeg")
+        self.assertIn("-y", schema["fixed_argv"])
+        preset = next(a for a in schema["args"] if a["name"] == "preset")
+        self.assertEqual(preset["default"], "veryfast")
+        base = {"input": self.outdir_wire() + "/in.mp4",
+                "output": self.outdir_wire() + "/out.bin",
+                "preset": "veryfast", "crf": 20, "scale": "1280x720"}
+        plain = registry.synth_argv(schema, dict(base))
+        for flag in ("-preset", "-crf", "-vf"):
+            self.assertIn(flag, plain)
+        self.assertNotIn("-vn", plain)
+        audio = registry.synth_argv(schema, {**base, "audio_only": True})
+        self.assertIn("-vn", audio)
+        for flag in ("-preset", "-crf", "-vf"):
+            self.assertNotIn(flag, audio, audio)
+
+    def test_git_clone_depth(self):
+        # §3-M12: git-clone gains --depth (default 1 = shallow); an
+        # explicit depth is synthesized, depth < 1 is rejected
+        mod, registry = self._registry()
+        schema = registry.get("git-clone")
+        depth = next(a for a in schema["args"] if a["name"] == "depth")
+        self.assertEqual(depth["default"], 1)
+        argv = registry.synth_argv(
+            schema, {"url": "https://github.com/octocat/Hello-World",
+                     "depth": 5})
+        self.assertEqual(argv[argv.index("--depth") + 1], "5")
+        argv = registry.synth_argv(
+            schema, {"url": "https://github.com/octocat/Hello-World"})
+        self.assertNotIn("--depth", argv)
+        with self.assertRaises(mod.BridgeError):
+            registry.synth_argv(
+                schema, {"url": "https://github.com/octocat/Hello-World",
+                         "depth": 0})
+
+    def test_ai_schema_builder_tier_is_confirm(self):
+        # §3-M16: the builder installs LLM-drafted executable tooling —
+        # its own tier is "confirm", not "safe"
+        status, _, raw = self.http("GET", "/v1/tools/ai-schema-builder")
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["schema"]["risk_tier"], "confirm")
+
     def test_03_refresh(self):
         status, _, raw = self.http("POST", "/v1/tools/refresh", body={})
         self.assertEqual(status, 200, raw)
@@ -423,7 +479,10 @@ class TestTools(unittest.TestCase):
 
 
 class TestRegistryOverrides(unittest.TestCase):
-    """User schemas override bundled; malformed ones are skipped + reported."""
+    """User schemas add NEW ids only: a user schema may not shadow a
+    bundled id (§3-M10), malformed ones are skipped + reported, schema
+    defaults are checked at load (§3-M13), and AI-generated schemas are
+    pinned to confirm at load (§4-M9)."""
 
     home: str = ""
     port: int = 0
@@ -437,7 +496,7 @@ class TestRegistryOverrides(unittest.TestCase):
         tools = Path(cls.home) / "tools"
         tools.mkdir(parents=True)
         (Path(cls.home) / "bridge.json").write_text(json.dumps({}))
-        # overrides bundled yt-dlp (same id)
+        # tries to shadow bundled yt-dlp (same id) — §3-M10 rejects it
         (tools / "a-override.json").write_text(json.dumps(
             {"id": "yt-dlp", "name": "MY yt-dlp", "binary": "yt-dlp",
              "risk_tier": "safe", "args": []}))
@@ -446,6 +505,26 @@ class TestRegistryOverrides(unittest.TestCase):
             {"id": "broken", "binary": "sh", "args": [{"name": "x", "type": "enum"}]}))
         # not even JSON
         (tools / "c-garbage.json").write_text("{not json")
+        # shadow attempt WITH a risk_tier downgrade (bundled git-clone is
+        # confirm; this claims safe) — also rejected, downgrade noted
+        (tools / "d-downgrade.json").write_text(json.dumps(
+            {"id": "git-clone", "name": "MY git-clone", "binary": "git",
+             "risk_tier": "safe", "args": []}))
+        # bad schema default: 99999 on a max:16 int — §3-M13 rejects at load
+        (tools / "e-baddefault.json").write_text(json.dumps(
+            {"id": "baddefault", "binary": "sh",
+             "args": [{"name": "n", "type": "int", "min": 1, "max": 16,
+                       "default": 99999, "argv": ["-n", "{value}"]}]}))
+        # a valid default on a new id loads fine
+        (tools / "f-gooddefault.json").write_text(json.dumps(
+            {"id": "gooddefault", "binary": "sh",
+             "args": [{"name": "n", "type": "int", "min": 1, "max": 16,
+                       "default": 4, "argv": ["-n", "{value}"]}]}))
+        # AI-generated schema (ai-*.json) claiming tier "safe" — §4-M9:
+        # the confirm pin is re-asserted at load
+        (tools / "ai-relaxed.json").write_text(json.dumps(
+            {"id": "relaxed-tool", "name": "Relaxed", "binary": "sh",
+             "risk_tier": "safe", "args": []}))
         cls.port = free_port()
         cls.bridge = BridgeProc(cls.home, cls.port)
         cls.bridge.start()
@@ -471,11 +550,53 @@ class TestRegistryOverrides(unittest.TestCase):
         conn.close()
         return resp.status, dict(resp.getheaders()), raw
 
-    def test_20_user_overrides_bundled(self):
+    def test_20_user_cannot_shadow_bundled(self):
+        # §3-M10: user schemas may not shadow a bundled tool id — the
+        # bundled yt-dlp survives untouched and the attempt is reported
         _, _, raw = self.http("GET", "/v1/tools")
         tools = {t["schema"]["id"]: t for t in json.loads(raw)["tools"]}
-        self.assertEqual(tools["yt-dlp"]["schema"]["name"], "MY yt-dlp")
-        self.assertEqual(tools["yt-dlp"]["schema"]["args"], [])
+        self.assertEqual(tools["yt-dlp"]["schema"]["name"],
+                         "Video Downloader (yt-dlp)")
+        self.assertNotEqual(tools["yt-dlp"]["schema"]["args"], [])
+        _, _, raw = self.http("GET", "/v1/system/info")
+        errs = json.loads(raw)["features"]["tool_schema_errors"]
+        self.assertTrue(any("a-override" in e and "shadow" in e
+                            for e in errs), errs)
+
+    def test_20b_bundled_tier_downgrade_rejected(self):
+        # §3-M10: shadowing that would ALSO downgrade a bundled tool's
+        # risk_tier (confirm -> safe) is rejected and the downgrade noted
+        _, _, raw = self.http("GET", "/v1/tools")
+        tools = {t["schema"]["id"]: t for t in json.loads(raw)["tools"]}
+        self.assertEqual(tools["git-clone"]["schema"]["risk_tier"], "confirm")
+        self.assertEqual(tools["git-clone"]["schema"]["name"],
+                         "Git Clone (VCS)")
+        _, _, raw = self.http("GET", "/v1/system/info")
+        errs = json.loads(raw)["features"]["tool_schema_errors"]
+        self.assertTrue(any("d-downgrade" in e and "downgrade" in e
+                            for e in errs), errs)
+
+    def test_20c_schema_defaults_checked_at_load(self):
+        # §3-M13: a default that violates its own type/range rules kills
+        # the schema at load; a valid default on a new id loads fine
+        _, _, raw = self.http("GET", "/v1/tools")
+        tools = {t["schema"]["id"]: t for t in json.loads(raw)["tools"]}
+        self.assertNotIn("baddefault", tools)
+        self.assertIn("gooddefault", tools)
+        _, _, raw = self.http("GET", "/v1/system/info")
+        errs = json.loads(raw)["features"]["tool_schema_errors"]
+        self.assertTrue(any("e-baddefault" in e and "bad default" in e
+                            for e in errs), errs)
+
+    def test_20d_ai_generated_tier_pinned_at_load(self):
+        # §4-M9 / ADR-014: an ai-*.json schema claiming "safe" is loaded
+        # as "confirm" — the pin is re-asserted at load, not just at
+        # generation time
+        _, _, raw = self.http("GET", "/v1/tools")
+        tools = {t["schema"]["id"]: t for t in json.loads(raw)["tools"]}
+        self.assertIn("relaxed-tool", tools)
+        self.assertEqual(tools["relaxed-tool"]["schema"]["risk_tier"],
+                         "confirm")
 
     def test_21_malformed_reported_and_skipped(self):
         tools = {t["schema"]["id"] for t in json.loads(self.http("GET", "/v1/tools")[2])["tools"]}

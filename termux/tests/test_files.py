@@ -284,6 +284,23 @@ class TestFiles(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(raw)["error"]["code"], "NOT_A_FILE")
 
+    def test_23_download_fifo_rejected(self):
+        # §3-M8: open() on a FIFO blocks until a writer appears — inside
+        # the bridge's single event loop that hung EVERY request. Only
+        # regular files are downloadable; the bridge must stay responsive.
+        fifo = self.files_root / "pipe.fifo"
+        os.mkfifo(fifo)
+        try:
+            status, _, raw = self.http("GET",
+                                       f"/v1/files/content?path={self.q('pipe.fifo')}")
+            self.assertEqual(status, 400, raw)
+            self.assertEqual(json.loads(raw)["error"]["code"], "NOT_A_FILE")
+            status, _, raw = self.http("GET",
+                                       f"/v1/files/content?path={self.q('notes.txt')}")
+            self.assertEqual(status, 200, raw)
+        finally:
+            fifo.unlink()
+
     # ---- §6.5 upload ------------------------------------------------------------
 
     def test_30_upload_atomic_with_checksum(self):
@@ -453,6 +470,42 @@ class TestStorageSymlinkRoots(unittest.TestCase):
             with patch.object(Path, "resolve", autospec=True,
                               side_effect=lambda p: target if p == link else resolve(p)):
                 self.assertNotIn(target, policy.file_roots())
+
+
+class TestUploadSweep(unittest.TestCase):
+    """§3-M17: the bridge-start sweep removes orphaned upload temp files
+    (`.trmx-upload-*` left behind by a bridge crash mid-upload) — and
+    nothing else."""
+
+    def _bridge_mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "trmx_bridge", HERE.parent / "trmx-bridge.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_sweep_removes_only_upload_temps(self):
+        mod = self._bridge_mod()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".trmx-upload-111-1").write_bytes(b"x")
+            nested = root / "a" / "b"
+            nested.mkdir(parents=True)
+            (nested / ".trmx-upload-222-2").write_bytes(b"x")
+            (root / "keep.txt").write_bytes(b"x")
+            (root / ".trmx-upload-dir").mkdir()
+            hidden = root / ".hidden"
+            hidden.mkdir()
+            (hidden / ".trmx-upload-333-3").write_bytes(b"x")
+            removed = mod.sweep_upload_temps([root])
+            self.assertEqual(removed, 2)
+            self.assertFalse((root / ".trmx-upload-111-1").exists())
+            self.assertFalse((nested / ".trmx-upload-222-2").exists())
+            self.assertTrue((root / "keep.txt").exists())
+            self.assertTrue((root / ".trmx-upload-dir").is_dir())
+            # the sweep is bounded: dot-directories are pruned, not scanned
+            self.assertTrue((hidden / ".trmx-upload-333-3").exists())
 
 
 if __name__ == "__main__":
