@@ -71,7 +71,7 @@ tests/       spec-conformance check (Kotlin sources vs frozen contracts)
 
 ```sh
 pkg install python curl          # in Termux; elsewhere python3 + curl suffice
-git clone https://github.com/sq987in-wq/TRMX-GUI && cd TRMX-GUI
+git clone https://github.com/aaqib-sq/TRMX-GUI && cd TRMX-GUI
 
 # install the bridge into a throwaway home and start it
 D=/tmp/trmx-demo; mkdir -p $D

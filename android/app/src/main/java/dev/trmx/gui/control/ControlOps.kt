@@ -31,7 +31,7 @@ object ControlOps {
 
     /** Default install source (Phase 4; release builds may pin a tag). */
     const val DEFAULT_BASE =
-        "https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/main/termux"
+        "https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/main/termux"
 
     data class OpSpec(
         val id: String,

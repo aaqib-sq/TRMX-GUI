@@ -100,7 +100,7 @@ class TokenStore(context: Context) {
         private const val KEY_TOKEN = "pairing_token"
         private const val KEY_BASE = "install_base"
         private const val DEFAULT_BASE =
-            "https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/main/termux"
+            "https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/main/termux"
 
         private fun masterKey(context: Context): MasterKey =
             MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)

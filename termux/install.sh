@@ -17,19 +17,20 @@
 #
 # Properties:
 #   - idempotent (safe to re-run; keeps one .old backup per file)
-#   - SHA256-verified against SHA256SUMS when available
+#   - SHA256-verified against mandatory SHA256SUMS (fail closed)
 #   - stops the bridge before upgrading and restarts it afterwards
 #   - fails loud on any error; never leaves partial files in place (staging + mv)
 #
-# Trust anchor honesty (ADR-005): SHA256SUMS protects the download path
-# (corruption, partial mirrors). The cryptographic anchor for releases will be
+# SHA256SUMS is mandatory: missing sums or a mismatch abort installation.
+# It protects against corruption/partial mirrors, not a compromised source.
+# The cryptographic anchor for releases will be
 # the Android app embedding the pinned hash of what it asks Termux to install
 # (Phase 4). Release tagging regenerates SHA256SUMS via gen_checksums.sh.
 
 set -eu
 
 REF="main"
-DEFAULT_BASE="https://raw.githubusercontent.com/sq987in-wq/TRMX-GUI/$REF/termux"
+DEFAULT_BASE="https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/$REF/termux"
 FILES="trmx-bridge.py trmx trmx-ai trmx_ai_lib.py trmx-agent"
 HOME_DIR="${TRMX_HOME:-$HOME/.trmx}"
 
@@ -90,15 +91,15 @@ else
   fi
 fi
 
-if [ -n "$SUMFILE" ]; then
-  PATTERN="$(printf '%s\n' $FILES | sed 's/\./\\./g' | paste -sd'|' -)"
+[ -n "$SUMFILE" ] && [ -f "$SUMFILE" ] \
+  || die "SHA256SUMS missing or unavailable — refusing to install"
+for f in $FILES; do
+  # Verify every payload, so an incomplete sums file cannot skip a file.
   # shellcheck disable=SC2164
-  ( cd "$STAGE" && grep -E " ($PATTERN)\$" "$SUMFILE" | sha256sum -c - ) \
+  ( cd "$STAGE" && awk -v file="$f" '$2 == file' "$SUMFILE" | sha256sum -c - ) \
     || die "SHA256 verification failed — refusing to install"
-  say "checksums verified"
-else
-  say "WARNING: no SHA256SUMS found — installing UNVERIFIED (dev mode)"
-fi
+done
+say "checksums verified"
 
 # --- install atomically -----------------------------------------------------
 # trmx-ai is a TOOL binary: it installs to ~/.trmx/bin/ (the registry's

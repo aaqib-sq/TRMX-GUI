@@ -11,7 +11,7 @@ Covers (ADR-005 / docs/CONTROL-PLANE.md):
   - tampered payload -> loud refusal, zero partial state
   - idempotent reinstall with .old backups
   - upgrade while bridge is running -> stop, replace, restart
-  - missing SHA256SUMS -> explicit UNVERIFIED warning (honesty)
+  - missing/incomplete SHA256SUMS -> loud refusal, zero partial state
   - trmx enable-boot / enable-service (incl. missing termux-services)
   - intent_commands.sh emits all 8 control-plane ops in valid adb form
 """
@@ -158,7 +158,7 @@ class BootstrapTest(unittest.TestCase):
         manifest = json.loads((self.trmx_home / "installed.json").read_text())
         self.assertIn("trmx", manifest["files"])
 
-    def test_04_missing_sums_installs_unverified_with_warning(self):
+    def test_04_missing_sums_refused(self):
         nosums = self.sandbox / "nosums-source"
         shutil.copytree(TERMUX, nosums,
                         ignore=shutil.ignore_patterns("__pycache__", "tests"))
@@ -166,8 +166,28 @@ class BootstrapTest(unittest.TestCase):
         target = self.sandbox / "nosums" / ".trmx"
         env = dict(self.base_env(), TRMX_HOME=str(target))
         r = self.install(source=nosums, env=env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("UNVERIFIED", r.stdout)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("SHA256SUMS missing or unavailable", r.stderr)
+        self.assertEqual(list(target.iterdir()), [])
+        # Exercise the failed remote fetch too (file://, no network).
+        r = subprocess.run(
+            [str(TERMUX / "install.sh"), "--base", f"file://{nosums}"],
+            env=env, capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("SHA256SUMS missing or unavailable", r.stderr)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_04b_incomplete_sums_refused(self):
+        source = self.sandbox / "incomplete-source"
+        shutil.copytree(TERMUX, source,
+                        ignore=shutil.ignore_patterns("__pycache__", "tests"))
+        sums = source / "SHA256SUMS"
+        sums.write_text(sums.read_text().splitlines()[0] + "\n")
+        target = self.sandbox / "incomplete" / ".trmx"
+        r = self.install(source=source, env=dict(self.base_env(), TRMX_HOME=str(target)))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("SHA256 verification failed", r.stderr)
+        self.assertEqual(list(target.iterdir()), [])
 
     def test_05_upgrade_restarts_running_bridge(self):
         # start the bridge from the test_01 install on a private port
