@@ -88,14 +88,20 @@ fun ToolFormScreen(
             onBack = onBack,
             actions = {
                 // Save-recipe + save-as-service live in the header (P4): the
-                // sticky bar is reserved for the ONE primary action.
-                IconButton(onClick = { onSaveService() }) {
+                // sticky bar is reserved for the ONE primary action. Text
+                // labels, not icon-only buttons (audit §1-M7) — a plain-words
+                // user must be able to read what each action does.
+                TextButton(onClick = { onSaveService() }) {
                     Icon(Icons.Outlined.Dns, contentDescription = "save as service",
-                         tint = P.TextSecondary)
+                         tint = P.TextSecondary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Service", color = P.TextSecondary)
                 }
-                IconButton(onClick = { saveRecipe = true }) {
+                TextButton(onClick = { saveRecipe = true }) {
                     Icon(Icons.Outlined.StarBorder, contentDescription = "save recipe",
-                         tint = P.TextSecondary)
+                         tint = P.TextSecondary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Recipe", color = P.TextSecondary)
                 }
             },
         )

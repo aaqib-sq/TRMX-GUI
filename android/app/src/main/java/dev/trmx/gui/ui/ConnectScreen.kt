@@ -20,6 +20,7 @@ package dev.trmx.gui.ui
  */
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +51,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -320,17 +323,39 @@ private fun StepChip(text: String) {
 
 @Composable
 private fun MonoBox(text: String) {
+    // Tap-to-copy (audit §1-M12): the command box itself copies, with the
+    // same "Copied ✓" feedback as CopyButton — the button below remains
+    // as the explicit alternative.
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
     Box(
         Modifier
             .fillMaxWidth()
             .background(P.FieldFill, RoundedCornerShape(Tokens.Radius.s))
+            .clickable {
+                clipboard.setText(AnnotatedString(text))
+                copied = true
+            }
             .padding(Sp.s),
     ) {
-        Text(
-            text,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            color = P.TextSecondary,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+                color = P.TextSecondary,
+                modifier = Modifier.weight(1f),
+            )
+            if (copied) {
+                Text("Copied ✓", fontSize = 11.sp, color = P.Accent)
+            }
+        }
     }
 }

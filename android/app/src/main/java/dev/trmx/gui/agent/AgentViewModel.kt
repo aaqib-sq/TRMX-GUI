@@ -347,10 +347,10 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                 title = "I'm about to do this: ${e.describe}"))
             is AgentEvent.Result -> addRow(if (e.ok) AgentRow(
                 AgentRowKind.RESULT_OK,
-                title = if (e.excerpt.isNotEmpty()) "✓ ${e.excerpt}" else "Done")
+                title = if (e.excerpt.isNotEmpty()) e.excerpt else "Done")
             else AgentRow(
                 AgentRowKind.RESULT_FAIL,
-                title = if (e.excerpt.isNotEmpty()) "✗ ${e.excerpt}" else "Failed"))
+                title = if (e.excerpt.isNotEmpty()) e.excerpt else "Failed"))
             is AgentEvent.ConfirmNeeded -> {
                 addRow(AgentRow(
                     AgentRowKind.DOING,
@@ -394,7 +394,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
             "timed out" in e || "timeout" in e ->
                 "the model took too long to answer. It may still be " +
                     "loading \u2014 give it a moment and ask again."
-            else -> raw
+            else -> "Something unexpected happened: $raw"
         }
     }
 

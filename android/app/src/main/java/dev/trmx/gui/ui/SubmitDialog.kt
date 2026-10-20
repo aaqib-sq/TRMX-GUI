@@ -17,6 +17,8 @@ package dev.trmx.gui.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -50,7 +52,9 @@ fun SubmitDialog(
         onDismissRequest = onDismiss,
         title = { Text("New job") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 TrmxTextField(
                     value = state.name,
                     onValueChange = onName,
@@ -104,7 +108,9 @@ fun SubmitDialog(
             onDismissRequest = { confirmRun = false },
             title = { Text("Run this command?") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "The phone will execute exactly these arguments — " +
                             "a raw command runs with no tool safety net:")

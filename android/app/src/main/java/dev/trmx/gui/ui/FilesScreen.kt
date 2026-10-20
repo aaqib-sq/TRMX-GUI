@@ -179,7 +179,7 @@ fun FilesScreen(
                     when (pickFile) {
                         true -> "navigate to the file, then tap it"
                         false -> "navigate into the folder, then “use this folder”"
-                        else -> "tap a folder to open it · long-press a row for actions"
+                        else -> "tap a folder to open it · tap ⋮ or long-press a row for actions"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = P.TextSecondary)
@@ -284,8 +284,14 @@ fun FilesScreen(
                                 color = P.TextMuted,
                             )
                         }
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "actions",
-                             tint = P.TextMuted, modifier = Modifier.size(18.dp))
+                        if (pickFile == null) {
+                            IconButton(onClick = { actionsTarget = entry }) {
+                                Icon(Icons.Outlined.MoreVert, contentDescription = "actions",
+                                     tint = P.TextMuted, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        // Picker mode: no ⋮ at all — a decorative icon whose
+                        // tap only picks the file would be a dead pointer.
                     }
                 }
                 // Paged listing (§6): the bridge returns one page at a
