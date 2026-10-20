@@ -157,6 +157,16 @@ class Policy:
         if not expanded.is_absolute():
             raise BridgeError(400, "VALIDATION_FAILED",
                               "path must be absolute or ~-prefixed", field="path")
+        # Friendly alias: "Downloads" is the name everyone (and every
+        # model) reaches for, but on Android the folder lives at
+        # ~/storage/downloads (termux-setup-storage). Map the home-level
+        # names onto it when it exists (device report, 2026-10-20: the
+        # agent asked for ~/Downloads and got a bare 404).
+        if expanded in (self.user_home / "Downloads",
+                        self.user_home / "Download"):
+            real_downloads = self.user_home / "storage" / "downloads"
+            if real_downloads.is_dir():
+                expanded = real_downloads
         # containment per §6.1: REALPATH decides (blocks ~/../… escapes and
         # links pointing outside the roots)…
         real = expanded.resolve()
