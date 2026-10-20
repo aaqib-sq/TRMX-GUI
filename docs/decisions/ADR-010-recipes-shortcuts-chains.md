@@ -3,6 +3,13 @@
 **Status:** accepted (2026-09-09) · **Phase:** 9 · **Depends on:** ADR-008
 (FileProvider staging), ADR-009 (tool registry)
 
+> **Amendment (2026-10-20):** §3 (Chains) is **superseded — chains removed.**
+> The Chains screen was unreachable (no tab, overlay, or deep link ever led
+> to it), so the screen, the AppViewModel chain runner, `ChainPlanner`,
+> `ChainStore` and the persisted `chains.json` were deleted (2026-10-19
+> audit §6-H1 / §1-B9). Recipes (§1) and home-screen shortcuts (§2) remain
+> in force unchanged.
+
 ## Context
 
 Phase 9's user-approved scope added three "next-generation dashboard"

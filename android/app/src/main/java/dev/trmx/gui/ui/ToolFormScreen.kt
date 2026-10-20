@@ -80,27 +80,22 @@ fun ToolFormScreen(
     var confirmRun by remember { mutableStateOf(false) }
     var saveRecipe by remember { mutableStateOf(false) }
 
-    val submittable = FormEngine.isSubmittable(schema, state.values)
     val preview = FormEngine.previewArgv(schema, state.values)
 
     Column(modifier = Modifier.fillMaxSize()) {
         TrmxTopBar(
             title = schema.name,
             onBack = onBack,
-            subtitle = if (state.stepIndex != null)
-                "editing chain step ${state.stepIndex + 1}" else null,
             actions = {
                 // Save-recipe + save-as-service live in the header (P4): the
                 // sticky bar is reserved for the ONE primary action.
-                if (state.stepIndex == null) {
-                    IconButton(onClick = { onSaveService() }) {
-                        Icon(Icons.Outlined.Dns, contentDescription = "save as service",
-                             tint = P.TextSecondary)
-                    }
-                    IconButton(onClick = { saveRecipe = true }) {
-                        Icon(Icons.Outlined.StarBorder, contentDescription = "save recipe",
-                             tint = P.TextSecondary)
-                    }
+                IconButton(onClick = { onSaveService() }) {
+                    Icon(Icons.Outlined.Dns, contentDescription = "save as service",
+                         tint = P.TextSecondary)
+                }
+                IconButton(onClick = { saveRecipe = true }) {
+                    Icon(Icons.Outlined.StarBorder, contentDescription = "save recipe",
+                         tint = P.TextSecondary)
                 }
             },
         )
@@ -166,35 +161,26 @@ fun ToolFormScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Box(modifier = Modifier.padding(Sp.m)) {
-                if (state.stepIndex == null) {
-                    TrmxButton(
-                        label = if (schema.risk_tier == "safe") "Run" else "Run — confirm first",
-                        onClick = {
-                            if (schema.risk_tier == "safe") onSubmit() else confirmRun = true
-                        },
-                        enabled = !state.submitting,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        leading = if (state.submitting) {
-                            {
-                                CircularProgressIndicator(
-                                    strokeWidth = 2.dp,
-                                    modifier = Modifier.size(14.dp),
-                                    color = P.OnAccent,
-                                )
-                            }
-                        } else {
-                            { Icon(Icons.Filled.PlayArrow, contentDescription = null,
-                                   tint = P.OnAccent) }
-                        },
-                    )
-                } else {
-                    TrmxButton(
-                        label = "Save to step",
-                        onClick = onSubmit,
-                        enabled = submittable && !state.submitting,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                    )
-                }
+                TrmxButton(
+                    label = if (schema.risk_tier == "safe") "Run" else "Run — confirm first",
+                    onClick = {
+                        if (schema.risk_tier == "safe") onSubmit() else confirmRun = true
+                    },
+                    enabled = !state.submitting,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    leading = if (state.submitting) {
+                        {
+                            CircularProgressIndicator(
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(14.dp),
+                                color = P.OnAccent,
+                            )
+                        }
+                    } else {
+                        { Icon(Icons.Filled.PlayArrow, contentDescription = null,
+                               tint = P.OnAccent) }
+                    },
+                )
             }
         }
     }
