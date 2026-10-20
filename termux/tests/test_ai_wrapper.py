@@ -410,6 +410,24 @@ class TestHttpApi(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("mode", r.stderr)
 
+    def test_31_gemini_reply_cap(self):
+        # audit §2-H4: the Gemini request must carry the same reply cap
+        # as the openai-shaped path — before the fix the Gemini branch
+        # sent no generationConfig at all, so a Gemini-backed agent step
+        # was uncapped while every other provider was capped at 512.
+        api = self.api(gemini_response(GOOD_SCHEMA))
+        h = self.home(self.cfg(api.url, provider="gemini"))
+        r = h.run("download a video with video-grab")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        gen = api.last["body"].get("generationConfig") or {}
+        self.assertEqual(gen.get("maxOutputTokens"), 512)
+        # and the openai-shaped path keeps its matching cap
+        api2 = self.api(openai_response(GOOD_SCHEMA))
+        h2 = self.home(self.cfg(api2.url))
+        r2 = h2.run("download a video with video-grab")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(api2.last["body"].get("max_tokens"), 512)
+
     def test_30_legacy_flat_config_still_cli(self):
         # the v0.1.0 flat form keeps working (no "mode" key -> cli)
         backend = make_backend(json.dumps(GOOD_SCHEMA))

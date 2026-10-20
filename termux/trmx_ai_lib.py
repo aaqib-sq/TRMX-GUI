@@ -35,6 +35,7 @@ DEFAULT_TIMEOUT_S = 180
 DEFAULT_HTTP_TIMEOUT_S = 120
 MAX_LLM_BYTES = 65536          # cap on model text we are willing to parse
 MAX_HTTP_BYTES = 1024 * 1024   # cap on HTTP response body
+MAX_REPLY_TOKENS = 512         # per-step reply cap, every http provider
 
 VALID_PROVIDERS = ("openai", "groq", "gemini", "openai_compatible")
 PROVIDER_ENDPOINTS = {
@@ -263,7 +264,11 @@ def call_http(spec: dict, prompt: str) -> str:
     if spec["provider"] == "gemini":
         headers = {"Content-Type": "application/json",
                    "x-goog-api-key": spec["key"]}
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        body = {"contents": [{"parts": [{"text": prompt}]}],
+                # Same reply cap as the openai-shape path below
+                # (audit §2-H4): an uncapped Gemini step rambles just
+                # as long, and on a paid key it costs money too.
+                "generationConfig": {"maxOutputTokens": MAX_REPLY_TOKENS}}
     else:   # openai / groq / openai_compatible share the chat shape
         headers = {"Content-Type": "application/json",
                    "Authorization": f"Bearer {spec['key']}"}
@@ -272,7 +277,7 @@ def call_http(spec: dict, prompt: str) -> str:
                 # Cap the reply: an uncapped small model rambles for
                 # hundreds of tokens per agent step (626 seen on device),
                 # and every token is seconds on a phone CPU.
-                "max_tokens": 512}
+                "max_tokens": MAX_REPLY_TOKENS}
     req = urllib.request.Request(
         spec["url"], data=json.dumps(body).encode("utf-8"),
         headers=headers, method="POST")
