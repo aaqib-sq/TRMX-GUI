@@ -218,6 +218,27 @@ class TestTools(unittest.TestCase):
         self.assertEqual(status, 404, raw)
         self.assertEqual(json.loads(raw)["error"]["code"], "NOT_FOUND")
 
+
+    def test_http_server_loopback_and_directory(self):
+        status, _, raw = self.http("GET", "/v1/tools/http-server")
+        self.assertEqual(status, 200, raw)
+        schema = json.loads(raw)["schema"]
+        self.assertEqual(schema["risk_tier"], "confirm")
+        self.assertEqual(schema["fixed_argv"],
+                         ["-m", "http.server", "--bind", "127.0.0.1"])
+        directory = next(a for a in schema["args"] if a["name"] == "dir")
+        self.assertEqual(directory["default"], "~/downloads")
+        self.assertEqual(directory["argv"], ["--directory", "{value}"])
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "trmx_bridge", Path(__file__).resolve().parents[1] / "trmx-bridge.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        registry = mod.ToolRegistry(Path(self.home), mod.Policy(Path(self.home)))
+        self.assertEqual(registry.synth_argv(schema, {
+            "port": 8000, "dir": self.outdir_wire()}),
+            ["8000", "--directory", str(self.outdir_abs)])
+
     def test_03_refresh(self):
         status, _, raw = self.http("POST", "/v1/tools/refresh", body={})
         self.assertEqual(status, 200, raw)
