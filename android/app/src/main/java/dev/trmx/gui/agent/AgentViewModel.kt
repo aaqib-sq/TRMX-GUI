@@ -13,9 +13,12 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.trmx.gui.model.AiConfig
+import dev.trmx.gui.model.AgentTaskStatus
 import dev.trmx.gui.net.BridgeClient
 import dev.trmx.gui.net.BridgeResult
 import dev.trmx.gui.net.SseClient
+import dev.trmx.gui.store.AgentSession
+import dev.trmx.gui.store.AgentSessionStore
 import dev.trmx.gui.store.TokenStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -66,12 +69,15 @@ data class AgentState(
 class AgentViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = TokenStore(app)
+    private val sessionStore = AgentSessionStore(app.filesDir)
     private val http = OkHttpClient()
 
     private val _state = MutableStateFlow(AgentState())
     val state = _state.asStateFlow()
 
     private var streamJob: Job? = null
+    private var restoring = false      // restore in flight
+    private var restoreTried = false   // definitive restore outcome reached
 
     private fun client() = BridgeClient(store.bridgeBaseUrl, store.token, http)
 
@@ -131,6 +137,12 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val r = client().createAgentTask(instruction)) {
                 is BridgeResult.Success -> {
+                    // Persist BEFORE streaming: if Android kills the app
+                    // mid-task, restoreSession() picks this task back up.
+                    sessionStore.save(AgentSession(
+                        taskId = r.data.task_id, jobId = r.data.job_id,
+                        instruction = instruction,
+                        startedAt = System.currentTimeMillis()))
                     _state.update {
                         it.copy(
                             sending = false, input = "",
@@ -157,6 +169,92 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                                 sendError = "Can't reach the bridge — it may " +
                                     "be stopped. In Termux run: ~/.trmx/trmx start")
                     }
+            }
+        }
+    }
+
+    // ---- restore after process death (Arena audit finding 6) ---------------
+
+    /**
+     * Re-attach to the task [send] persisted, after Android killed the app
+     * process mid-task. The bridge kept the task (and its job output)
+     * alive: GET /v1/agent/tasks/{id} reports the task's current state —
+     * including a pending confirm and the final summary/error — and a
+     * still-running task's output stream replays from seq 1, so the
+     * transcript, the Allow/Deny card and Stop all come back.
+     *
+     * Runs at most once per process; a bridge that is merely down leaves
+     * the saved session in place so a later visit to the Agent tab retries.
+     */
+    fun restoreSession() {
+        if (restoring || restoreTried) return
+        if (_state.value.taskId != null) return   // this VM already has a task
+        val session = sessionStore.load()
+        if (session == null) {
+            restoreTried = true
+            return
+        }
+        restoring = true
+        viewModelScope.launch {
+            try {
+                when (val r = client().agentTaskStatus(session.taskId)) {
+                    is BridgeResult.Success -> {
+                        restoreTried = true
+                        applyRestored(r.data)
+                    }
+                    is BridgeResult.HttpError -> {
+                        if (r.status == 404) {
+                            // the bridge no longer knows this task — the
+                            // saved pointer is stale for good
+                            sessionStore.clear()
+                            restoreTried = true
+                        }
+                    }
+                    is BridgeResult.NetworkError -> Unit   // retry on a later visit
+                }
+            } finally {
+                restoring = false
+            }
+        }
+    }
+
+    private fun applyRestored(st: AgentTaskStatus) {
+        val note = AgentRow(AgentRowKind.NOTE,
+            title = "Restored — the app had closed; this is the task " +
+                "you started earlier.")
+        when (st.status) {
+            "done" -> _state.update {
+                it.copy(taskId = st.task_id, jobId = st.job_id,
+                        rows = listOf(note, AgentRow(
+                            AgentRowKind.DONE,
+                            title = "Done" +
+                                (st.summary?.takeIf { s -> s.isNotEmpty() }
+                                    ?.let { s -> ": $s" } ?: ""))))
+            }
+            "failed" -> _state.update {
+                it.copy(taskId = st.task_id, jobId = st.job_id,
+                        rows = listOf(note, AgentRow(
+                            AgentRowKind.FAILED,
+                            title = "Stopped" +
+                                (st.error?.takeIf { s -> s.isNotEmpty() }
+                                    ?.let { s -> ": ${humanAgentError(s)}" }
+                                    ?: ""))))
+            }
+            else -> {
+                // running / awaiting_confirm: re-attach the stream — the
+                // replay rebuilds the transcript (and re-raises a pending
+                // confirm with its full detail); Stop works again.
+                val confirm = if (st.awaiting_confirm && st.pending_action != null)
+                    AgentConfirm(describe = st.pending_action.describe,
+                                 tool = st.pending_action.tool ?: "",
+                                 why = "")
+                else null
+                _state.update {
+                    it.copy(taskId = st.task_id, jobId = st.job_id,
+                            rows = listOf(note), confirm = confirm,
+                            active = true, streamError = null)
+                }
+                startStream(st.job_id)
             }
         }
     }
