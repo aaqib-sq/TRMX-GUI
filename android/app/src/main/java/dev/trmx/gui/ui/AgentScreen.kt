@@ -4,7 +4,8 @@ package dev.trmx.gui.ui
  * Agent tab — the app's front door (revival). A plain chat surface over the
  * §5 agent protocol: the user writes an instruction, the agent narrates its
  * steps as plain rows, pauses with an Allow/Deny card on anything
- * destructive, and a visible Stop button cancels the running task.
+ * destructive, and while a task runs the send button becomes
+ * the stop button (same place — the chat-app pattern).
  * The active AI backend (mode + model, free vs API cost) is always visible
  * at the top — no step ever spends money by surprise.
  */
@@ -328,18 +329,6 @@ private fun InputBar(
             .padding(Sp.m),
         verticalArrangement = Arrangement.spacedBy(Sp.s),
     ) {
-        if (active) {
-            TrmxButton(
-                label = "Stop",
-                onClick = onStop,
-                kind = TrmxButtonKind.Danger,
-                leading = {
-                    Icon(Icons.Filled.Stop, contentDescription = null,
-                         modifier = Modifier.size(18.dp))
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
         Row(verticalAlignment = Alignment.Bottom) {
             TrmxTextField(
                 value = input,
@@ -351,21 +340,28 @@ private fun InputBar(
                 enabled = !sending && !active && !backendBlocked,
             )
             Spacer(Modifier.width(Sp.s))
+            // While a task runs, the send button IS the stop button —
+            // same place, same button (the pattern every chat app uses;
+            // device request, 2026-10-20). No separate Stop control.
             androidx.compose.material3.IconButton(
-                onClick = onSend,
-                enabled = input.isNotBlank() && !sending && !active &&
-                    !backendBlocked,
+                onClick = if (active) onStop else onSend,
+                enabled = active ||
+                    (input.isNotBlank() && !sending && !backendBlocked),
                 modifier = Modifier
                     .size(52.dp)
                     .padding(bottom = 2.dp),
             ) {
-                if (sending) {
-                    CircularProgressIndicator(
+                when {
+                    active -> Icon(
+                        Icons.Filled.Stop,
+                        contentDescription = "stop",
+                        tint = P.Danger,
+                        modifier = Modifier.size(26.dp))
+                    sending -> CircularProgressIndicator(
                         strokeWidth = 2.dp,
                         color = P.TextSecondary,
                         modifier = Modifier.size(22.dp))
-                } else {
-                    Icon(
+                    else -> Icon(
                         Icons.Filled.Send,
                         contentDescription = "send",
                         tint = if (input.isNotBlank()) P.Accent else P.TextMuted,
