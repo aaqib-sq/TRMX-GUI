@@ -644,7 +644,7 @@ BUNDLED_TOOL_SCHEMAS: list[dict] = [
         "examples": [],
     },
     # ---- media (kept: real, heavily used tools — but no longer the whole story)
-    # yt-dlp: VERBATIM the frozen normative fixture (fixtures/v1/tool.schema.yt-dlp.json)
+    # yt-dlp: audio extraction selects bestaudio instead of a video format.
     {
         "id": "yt-dlp",
         "name": "Video Downloader (yt-dlp)",
@@ -653,13 +653,14 @@ BUNDLED_TOOL_SCHEMAS: list[dict] = [
         "pkg": "yt-dlp",          # Termux package hint (app-side install button)
         "risk_tier": "safe",
         "progress_regex": r"\[download\]\s+(\d{1,3}(?:\.\d+)?)%",
-        "fixed_argv": ["--newline"],
+        "fixed_argv": ["--newline", "--no-playlist"],
         "args": [
             {"name": "url", "label": "Video URL", "type": "url", "required": True,
              "help": "The page or direct video URL."},
             {"name": "format", "label": "Quality", "type": "enum", "required": False,
              "enum": ["mp4", "mkv", "best"], "default": "mp4", "argv": ["-f", "{value}"]},
-            {"name": "audio", "label": "Audio only", "type": "bool", "default": False, "argv": ["-x"]},
+            {"name": "audio", "label": "Audio only", "type": "bool", "default": False,
+             "argv": ["-f", "bestaudio", "-x"]},
             {"name": "rate", "label": "Rate limit", "type": "string", "required": False,
              "pattern": r"^\d+[KM]$", "argv": ["-r", "{value}"]},
             {"name": "outdir", "label": "Output folder", "type": "path", "path_kind": "dir",
@@ -920,6 +921,8 @@ class ToolRegistry:
                                       field=name)
                 continue
             value = self._validate_arg(a, args[name])
+            if schema["id"] == "yt-dlp" and name == "format" and args.get("audio") is True:
+                continue  # audio's bestaudio selector replaces the video format
             if a.get("type") == "bool" and value is False:
                 continue                # bool False -> contributes nothing (§7.2)
             tokens.extend(self._argv_tokens(a, value))

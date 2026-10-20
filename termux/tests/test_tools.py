@@ -239,6 +239,33 @@ class TestTools(unittest.TestCase):
             "port": 8000, "dir": self.outdir_wire()}),
             ["8000", "--directory", str(self.outdir_abs)])
 
+    def test_ytdlp_audio_and_video_formats_exclusive(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "trmx_bridge", Path(__file__).resolve().parents[1] / "trmx-bridge.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        registry = mod.ToolRegistry(Path(self.home), mod.Policy(Path(self.home)))
+        schema = registry.get("yt-dlp")
+        self.assertIn("--no-playlist", schema["fixed_argv"])
+        for fmt in (None, "mp4", "mkv", "best"):
+            for audio in (False, True):
+                with self.subTest(format=fmt, audio=audio):
+                    args = {"url": "https://example.com/video", "audio": audio}
+                    if fmt is not None:
+                        args["format"] = fmt
+                    argv = registry.synth_argv(schema, args)
+                    self.assertEqual(argv.count("-f"), int(audio or fmt is not None))
+                    if audio:
+                        self.assertEqual(argv[argv.index("-f") + 1], "bestaudio")
+                        self.assertIn("-x", argv)
+                        if fmt is not None:
+                            self.assertNotIn(fmt, argv)
+                    else:
+                        self.assertNotIn("-x", argv)
+                        if fmt is not None:
+                            self.assertEqual(argv[argv.index("-f") + 1], fmt)
+
     def test_03_refresh(self):
         status, _, raw = self.http("POST", "/v1/tools/refresh", body={})
         self.assertEqual(status, 200, raw)
