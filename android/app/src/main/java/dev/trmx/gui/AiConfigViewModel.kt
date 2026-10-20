@@ -40,6 +40,9 @@ data class AiConfigState(
     val command: String = "ollama run llama3.2",
     val error: String? = null,
     val notice: String? = null,
+    // Monotonic count of successful saves. The config editor watches it
+    // and closes on success (device feedback, 2026-10-20).
+    val saveCount: Int = 0,
 )
 
 
@@ -152,7 +155,8 @@ class AiConfigViewModel(app: Application) : AndroidViewModel(app) {
                 is BridgeResult.Success -> {
                     _aiConfig.update {
                         aiConfigFrom(r.data, it.copy(saving = false,
-                                                     notice = "backend saved"))
+                                                     notice = "backend saved",
+                                                     saveCount = it.saveCount + 1))
                     }
                 }
                 is BridgeResult.HttpError ->

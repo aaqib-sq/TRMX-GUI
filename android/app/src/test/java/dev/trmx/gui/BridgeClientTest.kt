@@ -99,6 +99,22 @@ class BridgeClientTest {
         baseUrl = server.url("/").toString().trimEnd('/'), token = proofKey)
 
     @Test
+    fun `identity proof with no token returns NOT_PAIRED and sends nothing`() = runTest {
+        // Fresh install: no pairing token stored yet. Computing the
+        // proof HMAC anyway crashed the app (SecretKeySpec: Empty key —
+        // device crash report, 2026-10-20). The proof must surface as a
+        // plain 401 and must not even send the proof request.
+        val fresh = BridgeClient(
+            baseUrl = server.url("/").toString().trimEnd('/'), token = "")
+        val r = fresh.verifyBridgeIdentity()
+        assertTrue("expected HttpError, got $r", r is BridgeResult.HttpError)
+        val e = r as BridgeResult.HttpError
+        assertEquals(401, e.status)
+        assertEquals("NOT_PAIRED", e.code)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
     fun `identity proof succeeds when the bridge holds the same token`() = runTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {

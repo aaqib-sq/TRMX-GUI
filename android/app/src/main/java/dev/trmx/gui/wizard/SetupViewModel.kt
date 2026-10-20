@@ -680,7 +680,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 // old heal fail all night in round 1.
                 // If the proof still fails after the heal, it is not a
                 // token rotation — failHandshake names the impostor.
-                if ((r.status == 401 || r.code == "PROOF_FAILED") && allowRecovery) {
+                if ((r.status == 401 || r.code == "PROOF_FAILED") && allowRecovery
+                    && store.token.isNotBlank()) {
                     slog("HEAL 401 — re-pair (file write), then re-probe")
                     applyEvent(WizardEvent.StepStarted(
                         "token rejected — re-pairing and checking again…"))
@@ -704,7 +705,13 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun failHandshake(r: BridgeResult.HttpError) {
-        val hint = if (r.code == "PROOF_FAILED") {
+        val hint = if (r.code == "NOT_PAIRED") {
+            "Not paired yet.\n" +
+                "The app holds no pairing token, so there is nothing to " +
+                "verify the bridge against yet.\n" +
+                "\u2022 Finish the pairing step (paste the pair link from " +
+                "Termux), then try again"
+        } else if (r.code == "PROOF_FAILED") {
             "Bridge identity check failed.\n" +
                 "Something answered on the bridge port, but it could not " +
                 "prove it holds our pairing token — so the token was NOT " +
