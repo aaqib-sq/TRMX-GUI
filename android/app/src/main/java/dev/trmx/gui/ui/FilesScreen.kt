@@ -13,6 +13,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -330,8 +332,12 @@ fun FilesScreen(
             onDismissRequest = { newDirDialog = false },
             title = { Text("New folder") },
             text = {
-                TrmxTextField(value = name, onValueChange = { name = it },
-                              label = "folder name")
+                // Scrollable body: dialog actions stay pinned/reachable
+                // at large font scales and above the keyboard.
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    TrmxTextField(value = name, onValueChange = { name = it },
+                                  label = "folder name")
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -348,7 +354,9 @@ fun FilesScreen(
             onDismissRequest = { actionsTarget = null },
             title = { Text(entry.name) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = { detailsTarget = entry; actionsTarget = null }) {
                         Text("Details")
                     }
@@ -384,7 +392,9 @@ fun FilesScreen(
             onDismissRequest = { renameTarget = null },
             title = { Text("Rename “${entry.name}”") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     TrmxTextField(value = newName, onValueChange = { newName = it },
                                   label = "new name")
                     Text("…or remove it entirely:", style = MaterialTheme.typography.bodySmall)
@@ -417,7 +427,8 @@ fun FilesScreen(
                         "This deletes the folder AND everything inside it (recursive). " +
                             "There is no trash bin — this cannot be undone."
                     else
-                        "This deletes the file. There is no trash bin — this cannot be undone.")
+                        "This deletes the file. There is no trash bin — this cannot be undone.",
+                    modifier = Modifier.verticalScroll(rememberScrollState()))
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -440,7 +451,10 @@ fun FilesScreen(
             Column(
                 modifier = Modifier
                     .padding(horizontal = Sp.m)
-                    .padding(bottom = Sp.l),
+                    .padding(bottom = Sp.l)
+                    // Sheet content scrolls so the open/share/save actions
+                    // stay reachable at large font scales.
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(Sp.s),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -488,8 +502,11 @@ private fun DetailKV(k: String, v: String) {
         Text(k, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
              color = MaterialTheme.colorScheme.secondary,
              modifier = Modifier.width(90.dp))
+        // weight(1f) bounds the value to the remaining row width so it
+        // WRAPS at large font scales instead of running off the edge.
         Text(v, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-             style = MaterialTheme.typography.bodySmall)
+             style = MaterialTheme.typography.bodySmall,
+             modifier = Modifier.weight(1f))
     }
 }
 

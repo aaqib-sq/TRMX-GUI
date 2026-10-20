@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -161,10 +162,12 @@ fun ToolFormScreen(
         // Sticky primary action: full-width, 48 dp, white fill,
         // pure black bold text — always visible without scrolling. A
         // premature tap still marks every field touched (Ph 9.5).
+        // imePadding: the bar rides ABOVE the keyboard (the scrollable
+        // form above shrinks) instead of being covered by it.
         Surface(
             color = P.Background,
             border = BorderStroke(1.dp, P.Border),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().imePadding(),
         ) {
             Box(modifier = Modifier.padding(Sp.m)) {
                 TrmxButton(
@@ -196,8 +199,10 @@ fun ToolFormScreen(
             onDismissRequest = { confirmRun = false },
             title = { Text("Run ${schema.name}?") },
             text = {
+                // Scrollable body: actions stay pinned at large fonts.
                 Text("The phone will execute:\n\n" +
-                     preview.joinToString(" ") { shellWord(it) })
+                     preview.joinToString(" ") { shellWord(it) },
+                     modifier = Modifier.verticalScroll(rememberScrollState()))
             },
             confirmButton = {
                 TextButton(onClick = { confirmRun = false; onSubmit() }) { Text("run it") }
@@ -214,8 +219,12 @@ fun ToolFormScreen(
             onDismissRequest = { saveRecipe = false },
             title = { Text("Save recipe") },
             text = {
-                TrmxTextField(value = title, onValueChange = { title = it },
-                              label = "recipe name")
+                // Scrollable body: actions stay pinned/reachable above
+                // the keyboard at large font scales.
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    TrmxTextField(value = title, onValueChange = { title = it },
+                                  label = "recipe name")
+                }
             },
             confirmButton = {
                 TextButton(onClick = {

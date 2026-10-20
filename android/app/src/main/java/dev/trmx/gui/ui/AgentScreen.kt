@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -320,6 +321,10 @@ private fun InputBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // imePadding: the pinned input bar (and Stop) ride ABOVE the
+            // keyboard — the message list above shrinks, the bar is
+            // never covered by the IME at any font scale.
+            .imePadding()
             .padding(Sp.m),
         verticalArrangement = Arrangement.spacedBy(Sp.s),
     ) {

@@ -128,7 +128,9 @@ fun JobDetailScreen(
             text = {
                 Text(
                     "The bridge sends SIGTERM to the process group, then SIGKILL " +
-                        "after a 5 s grace period. The job record is kept.")
+                        "after a 5 s grace period. The job record is kept.",
+                    // Scrollable body: actions stay pinned at large fonts.
+                    modifier = Modifier.verticalScroll(rememberScrollState()))
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -258,8 +260,11 @@ private fun KV(k: String, v: String) {
         Text(k, fontFamily = FontFamily.Monospace,
              modifier = Modifier.width(110.dp),
              color = MaterialTheme.colorScheme.secondary)
+        // weight(1f) bounds the value to the remaining row width so it
+        // WRAPS at large font scales instead of running off the edge.
         Text(v, fontFamily = FontFamily.Monospace,
-             style = MaterialTheme.typography.bodySmall)
+             style = MaterialTheme.typography.bodySmall,
+             modifier = Modifier.weight(1f))
     }
 }
 

@@ -52,6 +52,9 @@ fun SubmitDialog(
         onDismissRequest = onDismiss,
         title = { Text("New job") },
         text = {
+            // Scrollable body (audit §1-M10): at large font scales the
+            // form outgrows the dialog — the body scrolls so the pinned
+            // Run/Cancel actions stay reachable instead of clipping.
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {

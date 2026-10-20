@@ -113,7 +113,11 @@ fun DiagnosticsSheet(
         AlertDialog(
             onDismissRequest = { confirmStop = false },
             title = { Text("Stop the bridge?") },
-            text = { Text(stopMessage) },
+            text = {
+                // Scrollable body: actions stay pinned at large fonts.
+                Text(stopMessage,
+                     modifier = Modifier.verticalScroll(rememberScrollState()))
+            },
             confirmButton = {
                 TextButton(onClick = { confirmStop = false; onStopBridge() }) {
                     Text("stop it")
@@ -158,6 +162,9 @@ private fun KeyValue(k: String, v: String) {
         Text(k, fontFamily = FontFamily.Monospace,
              modifier = Modifier.width(130.dp),
              color = MaterialTheme.colorScheme.secondary)
-        Text(v, fontFamily = FontFamily.Monospace)
+        // weight(1f) bounds the value to the remaining row width so it
+        // WRAPS at large font scales instead of running off the edge.
+        Text(v, fontFamily = FontFamily.Monospace,
+             modifier = Modifier.weight(1f))
     }
 }
