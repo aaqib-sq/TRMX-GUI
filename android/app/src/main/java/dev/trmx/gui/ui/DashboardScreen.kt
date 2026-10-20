@@ -151,7 +151,10 @@ private fun StatusStrip(
                 .background(if (connected) P.Accent else P.Danger, CircleShape))
         Spacer(Modifier.width(12.dp))
         Text(
-            if (connected) "Connected" else "Not connected",
+            // audit §5-H3: name the down state plainly (bridge killed /
+            // phone rebooted) instead of a vague "not connected" — the
+            // RepairCard below offers the fix.
+            if (connected) "Connected" else "Bridge is down",
             fontSize = 17.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.weight(1f))
         when {

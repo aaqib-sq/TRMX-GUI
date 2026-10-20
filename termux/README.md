@@ -34,10 +34,28 @@ sh install.sh --source /path/to/TRMX-GUI/termux
 Optional lifecycle (both off by default):
 
 ```sh
+sh install.sh --enable-boot    # one-shot opt-in during install (flag works
+                               # with --source / --base too), or any time:
 ~/.trmx/trmx enable-boot       # start at boot via Termux:Boot (install that app, open once)
 pkg install termux-services    # then:
 ~/.trmx/trmx enable-service    # runit service: start at boot + auto-restart on crash
 ```
+
+**Reboot / phantom-kill chain** (audit §5-H3) — how the bridge comes back
+after Android kills Termux or the phone reboots:
+
+1. `install.sh --enable-boot` (or `trmx enable-boot`) installs
+   `~/.termux/boot/trmx-bridge`, which Termux:Boot runs at boot to
+   `trmx start` the bridge. Termux:Boot itself must be installed and
+   opened once, or Android will not let it run at boot.
+2. While it serves, the bridge touches `~/.trmx/heartbeat` every 30 s.
+   Port closed + heartbeat older than ~2 min = the bridge died (it is
+   safe to restart); a fresh heartbeat + closed port = it is still
+   starting. `jobs.db` reconciliation on the next start re-adopts or
+   marks LOST whatever was running.
+3. In the app, the Dashboard status strip reads **“Bridge is down”**
+   (with the Repair card) whenever the bridge is not answering, so a
+   silent death is visible instead of looking like a hang.
 
 - Runtime dependency: `pkg install python` — nothing else, ever (stdlib-only rule, ADR-002).
 - The installer is idempotent; upgrading a running bridge stops it, replaces

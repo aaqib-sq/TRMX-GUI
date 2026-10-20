@@ -14,6 +14,8 @@
 #   install.sh --source DIR         local:  install from a checkout (dev / tests)
 #   install.sh --base URL           override remote base (e.g. a release tag)
 #   install.sh --sha256 FILE        override checksum file
+#   install.sh --enable-boot        also install the Termux:Boot startup entry
+#                                   (opt-in: needs the Termux:Boot app installed)
 #
 # Properties:
 #   - idempotent (safe to re-run; keeps one .old backup per file)
@@ -37,12 +39,14 @@ HOME_DIR="${TRMX_HOME:-$HOME/.trmx}"
 SOURCE=""
 BASE="$DEFAULT_BASE"
 SUMFILE=""
+ENABLE_BOOT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --source) SOURCE="${2:?}"; shift 2 ;;
     --base)   BASE="${2:?}"; shift 2 ;;
     --sha256) SUMFILE="${2:?}"; shift 2 ;;
+    --enable-boot) ENABLE_BOOT=1; shift ;;
     *) printf 'install.sh: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -166,6 +170,12 @@ if [ "$WAS_RUNNING" = 1 ]; then
 else
   "$HOME_DIR/trmx" start || die "first start failed (see ~/.trmx/bridge.log)"
   say "bridge installed and started"
+fi
+
+# --- opt-in: survive reboots via Termux:Boot (audit §5-H3) ----------------
+if [ "$ENABLE_BOOT" = 1 ]; then
+  say "enabling boot autostart (--enable-boot)"
+  "$HOME_DIR/trmx" enable-boot || die "enable-boot failed"
 fi
 say "done"
 printf '\n'

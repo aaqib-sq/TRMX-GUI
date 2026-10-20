@@ -365,6 +365,79 @@ class BootstrapTest(unittest.TestCase):
         self.assertIn("checksums verified", r.stdout)
         self.assertTrue((target / "trmx").is_file())
 
+    def test_14_install_enable_boot_and_heartbeat(self):
+        # audit §5-H3: the boot chain, wired end to end — install.sh
+        # --enable-boot installs the Termux:Boot entry (opt-in: a plain
+        # install must NOT), and the bridge it starts writes its
+        # liveness heartbeat into its home.
+        # fresh-home installs first-start on the default port: no other
+        # sandbox bridge may squat it (same rule as test_11/13)
+        self.stop_bridge()
+        target = self.sandbox / "bootchain" / ".trmx"
+        boot_dir = self.sandbox / "bootchain-boot"
+        env = dict(self.base_env(), TRMX_HOME=str(target),
+                   TRMX_BOOT_DIR=str(boot_dir))
+
+        def install(extra=()):
+            return subprocess.run(
+                [str(TERMUX / "install.sh"), "--source", str(TERMUX), *extra],
+                env=env, capture_output=True, text=True, timeout=120)
+
+        def stop_target():
+            if (target / "trmx").exists():
+                subprocess.run([str(target / "trmx"), "stop"], env=env,
+                               capture_output=True, timeout=60)
+            deadline = time.time() + 10
+            while time.time() < deadline and port_open(27342):
+                time.sleep(0.2)
+
+        try:
+            # (a) default install: boot autostart stays OFF (opt-in)
+            r = install()
+            self.assertEqual(r.returncode, 0, f"{r.stdout}\n{r.stderr}")
+            self.assertFalse((boot_dir / "trmx-bridge").exists(),
+                             "boot script installed without --enable-boot")
+            stop_target()
+            # (b) --enable-boot: Termux:Boot entry installed by install.sh
+            r = install(("--enable-boot",))
+            self.assertEqual(r.returncode, 0, f"{r.stdout}\n{r.stderr}")
+            self.assertIn("enabling boot autostart", r.stdout)
+            script = boot_dir / "trmx-bridge"
+            self.assertTrue(script.is_file())
+            self.assert_file_mode(script, 0o755)
+            text = script.read_text()
+            self.assertIn(f'export TRMX_HOME="{target}"', text)
+            self.assertIn(f'exec "{target}/trmx" start', text)
+            subprocess.run(["sh", "-n", str(script)], check=True)
+            # ...and the bridge it started writes its heartbeat
+            hb = target / "heartbeat"
+            deadline = time.time() + 15
+            while time.time() < deadline and not hb.exists():
+                time.sleep(0.2)
+            self.assertTrue(hb.exists(), "bridge wrote no heartbeat file")
+            self.assertLess(time.time() - hb.stat().st_mtime, 35,
+                            "heartbeat is stale right after start")
+        finally:
+            stop_target()
+
+    def test_15_bridge_writes_heartbeat(self):
+        # audit §5-H3: a running bridge keeps ~/.trmx/heartbeat fresh
+        # (touched every 30 s) — the liveness signal the boot chain
+        # and `trmx doctor`-style checks read to spot a dead bridge.
+        r = self.trmx("start", "--port", str(BRIDGE_PORT))
+        self.assertEqual(r.returncode, 0, f"{r.stdout}\n{r.stderr}")
+        self.assertTrue(port_open(BRIDGE_PORT))
+        hb = self.trmx_home / "heartbeat"
+        deadline = time.time() + 15
+        fresh = False
+        while time.time() < deadline:
+            if hb.exists() and time.time() - hb.stat().st_mtime < 35:
+                fresh = True
+                break
+            time.sleep(0.2)
+        self.assertTrue(fresh,
+                        "running bridge did not refresh ~/.trmx/heartbeat")
+
 
 if __name__ == "__main__":
     print(f"bridge under test: v{BRIDGE_VERSION}, source={TERMUX}")
