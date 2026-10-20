@@ -209,6 +209,14 @@ private fun OutputCard(
                          style = MaterialTheme.typography.labelSmall,
                          color = MaterialTheme.colorScheme.secondary)
                 }
+                Spacer(Modifier.width(Sp.s))
+                // Copy the full log (user request, 2026-10-20: Work's
+                // history had no way to copy anything either).
+                CopyButton(
+                    label = "Copy output",
+                    textToCopy = output.lines.joinToString("\n") { it.text },
+                    kind = TrmxButtonKind.Ghost,
+                )
             }
         }
     }
