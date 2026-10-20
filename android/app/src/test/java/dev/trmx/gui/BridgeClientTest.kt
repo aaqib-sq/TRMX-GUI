@@ -3,8 +3,10 @@ package dev.trmx.gui
 import dev.trmx.gui.net.BridgeClient
 import dev.trmx.gui.net.BridgeResult
 import kotlinx.coroutines.test.runTest
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -87,6 +89,62 @@ class BridgeClientTest {
         val err = r as BridgeResult.HttpError
         assertEquals(401, err.status)
         assertEquals("ARG_INVALID", err.code)
+    }
+
+    // ---- §2.3 identity proof (audit §4-H1) -------------------------------
+
+    private val proofKey = "proof-" + "test-key"
+
+    private fun proofClient() = BridgeClient(
+        baseUrl = server.url("/").toString().trimEnd('/'), token = proofKey)
+
+    @Test
+    fun `identity proof succeeds when the bridge holds the same token`() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val nonce = request.path!!.substringAfter("nonce=")
+                val mac = BridgeClient.hmacSha256Hex(proofKey, nonce)
+                return MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"hmac": "$mac"}""")
+            }
+        }
+        val r = proofClient().verifyBridgeIdentity()
+        assertTrue("expected success, got $r", r is BridgeResult.Success)
+
+        val req = server.takeRequest(5, TimeUnit.SECONDS)!!
+        assertTrue("proof path: ${req.path}", req.path!!.startsWith("/v1/proof?nonce="))
+        // the proof request must NOT carry the token it proves possession of
+        assertNull(req.getHeader("Authorization"))
+        assertEquals("1", req.getHeader("X-TRMX-Protocol"))
+    }
+
+    @Test
+    fun `identity proof fails when the answer comes from a different token`() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val nonce = request.path!!.substringAfter("nonce=")
+                // an impostor holds some OTHER token: its HMAC differs
+                val mac = BridgeClient.hmacSha256Hex("someone-elses-token", nonce)
+                return MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"hmac": "$mac"}""")
+            }
+        }
+        val r = proofClient().verifyBridgeIdentity()
+        assertTrue("expected HttpError, got $r", r is BridgeResult.HttpError)
+        assertEquals("PROOF_FAILED", (r as BridgeResult.HttpError).code)
+    }
+
+    @Test
+    fun `identity proof missing endpoint reads as bridge update needed`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(404)
+                .setBody(ERROR_FIXTURE)
+                .setHeader("Content-Type", "application/json"))
+        val r = proofClient().verifyBridgeIdentity()
+        assertTrue("expected HttpError, got $r", r is BridgeResult.HttpError)
+        assertEquals("PROOF_MISSING", (r as BridgeResult.HttpError).code)
     }
 
     @Test

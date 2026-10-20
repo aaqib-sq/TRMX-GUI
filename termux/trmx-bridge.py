@@ -66,6 +66,8 @@ LOG = logging.getLogger("trmx-bridge")
 
 TERMINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED", "LOST"}
 ACTIVE_STATES = {"QUEUED", "STARTING", "RUNNING", "CANCELLING"}
+# nonces for the §2.3 identity proof: client-chosen, hex-ish, bounded
+PROOF_NONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,128}$")
 HTTP_REASONS = {
     200: "OK", 201: "Created", 206: "Partial Content",
     400: "Bad Request", 401: "Unauthorized",
@@ -1832,6 +1834,7 @@ class BridgeApp:
         self.routes = [
             ("GET", re.compile(r"^/v1/system/info$"), self.h_system_info),
             ("GET", re.compile(r"^/v1/system/policy$"), self.h_system_policy),
+            ("GET", re.compile(r"^/v1/proof$"), self.h_proof),
             ("POST", re.compile(r"^/v1/jobs$"), self.h_jobs_post),
             ("GET", re.compile(r"^/v1/jobs$"), self.h_jobs_list),
             ("GET", re.compile(r"^/v1/jobs/([A-Za-z0-9-]+)$"), self.h_job_get),
@@ -2009,6 +2012,12 @@ class BridgeApp:
             raise BridgeError(400, "PROTOCOL_MISMATCH",
                               f"unsupported protocol major '{proto}'",
                               details={"supported": PROTOCOL_VERSIONS})
+        # PROTOCOL §2.3 identity proof: the one route that must NOT require
+        # the bearer token — the bridge proves IT holds the token, without
+        # the token ever crossing the wire (audit §4-H1). The Origin +
+        # protocol-header checks above still apply; see h_proof.
+        if req.method == "GET" and req.path == "/v1/proof":
+            return await self.h_proof(req, None)
         m = re.match(r"^Bearer\s+(.+)$", req.headers.get("authorization", ""))
         token = m.group(1) if m else None
         if not token:
@@ -2117,6 +2126,27 @@ class BridgeApp:
             "queue_depth": int(self.config["queue_depth"]),
             "cancel_grace_ms": int(self.config["cancel_grace_ms"]),
         })
+
+    async def h_proof(self, req, m):
+        """PROTOCOL §2.3 — bridge identity proof (audit §4-H1).
+
+        Returns {"hmac": hex(HMAC-SHA256(key=pairing token, msg=nonce))}.
+        Dispatched before the bearer check: proving possession without
+        revealing the token is the entire point. The nonce is caller-chosen
+        and response carries no token material, so the HMAC leaks nothing.
+        """
+        nonce = req.query.get("nonce", "")
+        if not (1 <= len(nonce) <= 128) or not PROOF_NONCE_RE.fullmatch(nonce):
+            raise BridgeError(400, "VALIDATION_FAILED",
+                              "nonce must be 1..128 chars of [A-Za-z0-9._-]",
+                              field="nonce")
+        token = self.config.fresh_token() or ""
+        if not token:
+            raise BridgeError(503, "TOKEN_UNSET",
+                              "bridge has no pairing token — pair first")
+        mac = hmac.new(token.encode("utf-8"), nonce.encode("utf-8"),
+                       hashlib.sha256)
+        return JsonResponse({"hmac": mac.hexdigest()})
 
     # -- tools (PROTOCOL §7) ------------------------------------------------
 
