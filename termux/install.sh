@@ -106,8 +106,9 @@ done
 say "checksums verified"
 
 # --- install atomically -----------------------------------------------------
-# trmx-ai is a TOOL binary: it installs to ~/.trmx/bin/ (the registry's
-# resolve_binary probes $TRMX/bin before $PREFIX/bin — ADR-014). The bridge,
+# trmx-ai is a TOOL binary: it installs to ~/.trmx/bin/ (resolve_binary
+# probes $PREFIX/bin first, then ~/.trmx/bin — audit §4-H4; trmx-ai has
+# no $PREFIX namesake, so it still resolves from ~/.trmx/bin). The bridge,
 # the control CLI and the agent runner stay at the state-dir root
 # (the bridge launches trmx-agent by absolute path).
 mkdir -p "$HOME_DIR/logs" "$HOME_DIR/tools" "$HOME_DIR/bin"

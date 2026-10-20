@@ -63,6 +63,15 @@ class Policy:
     ~/.trmx/bin; cwd must be an existing directory inside the roots.
     Dev-lenient elsewhere (sandbox/CI): PATH lookup + any existing cwd,
     so the test suite can run on ordinary Linux. See ADR-004.
+
+    Binary resolution order (audit §4-H4): SYSTEM directories are probed
+    BEFORE ~/.trmx/bin ($PREFIX/bin on Termux, PATH elsewhere), so an
+    executable dropped into ~/.trmx/bin can never silently shadow a
+    system binary of the same name — ~/.trmx/bin remains the install
+    home for TRMX's own tools (e.g. trmx-ai) that have no system
+    counterpart. When a ~/.trmx/bin copy IS shadowed by a system binary,
+    the fact is recorded in `shadow_warnings` (surfaced via
+    system/info.features) instead of being silently ignored.
     """
 
     def __init__(self, home: Path):
@@ -72,20 +81,35 @@ class Policy:
         self.trmx_bin = home / "bin"
         self.roots = [self.user_home, self.user_home / "storage"]
         self.deny_write = [self.prefix] if self.prefix else []
+        self.shadow_warnings: list[str] = []
+
+    def _search_dirs(self) -> list[Path]:
+        """System dirs first, ~/.trmx/bin last (audit §4-H4)."""
+        if self.termux:
+            dirs: list[Path] = [self.prefix / "bin"]
+        else:
+            dirs = [Path(p) for p in os.environ.get("PATH", "").split(":") if p]
+        dirs.append(self.trmx_bin)
+        return dirs
 
     def resolve_binary(self, name: str) -> str | None:
         if not name or "/" in name or name.startswith("."):
             return None
-        dirs: list[Path] = [self.trmx_bin]
-        if self.termux:
-            dirs.append(self.prefix / "bin")
-        else:
-            dirs += [Path(p) for p in os.environ.get("PATH", "").split(":") if p]
-        for d in dirs:
+        winner: str | None = None
+        for d in self._search_dirs():
             p = d / name
             if p.is_file() and os.access(p, os.X_OK):
-                return str(p)
-        return None
+                winner = str(p)
+                break
+        if winner is not None:
+            shadow = self.trmx_bin / name
+            if winner != str(shadow) and shadow.is_file() \
+                    and os.access(shadow, os.X_OK):
+                note = (f"{name}: ~/.trmx/bin copy is shadowed by "
+                        f"{winner} and is ignored")
+                if note not in self.shadow_warnings:
+                    self.shadow_warnings.append(note)
+        return winner
 
     # ---- file endpoints (PROTOCOL §6.1) ---------------------------------
 

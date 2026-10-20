@@ -28,6 +28,7 @@ Stdlib only (ADR-002 rule).
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import io
 import json
@@ -59,6 +60,41 @@ MAX_ARG_BYTES = 8000
 # Second net under the tool risk_tier check: verbs that always confirm.
 DESTRUCTIVE_RE = re.compile(r"\b(rm|delete|kill|format|mkfs|dd|shred)\b",
                             re.IGNORECASE)
+
+# Multi-token destructive patterns the single-verb list cannot express
+# (audit §4-M4): moving a file INTO a system location destroys the
+# original just as surely as rm; a recursive chmod/chown rewrites
+# permissions wholesale; and stopping/restarting a service is a
+# destructive action against its availability. These scan the same
+# text as DESTRUCTIVE_RE (the LLM's describe + the args JSON).
+DESTRUCTIVE_PATTERNS = [
+    # mv <anything> /(dev|system|usr|etc|bin|sbin|proc|sys)/… or into $PREFIX
+    re.compile(r"\bmv\b[^\n]*\s/(?:dev|system|usr|etc|bin|sbin|proc|sys)"
+               r"(?:/|\s|$)", re.IGNORECASE),
+    re.compile(r"\bmv\b[^\n]*\s/data/data/com\.termux/files/usr(?:/|\s|$)",
+               re.IGNORECASE),
+    # chmod/chown/chgrp -R / --recursive (incl. combined flags like -Rf)
+    re.compile(r"\b(?:chmod|chown|chgrp)\b[^\n]*\s--recursive\b",
+               re.IGNORECASE),
+    re.compile(r"\b(?:chmod|chown|chgrp)\b[^\n]*\s-[A-Za-z]*R[A-Za-z]*"
+               r"(?:\s|$)", re.IGNORECASE),
+    # service stop/restart phrasing, either word order
+    re.compile(r"\b(?:sv|systemctl|service)\b[^\n]*"
+               r"\b(?:stop|restart|down)\b", re.IGNORECASE),
+    re.compile(r"\b(?:stop|restart)\b[^\n]*\bservice\b", re.IGNORECASE),
+]
+
+
+def action_hash(task_id: str, step: int, tool: str, args: dict) -> str:
+    """Binding hash for one confirm (audit §4-M3): sha256 over the
+    canonical JSON of {task_id, step, tool, args}. A decision is valid
+    ONLY for the action this hash names. The bridge computes the same
+    hash (agent_action_hash in trmx-bridge.py — keep them in sync)."""
+    canon = json.dumps({"task_id": task_id, "step": step, "tool": tool,
+                        "args": args},
+                       sort_keys=True, ensure_ascii=False,
+                       separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 TOOL_MENU = ("submit_tool", "list_jobs", "job_output", "list_files",
              "service_action", "cancel_job")
@@ -291,6 +327,14 @@ def is_destructive(tool: str, args: dict, describe: str, bridge: Bridge,
     if DESTRUCTIVE_RE.search(describe) or DESTRUCTIVE_RE.search(
             json.dumps(args, ensure_ascii=False)):
         return "destructive"
+    scanned = describe + "\n" + json.dumps(args, ensure_ascii=False)
+    if any(p.search(scanned) for p in DESTRUCTIVE_PATTERNS):
+        return "destructive"
+    # §4-M4: stopping (or restarting, which stops first) a service is
+    # destructive to its availability — it used to sail through
+    # unconfirmed because no verb in the list matched it.
+    if tool == "service_action" and args.get("action") in ("stop", "restart"):
+        return "destructive"
     if tool == "submit_tool":
         tid = args["tool"]
         tier = cache.get(tid) if cache is not None else None
@@ -522,17 +566,29 @@ class Agent:
                     why: str) -> bool | None:
         """Pause for the user's allow/deny. True = allow, False = deny,
         None = the wait timed out (silence is denial, but the caller
-        reports it as an expiry, not as a user denial — §2-M5)."""
+        reports it as an expiry, not as a user denial — §2-M5).
+
+        §4-M3: this confirm is bound to THIS action (task+step+tool+
+        args, hashed). A decision file left over from an earlier
+        action is stale by definition — remove it up front, and below
+        honour only a decision whose step+hash match this pending
+        action; anything else is discarded, never applied."""
+        ahash = action_hash(self.task_id, self.step, tool, args)
+        dp = self._decision_path()
+        try:
+            dp.unlink(missing_ok=True)
+        except OSError:
+            pass
         pending = {"task_id": self.task_id, "step": self.step,
                    "tool": tool, "args": args, "describe": describe,
-                   "why": why, "requested_at": time.strftime(
+                   "why": why, "action_hash": ahash,
+                   "requested_at": time.strftime(
                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         pp = self._pending_path()
         pp.parent.mkdir(parents=True, exist_ok=True)
         pp.write_text(json.dumps(pending, ensure_ascii=False), encoding="utf-8")
         emit({"t": "confirm-needed", "step": self.step, "describe": describe,
-              "tool": tool, "why": why})
-        dp = self._decision_path()
+              "tool": tool, "why": why, "action_hash": ahash})
         deadline = time.monotonic() + CONFIRM_TIMEOUT_S
         while time.monotonic() < deadline:
             self._remaining()
@@ -542,8 +598,17 @@ class Agent:
                 except ValueError:
                     dec = {}
                 try:
-                    pp.unlink(missing_ok=True)
                     dp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if dec.get("step") != self.step \
+                        or dec.get("action_hash") != ahash:
+                    # stale or unbound decision (approved a DIFFERENT
+                    # action, or predates binding): discard it and keep
+                    # waiting — it must never approve this action
+                    continue
+                try:
+                    pp.unlink(missing_ok=True)
                 except OSError:
                     pass
                 return dec.get("decision") == "allow"

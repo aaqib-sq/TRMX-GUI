@@ -8,6 +8,11 @@ Android app can drive it (docs/CONTROL-PLANE.md):
   trmx pair TOKEN [--force] store the app-generated token (0600);
                             a TOKEN starting with '-' works too (rescued
                             before argparse can mistake it for a flag)
+  trmx pair [--stdin]       same, but read the token from stdin so it
+                            never lands in shell history (audit §4-M2):
+                            `trmx pair --stdin` then paste + Enter, or
+                            pipe it in. With no TOKEN argument, stdin is
+                            used automatically.
   trmx pair-link [--print]  open TRMX with this bridge's token (one-command connect)
   trmx unpair               remove the token
   trmx token [--show]       print the token (masked unless --show)
@@ -88,8 +93,30 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _read_token_stdin() -> str:
+    """Read the pairing token from stdin (audit §4-M2): a token passed
+    as a command-line argument lands in the shell's history file on
+    disk; a token typed/piped on stdin does not. On a terminal the
+    prompt goes to stderr and the input is not echoed (getpass); when
+    piped, one line is read."""
+    if sys.stdin.isatty():
+        import getpass
+        return getpass.getpass("Token (input hidden): ", stream=sys.stderr).strip()
+    return sys.stdin.readline().strip()
+
+
 def cmd_pair(args) -> int:
     token = args.token
+    if getattr(args, "stdin", False) or not token:
+        token = _read_token_stdin()
+        if not token:
+            sys.exit("trmx pair: no token on stdin — usage: "
+                     "`trmx pair --stdin` (then paste the token), "
+                     "or `trmx pair TOKEN`")
+    else:
+        print("trmx pair: note — a token given as an argument can land "
+              "in your shell history; `trmx pair --stdin` avoids that",
+              file=sys.stderr)
     if not token or len(token) < 20 or any(c not in
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
             for c in token):
@@ -446,8 +473,12 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init").set_defaults(fn=cmd_init)
     p = sub.add_parser("pair")
-    p.add_argument("token")
+    p.add_argument("token", nargs="?",
+                   help="pairing token (omit to read it from stdin, "
+                        "keeping it out of shell history — §4-M2)")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--stdin", action="store_true",
+                   help="read the token from stdin instead of argv")
     p.set_defaults(fn=cmd_pair)
     p = sub.add_parser("pair-link")
     p.add_argument("--print", dest="print_only", action="store_true")

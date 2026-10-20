@@ -49,7 +49,7 @@
 - The token is 256-bit, URL-safe base64 (43 chars), generated at pairing (report §B.8).
 - The bridge compares in constant time. On failure: `401` with `AUTH_INVALID`, audit-logged (§9). Missing header: `401 AUTH_REQUIRED`.
 - Wrong/unsupported protocol major in `X-TRMX-Protocol`: `400 PROTOCOL_MISMATCH` with `details.supported: [1]`.
-- Failed-auth backoff: after **5 consecutive failures**, the offending connection is closed and further connections from that source are refused for `min(2^(n-5) × 2s, 60s)` where *n* is the failure count (resets on a successful auth or bridge restart). Guessing is computationally hopeless; this exists to stop busy-looping clients.
+- Failed-auth backoff: after **5 consecutive failures**, further requests from that source are refused (`429 RATE_LIMITED`, `details.retry_after_s`) for `min(2^(n-5) × 2s, 60s)` where *n* is the failure count (resets on a successful auth or bridge restart). "Source" is the peer address as far as loopback allows (the peer IP). The count is **per source, not per connection** — a fresh connection does not reset it (audit §4-M5; the code was aligned UP to this spec, the safer direction). Guessing is computationally hopeless; this exists to stop busy-looping clients.
 
 ### 1.4 Versioning
 - Major version lives in the path: `/v1/…`. Within `/v1`, changes are **additive only** (new optional fields, new endpoints). Breaking changes require `/v2/` mounted **side-by-side** with `/v1` for at least one bridge release.
@@ -108,7 +108,7 @@ The one route that does **not** require the bearer token. Returns `{"hmac": "<he
 | `argv` | string[] \| null | resolved argument array (`argv`/`tool` types) |
 | `script` | string \| null | shell source (`shell` type only) |
 | `cwd` | string | `~`-prefixed or absolute path within policy roots; default `~` |
-| `env` | object \| null | ≤ 32 keys, names matching `^[A-Za-z_][A-Za-z0-9_]*$`, values ≤ 4 KiB |
+| `env` | object \| null | ≤ 32 keys, names matching `^[A-Za-z_][A-Za-z0-9_]*$`, values ≤ 4 KiB. **Redacted on read-back** (audit §4-M8): in every job payload the API serves — `GET /v1/jobs`, `GET /v1/jobs/{id}`, cancel responses, and `job.updated` events — env keys are preserved but every value is replaced with `"***"`. The real values exist only in the stored row and the spawned process's environment; treat env as write-only secret transport. |
 | `status` | enum | `QUEUED` `STARTING` `RUNNING` `CANCELLING` `COMPLETED` `FAILED` `CANCELLED` `LOST` |
 | `created_at` / `started_at` / `ended_at` | ISO-8601 \| null | |
 | `pid` / `pgid` | int \| null | process & group ids while alive |
@@ -151,7 +151,7 @@ Request body (one of three execution models):
   "idempotency_key": "8f14e45f-…-cea4" }
 ```
 
-- `type:"argv"` — the bridge executes the **first element as an allowlisted executable** (must resolve in `$PREFIX/bin` or `~/.trmx/bin`) and passes the rest as literal arguments. **No shell exists in this path.** Raw argv is always classified risk tier **destructive** (it can run any allowlisted binary, including shells): the request must set `"confirm": true`, otherwise the bridge rejects with `400 CONFIRM_REQUIRED`. The GUI's New-job dialog therefore shows a second "Run this command?" confirmation — with a destructive-pattern warning when the argv matches the agent's destructive verb list — before submitting.
+- `type:"argv"` — the bridge executes the **first element as an allowlisted executable** (must resolve in `$PREFIX/bin` or `~/.trmx/bin`; `$PREFIX/bin` is probed **first**, so a binary dropped into `~/.trmx/bin` can never shadow a system binary — audit §4-H4; a shadowed `~/.trmx/bin` copy is ignored and reported in `system/info.features.binary_shadow_warnings`) and passes the rest as literal arguments. **No shell exists in this path.** Raw argv is always classified risk tier **destructive** (it can run any allowlisted binary, including shells): the request must set `"confirm": true`, otherwise the bridge rejects with `400 CONFIRM_REQUIRED`. The GUI's New-job dialog therefore shows a second "Run this command?" confirmation — with a destructive-pattern warning when the argv matches the agent's destructive verb list — before submitting.
 - `type:"tool"` — `"tool": "yt-dlp", "args": { "url": "…", "format": "mp4" }` (object form). The bridge validates args against the tool schema (§7) and **synthesizes the argv** — this is the form the GUI uses.
 - `type:"shell"` — `"script": "…"` executed by `$PREFIX/bin/bash -c`. **V1.5, behind a client-side confirmation**; bridge still accepts and audit-logs it distinctly.
 
@@ -215,6 +215,7 @@ One long-lived SSE stream the app holds whenever connected. Event types:
 | `system.updated` | the `system/info` object (throttled to ≤ 1 per 5 s) |
 | `bridge.stopping` | `{ "reason": "restart" \| "stop" \| "upgrade", "resume_hint_s": 5 }` |
 | `bridge.lifecycle` | `{ "type": "restarted", "jobs_lost": N, "jobs_readopted": N, "jobs_requeued": N, "jobs_cancelled": N }` — emitted by startup reconciliation; also delivered as the first frame to each new `/v1/events` subscriber (reconcile runs before the port binds, so a live-only publish would reach nobody) |
+| `bridge.token_changed` | `{ "type": "rotated" \| "paired" \| "unpaired", "at": "<iso>" }` — the pairing token in `bridge.json` changed value while the bridge was running (audit §5-M4: `trmx pair [--force]` / `unpair` take effect via the per-request file re-read; this event is how clients learn to invalidate their cached token + state and re-pair). Carries **no** token material. Also delivered to each new `/v1/events` subscriber (latest change only, same first-frame pattern as `bridge.lifecycle`) |
 
 - SSE `id:` = the global `event_id` (§1.5). On reconnect the client passes it via `Last-Event-ID`; the bridge replays up to **1000** buffered events, then continues live.
 - Heartbeat: a `: ping` comment every **15 s** (detects half-dead connections).
@@ -309,7 +310,7 @@ This endpoint complements the intent control plane (report §B.3): intents remai
 The bridge implementation MUST (verifiable by §J of the Phase 0 report):
 1. Bind loopback only; refuse to start if the configured port is taken (`PORT_SQUATTED` is a **client-side** state after a failed start-intent; the bridge never silently picks another port).
 2. Constant-time token compare; rate-limited auth failures (§1.3); every 401/403 audit-logged with timestamp and available peer info (loopback → PID of the connecting app is not reliably available; log attempt counts).
-3. Never log, echo, or expose the token after pairing (masked `trmx token` output shows 4 leading chars only).
+3. Never log, echo, or expose the token after pairing (masked `trmx token` output shows 4 leading chars only). `trmx pair` accepts the token on stdin (`trmx pair --stdin`, or with no argument) so pairing need not put it in shell history (audit §4-M2); the intentional hand-off outputs (`trmx token --show`, `trmx pair-link --print`) remain explicit, user-invoked reveals.
 4. Enforce path policy on every file/job `cwd`/`path`-typed access (§6.1).
 5. Execute `argv`/`tool` jobs via `execve` semantics — never through a shell. The `shell` type is the only shell path and is audit-logged with the full script.
 6. Enforce all limits of §12; answer with typed errors, never crash on malformed input (fuzzed in Phase 11).
@@ -337,12 +338,13 @@ Every non-2xx JSON body: `{ "error": { "code": "MACHINE_CODE", "message": "human
 | 404 | `JOB_NOT_FOUND` / `TOOL_NOT_FOUND` / `PATH_NOT_FOUND` | missing resource |
 | 405 | `METHOD_NOT_ALLOWED` | wrong verb on a known route |
 | 409 | `PATH_EXISTS` | create/move onto existing path (when not overwriting) |
+| 409 | `CONFIRM_STALE` | agent confirm decision does not match the pending action's step/action_hash, or a decision was already recorded for it (§16) |
 | 409 | `PATH_NOT_EMPTY` | non-recursive delete of non-empty dir |
 | 411 | `LENGTH_REQUIRED` | upload without `Content-Length` |
 | 413 | `PAYLOAD_TOO_LARGE` | JSON body > 1 MiB; upload > 2 GiB |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | JSON expected, not received |
 | 416 | `RANGE_NOT_SATISFIABLE` | bad file `Range` |
-| 429 | `RATE_LIMITED` | > 120 requests / 10 s per connection (`Retry-After`) |
+| 429 | `RATE_LIMITED` | > 120 requests / 10 s per connection (`Retry-After`), or the per-source auth backoff window is running (§1.3; `details.retry_after_s`) |
 | 429 | `QUEUE_FULL` | queue depth exceeded |
 | 429 | `CONCURRENCY_LIMIT` | `max_concurrent_jobs` reached at a no-queue moment (policy `queue=0`) |
 | 500 | `INTERNAL_ERROR` | unexpected — bridge must survive it |
@@ -512,12 +514,28 @@ Validation failures → `400 VALIDATION_FAILED`.
 ```
 `awaiting_confirm` is true while a confirm request file is pending;
 `pending_action` carries the plain-words description the app shows on the
-confirm card. Unknown id → `404 TASK_NOT_FOUND`.
+confirm card, plus the confirm's binding: `step` and `action_hash`.
+Unknown id → `404 TASK_NOT_FOUND`.
 
+**Confirm binding (audit §4-M3).** A confirmation approves ONE specific
+action, never "whatever happens to be pending". The pending action is
+identified by `action_hash` = `sha256` of the canonical JSON
+`{"task_id","step","tool","args"}` (sorted keys, compact separators).
 **`POST /v1/agent/tasks/{task_id}/confirm`** — body
-`{"decision": "allow"|"deny"}` → `{"ok": true}` (audit-logged
-`agent.confirm`). Nothing pending → `409 NO_PENDING_CONFIRM`.
-Bad decision → `400 VALIDATION_FAILED`.
+`{"decision": "allow"|"deny"}` (optionally echoing the `step` and/or
+`action_hash` from `pending_action`) → `{"ok": true, "step": n,
+"action_hash": "…"}` (audit-logged `agent.confirm`). If an echoed
+`step`/`action_hash` does not match the pending action — the action
+changed after the user was shown it, or the tap is stale — the bridge
+answers `409 CONFIRM_STALE` and the pending confirm stays open:
+re-approval is required for the action actually on screen. A second
+decision for the same pending action (double-tap/replay) is likewise
+`409 CONFIRM_STALE`. The bridge stamps the recorded decision with the
+pending action's `step`+`action_hash` (taken from the pending file,
+never trusted from the request body), and the agent honours only a
+decision whose binding matches the action it is waiting on; a stale or
+unbound decision file is discarded, never applied. Nothing pending →
+`409 NO_PENDING_CONFIRM`. Bad decision → `400 VALIDATION_FAILED`.
 
 **Event stream** (one JSON object per stdout line of the agent job):
 
@@ -527,7 +545,7 @@ Bad decision → `400 VALIDATION_FAILED`.
 | `plan` | `{"step":n,"thought":"…","describe":"<human sentence>"}` — shown *before* the action runs |
 | `action` | `{"step":n,"tool":"…","describe":"…"}` — about to execute |
 | `result` | `{"step":n,"ok":bool,"excerpt":"…"}` — what happened |
-| `confirm-needed` | `{"step":n,"describe":"…","tool":"…","why":"risk-tier\|destructive"}` — paused for the app's answer |
+| `confirm-needed` | `{"step":n,"describe":"…","tool":"…","why":"risk-tier\|destructive","action_hash":"…"}` — paused for the app's answer; `action_hash` is the §4-M3 binding above |
 | `confirm-expired` | `{"step":n,"describe":"…","tool":"…","why":"…"}` — the confirm wait timed out unanswered; the app replaces the card with "timed out — nothing was done" |
 | `done` | `{"summary":"…"}` |
 | `failed` | `{"error":"…"}` |
@@ -539,8 +557,12 @@ A `submit_tool` whose target tool has `risk_tier` `confirm`/`destructive`,
 or whose description matches a destructive verb, emits `confirm-needed`
 and pauses until the app answers via the confirm endpoint (10-minute
 silence = the wait expires: a `confirm-expired` event is emitted and
-the task fails as timed out — nothing was done). Cancel =
-`POST /v1/jobs/{job_id}/cancel` (§3.5).
+the task fails as timed out — nothing was done). The agent's destructive
+net (audit §4-M4) also covers multi-token patterns a verb list cannot
+express — `mv` into a system path (`/dev/…`, `/usr/…`, `$PREFIX`, …),
+recursive `chmod`/`chown`/`chgrp` (`-R`/`--recursive`), service
+stop/restart phrasing — and a `service_action` of `stop`/`restart` always
+needs confirmation. Cancel = `POST /v1/jobs/{job_id}/cancel` (§3.5).
 
 The pairing token is never part of this protocol: the agent reads it from
 `~/.trmx/bridge.json` only to authenticate its own calls (like the `trmx`

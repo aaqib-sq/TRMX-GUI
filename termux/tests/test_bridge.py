@@ -754,6 +754,46 @@ class TestBridge(unittest.TestCase):
         self.assertTrue(all(j["status"] == "COMPLETED" for j in done))
         self.assertGreaterEqual(len(done), 2)
 
+    # ---- 15: job env secrets are redacted on read-back (§4-M8) ---------
+
+    def test_15_env_redacted_on_readback(self):
+        secret = "env-secret-value-12345"
+        # the check script lives OUTSIDE the job payload, so the secret
+        # itself only ever travels in env (never in argv)
+        script = Path(self.tmp) / "check-env.sh"
+        script.write_text(
+            "#!/bin/sh\ntest \"$TRMX_TEST_SECRET\" = \"" + secret + "\"\n")
+        job_id = self.submit(
+            ["sh", str(script)],
+            name="env job", env={"TRMX_TEST_SECRET": secret, "PLAIN": "x"})
+        job = self.wait_status(job_id, TERMINAL)
+        # the process received the REAL env (exit 0 proves it) ...
+        self.assertEqual(job["status"], "COMPLETED")
+        # ... but no read-back may hand the values out again: keys stay,
+        # values are redacted — on the single-job GET ...
+        self.assertEqual(job["env"],
+                         {"TRMX_TEST_SECRET": "***", "PLAIN": "***"})
+        self.assertNotIn(secret, json.dumps(job))
+        # ... on the list endpoint ...
+        listed = [j for j in self._list_all() if j["job_id"] == job_id]
+        self.assertEqual(len(listed), 1)
+        self.assertNotIn(secret, json.dumps(listed[0]["env"]))
+        # ... and on the job.updated event stream.
+        sse = SSEClient(self.port, "/v1/events", self.token)
+        job2 = self.submit(["echo", "env2"], name="env job 2",
+                           env={"TRMX_TEST_SECRET": secret})
+        saw = None
+        for ev, eid, data in sse.frames(15):
+            if ev == "job.updated" and data.get("job_id") == job2:
+                saw = data
+                self.assertNotIn(secret, json.dumps(data),
+                                 "job.updated must never carry env values")
+                if data["status"] in TERMINAL:
+                    break
+        sse.close()
+        self.assertIsNotNone(saw)
+        self.assertEqual(saw["env"], {"TRMX_TEST_SECRET": "***"})
+
     # ---- 90: trmx CLI lifecycle (isolated home) ---------------------------
 
     def test_90_cli_lifecycle(self):
@@ -824,6 +864,46 @@ class TestBridge(unittest.TestCase):
                                env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn(token, r.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_93_pair_via_stdin(self):
+        """Audit §4-M2: `trmx pair` can take the token on stdin, so it
+        never lands in shell history. Both the explicit --stdin form
+        and the no-argument form read one line from stdin; the token
+        itself is never echoed back on stdout."""
+        tmp = tempfile.mkdtemp(prefix="trmx-pairstdin-")
+        home = os.path.join(tmp, "home")
+        env = dict(os.environ, TRMX_HOME=home)
+        cli = str(HERE.parent / "trmx")
+        token = "stdin-test-token-0123456789abcdef"
+        token2 = "stdin-test-token-2-9876543210zyxw"
+        try:
+            r = subprocess.run([sys.executable, cli, "init"], env=env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run([sys.executable, cli, "pair", "--stdin"],
+                               env=env, input=token + "\n",
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn(token, r.stdout)
+            cfg = json.loads(Path(home, "bridge.json").read_text())
+            self.assertEqual(cfg["token"], token)
+            # no-argument form reads stdin too (here: a forced rotation)
+            r = subprocess.run([sys.executable, cli, "pair", "--force"],
+                               env=env, input=token2 + "\n",
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cfg = json.loads(Path(home, "bridge.json").read_text())
+            self.assertEqual(cfg["token"], token2)
+            # empty stdin is a loud failure, never a silent empty pair
+            r = subprocess.run([sys.executable, cli, "pair", "--stdin",
+                                "--force"],
+                               env=env, input="",
+                               capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(r.returncode, 0)
+            cfg = json.loads(Path(home, "bridge.json").read_text())
+            self.assertEqual(cfg["token"], token2)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1040,6 +1120,202 @@ class TestConfigAtomicity(unittest.TestCase):
         self.path.write_text("{torn json", encoding="utf-8")
         with self.assertRaises(SystemExit):
             self.trmx.Config(self.path).load()
+
+
+# ---- audit §4-M5: auth backoff is per-source, as PROTOCOL §1.3 promises ---
+
+class TestAuthBackoff(unittest.TestCase):
+    """Own bridge: 5 consecutive auth failures from one source refuse
+    FURTHER connections from that source — even with the right token —
+    for min(2^(n-5) * 2s, 60s); a fresh connection must NOT reset the
+    count (the old per-connection sleep did exactly that)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="trmx-backoff-")
+        cls.home = os.path.join(cls.tmp, "trmx-home")
+        os.makedirs(cls.home, exist_ok=True)
+        (Path(cls.home) / "bridge.json").write_text(json.dumps({}))
+        cls.port = free_port()
+        cls.bridge = BridgeProc(cls.home, cls.port)
+        cls.bridge.start()
+        cls.token = cls.bridge.token()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.bridge.term()
+        cls.bridge.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _get_info(self, token):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            hdrs = {"X-TRMX-Protocol": "1", "Connection": "close"}
+            if token is not None:
+                hdrs["Authorization"] = f"Bearer {token}"
+            conn.request("GET", "/v1/system/info", headers=hdrs)
+            resp = conn.getresponse()
+            raw = resp.read()
+            return resp.status, json.loads(raw) if raw else {}
+        finally:
+            conn.close()
+
+    def test_per_source_refusal_and_recovery(self):
+        # each failure on its OWN connection — per-connection counting
+        # would never accumulate these
+        for i in range(5):
+            s, body = self._get_info(f"wrong-token-{i}-0123456789abcdef")
+            self.assertEqual((s, body["error"]["code"]),
+                             (401, "AUTH_INVALID"))
+        # 6th attempt: refused outright for the 2s window — even the
+        # CORRECT token is refused while the window runs (spec §1.3)
+        s, body = self._get_info(self.token)
+        self.assertEqual((s, body["error"]["code"]), (429, "RATE_LIMITED"))
+        self.assertGreaterEqual(body["error"]["details"]["retry_after_s"], 1)
+        # after the window, the correct token succeeds (and resets)
+        deadline = time.time() + 10
+        s = 0
+        while time.time() < deadline:
+            s, _ = self._get_info(self.token)
+            if s == 200:
+                break
+            time.sleep(0.25)
+        self.assertEqual(s, 200)
+        # reset is real: one new failure is a plain 401 again, not a 429
+        s, body = self._get_info("wrong-token-again-0123456789")
+        self.assertEqual((s, body["error"]["code"]), (401, "AUTH_INVALID"))
+        s, _ = self._get_info(self.token)
+        self.assertEqual(s, 200)
+
+
+# ---- audit §5-M4: token rotation emits bridge.token_changed ----------------
+
+class TestTokenChangedEvent(unittest.TestCase):
+    """Own bridge + the real CLI pair path (same shape as
+    TestPairingLive): rotate the token under a RUNNING bridge while a
+    /v1/events subscriber is connected — the subscriber must learn of
+    the rotation so it can invalidate its cached token/state."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="trmx-tokchg-")
+        cls.home = os.path.join(cls.tmp, "trmx-home")
+        os.makedirs(cls.home, exist_ok=True)
+        cls.port = free_port()
+        cls.bridge = BridgeProc(cls.home, cls.port)
+        cls.bridge.start()
+        cls.token = cls.bridge.token()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.bridge.term()
+        cls.bridge.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_rotation_event_reaches_live_and_new_subscribers(self):
+        env = dict(os.environ, TRMX_HOME=self.home)
+        cli = str(HERE.parent / "trmx")
+        new_token = "rotated-test-token-0123456789abcdef"
+        sse = SSEClient(self.port, "/v1/events", self.token)
+        try:
+            r = subprocess.run([sys.executable, cli, "pair", new_token,
+                                "--force"],
+                               env=env, capture_output=True, text=True,
+                               timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            # the rotation is detected on the next authenticated request
+            conn = http.client.HTTPConnection("127.0.0.1", self.port,
+                                              timeout=10)
+            conn.request("GET", "/v1/system/info",
+                         headers={"Authorization": f"Bearer {new_token}",
+                                  "X-TRMX-Protocol": "1",
+                                  "Connection": "close"})
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+            self.assertEqual(resp.status, 200)
+            got = None
+            for ev, eid, data in sse.frames(10):
+                if ev == "bridge.token_changed":
+                    got = data
+                    break
+            self.assertIsNotNone(got,
+                                 "live subscriber must see the rotation")
+            self.assertEqual(got["type"], "rotated")
+            self.assertIn("at", got)
+            self.assertNotIn(new_token, json.dumps(got))
+            self.assertNotIn(self.token, json.dumps(got))
+        finally:
+            sse.close()
+        # a subscriber connecting AFTER the rotation (with the new
+        # token) is told as its first frame too — same pattern as
+        # bridge.lifecycle
+        sse2 = SSEClient(self.port, "/v1/events", new_token)
+        try:
+            got2 = None
+            for ev, eid, data in sse2.frames(10):
+                if ev == "bridge.token_changed":
+                    got2 = data
+                    break
+            self.assertIsNotNone(got2)
+            self.assertEqual(got2["type"], "rotated")
+        finally:
+            sse2.close()
+
+
+# ---- audit §4-H4: ~/.trmx/bin shadowing guard (Policy unit tests) ----------
+
+class TestPolicyShadowing(unittest.TestCase):
+    """System dirs are probed BEFORE ~/.trmx/bin: a dropped-in binary
+    can no longer shadow a system one, and the shadow attempt is
+    recorded as a warning. Binaries that exist ONLY in ~/.trmx/bin
+    (trmx-ai & friends) still resolve from there."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="trmx-policy-")
+        self.home = Path(self.tmp) / "trmx-home"
+        (self.home / "bin").mkdir(parents=True)
+        self.sysbin = Path(self.tmp) / "bin"   # $PREFIX stand-in's bin/
+        self.sysbin.mkdir()
+        sys.path.insert(0, str(HERE.parent))
+        import trmx_bridge_lib
+        self.lib = trmx_bridge_lib
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _exe(self, d: Path, name: str) -> Path:
+        p = d / name
+        p.write_text("#!/bin/sh\nexit 0\n")
+        p.chmod(0o755)
+        return p
+
+    def _policy(self) -> object:
+        pol = self.lib.Policy(self.home)
+        pol.termux = True
+        pol.prefix = Path(self.tmp)  # $PREFIX stand-in: prefix/bin = sysbin
+        return pol
+
+    def test_system_binary_wins_and_shadow_is_warned(self):
+        self._exe(self.sysbin, "wget")
+        self._exe(self.home / "bin", "wget")
+        pol = self._policy()
+        got = pol.resolve_binary("wget")
+        self.assertEqual(got, str(self.sysbin / "wget"))
+        self.assertTrue(any("wget" in w and "shadowed" in w
+                            for w in pol.shadow_warnings),
+                        pol.shadow_warnings)
+
+    def test_trmx_bin_only_binary_still_resolves(self):
+        self._exe(self.home / "bin", "trmx-ai")
+        pol = self._policy()
+        self.assertEqual(pol.resolve_binary("trmx-ai"),
+                         str(self.home / "bin" / "trmx-ai"))
+        self.assertEqual(pol.shadow_warnings, [])
+
+    def test_missing_binary_is_none(self):
+        pol = self._policy()
+        self.assertIsNone(pol.resolve_binary("no-such-binary-xyz"))
 
 
 if __name__ == "__main__":
