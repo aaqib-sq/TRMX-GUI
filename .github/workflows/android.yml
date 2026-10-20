@@ -43,6 +43,18 @@ jobs:
             echo "DEBUG_KEYSTORE_B64 not set — ephemeral debug signature"
           fi
 
+      # Evidence for the signature lock: the alias + fingerprint AGP
+      # will sign with. (Round 1 of the lock restored a PKCS12 store
+      # and AGP silently minted a fresh key instead — the APK's signer
+      # fingerprint is the only trustworthy check, see PR #62.)
+      - name: Show the debug keystore AGP will use
+        run: |
+          if [ -f ~/.android/debug.keystore ]; then
+            keytool -list -v -keystore ~/.android/debug.keystore \
+              -storepass android -alias androiddebugkey 2>&1 \
+              | grep -E 'Alias name|SHA256:' || true
+          fi
+
       - name: Spec conformance (Kotlin sources vs frozen contracts)
         run: python3 tests/spec_conformance.py
 
