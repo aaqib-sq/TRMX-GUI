@@ -84,6 +84,9 @@ fun ToolboxScreen(
         if (uri != null) onImportRecipe(uri)
     }
     var confirmInstall by remember { mutableStateOf<ToolStatus?>(null) }
+    // Recipe delete gets the same confirm as file delete (§1-H2):
+    // an accidental tap must not permanently remove a recipe.
+    var deleteTarget by remember { mutableStateOf<Recipe?>(null) }
     // Manual argv submission lives here (expert action, not a primary goal).
     var showSubmit by remember { mutableStateOf(false) }
 
@@ -173,7 +176,7 @@ fun ToolboxScreen(
                             Text(r.toolId, fontSize = 13.sp, color = P.TextMuted)
                         }
                         TextButton(onClick = { onShareRecipe(r) }) { Text("Share") }
-                        TextButton(onClick = { onDeleteRecipe(r.id) }) {
+                        TextButton(onClick = { deleteTarget = r }) {
                             Text("Delete", color = MaterialTheme.colorScheme.error) }
                     }
                 }
@@ -219,6 +222,24 @@ fun ToolboxScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmInstall = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    deleteTarget?.let { r ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete recipe “${r.title}”?") },
+            text = {
+                Text("This permanently removes the recipe. " +
+                    "There is no undo — this cannot be recovered.")
+            },
+            confirmButton = {
+                TextButton(onClick = { onDeleteRecipe(r.id); deleteTarget = null }) {
+                    Text("delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("keep it") }
             },
         )
     }
