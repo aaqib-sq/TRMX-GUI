@@ -36,21 +36,23 @@ jobs:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -n "$DEBUG_KEYSTORE_B64" ]; then
-            mkdir -p ~/.android
-            echo "$DEBUG_KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            mkdir -p "$GITHUB_WORKSPACE/.ci"
+            echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$GITHUB_WORKSPACE/.ci/debug.keystore"
+            echo "TRMX_DEBUG_KEYSTORE=$GITHUB_WORKSPACE/.ci/debug.keystore" >> "$GITHUB_ENV"
             echo "locked debug keystore restored"
           else
             echo "DEBUG_KEYSTORE_B64 not set — ephemeral debug signature"
           fi
 
-      # Evidence for the signature lock: the alias + fingerprint AGP
-      # will sign with. (Round 1 of the lock restored a PKCS12 store
-      # and AGP silently minted a fresh key instead — the APK's signer
-      # fingerprint is the only trustworthy check, see PR #62.)
-      - name: Show the debug keystore AGP will use
+      # Evidence for the signature lock: the alias + fingerprint the
+      # build will sign with (build.gradle.kts reads the path from
+      # TRMX_DEBUG_KEYSTORE). Rounds 1–2 restored to ~/.android and
+      # the build still minted a fresh key — the APK's own signer
+      # fingerprint, printed after the build below, is the verdict.
+      - name: Show the locked debug keystore
         run: |
-          if [ -f ~/.android/debug.keystore ]; then
-            keytool -list -v -keystore ~/.android/debug.keystore \
+          if [ -n "$TRMX_DEBUG_KEYSTORE" ] && [ -f "$TRMX_DEBUG_KEYSTORE" ]; then
+            keytool -list -v -keystore "$TRMX_DEBUG_KEYSTORE" \
               -storepass android -alias androiddebugkey 2>&1 \
               | grep -E 'Alias name|SHA256:' || true
           fi
@@ -61,6 +63,15 @@ jobs:
       - name: Build debug APK + run JVM unit tests
         working-directory: android
         run: gradle :app:assembleDebug :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Print the built APK's signer fingerprint
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs \
+              android/app/build/outputs/apk/debug/app-debug.apk 2>&1 \
+              | grep -iE 'SHA-256|SHA256' || true
+          fi
 
       - name: Upload debug APK
         if: always()
