@@ -403,6 +403,8 @@ data class AgentTaskStatus(
     val status: String = "running",   // running | awaiting_confirm | done | failed
     val awaiting_confirm: Boolean = false,
     val pending_action: AgentPendingAction? = null,
+    val summary: String? = null,       // set once the task is done
+    val error: String? = null,         // set once the task has failed
 )
 
 /** POST /v1/agent/tasks/{task_id}/confirm body. */

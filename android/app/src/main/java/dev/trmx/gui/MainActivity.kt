@@ -497,7 +497,10 @@ fun AppRoot(
                 ) { padding ->
                     when (screen) {
                         Screen.AGENT -> {
-                            LaunchedEffect(Unit) { agentVm.loadBackend() }
+                            LaunchedEffect(Unit) {
+                                agentVm.loadBackend()
+                                agentVm.restoreSession()
+                            }
                             AgentScreen(
                                 state = agentState,
                                 onInput = agentVm::inputChanged,
