@@ -605,19 +605,19 @@ BUNDLED_TOOL_SCHEMAS: list[dict] = [
     {
         "id": "http-server",
         "name": "Local HTTP Server",
-        "description": "Serve a folder over HTTP on the phone. Runs until stopped — cancel the job to stop the server.",
+        "description": "Serve a folder over HTTP only on this device (loopback). Runs until stopped — cancel the job to stop the server.",
         "binary": "python",
-        "risk_tier": "safe",
+        "risk_tier": "confirm",
         "progress_regex": r"(Serving HTTP on .+ port \d+)",   # port-binding line → detail
-        "fixed_argv": ["-m", "http.server"],
+        "fixed_argv": ["-m", "http.server", "--bind", "127.0.0.1"],
         "args": [
             {"name": "port", "label": "Port", "type": "int", "min": 1024, "max": 65535,
              "default": 8000, "required": False},
             {"name": "dir", "label": "Folder to serve", "type": "path", "path_kind": "dir",
-             "default": "~", "required": False},
+             "default": "~/downloads", "required": False, "argv": ["--directory", "{value}"]},
         ],
         "examples": [
-            {"label": "Serve home on 8000", "args": {"port": 8000, "dir": "~"}},
+            {"label": "Serve downloads on 8000", "args": {"port": 8000, "dir": "~/downloads"}},
         ],
     },
     # ---- system utility ------------------------------------------------------
