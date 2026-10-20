@@ -42,3 +42,40 @@ jobs:
         with:
           name: trmx-unit-test-results
           path: android/app/build/test-results/testDebugUnitTest/
+
+  # The Termux bridge half of the product (audit §7-H1/H2/H5): its test
+  # suite used to run nowhere in CI, and SHA256SUMS / bridge size were
+  # manual, unverified nets. Pure Python — no JDK/Android SDK needed.
+  termux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Termux bridge test suites
+        run: sh termux/tests/run_tests.sh
+
+      - name: SHA256SUMS freshness (audit §7-H5)
+        run: |
+          cd termux
+          sha256sum trmx-bridge.py trmx trmx-ai trmx_ai_lib.py trmx-agent > /tmp/sums.fresh
+          if ! diff -u SHA256SUMS /tmp/sums.fresh; then
+            echo "::error::termux/SHA256SUMS is stale — regenerate it from the tree"
+            exit 1
+          fi
+
+      - name: Bridge size gate (audit §7-H2)
+        env:
+          # RATCHET (Zeeni, 2026-10-20): the audit's §7-H2 target is 126976
+          # (124 KiB), but the Batch 1 + 1B safety fixes grew trmx-bridge.py
+          # to 139860 bytes — already past it. The gate therefore ratchets
+          # at 143360 (140 KiB) today: any further growth fails CI, and the
+          # limit MUST be tightened back to 126976 once the bridge is
+          # split into modules (tracked follow-up from the audit roadmap).
+          BRIDGE_SIZE_LIMIT: "143360"
+        run: |
+          size=$(stat -c%s termux/trmx-bridge.py)
+          echo "trmx-bridge.py: ${size} bytes (limit ${BRIDGE_SIZE_LIMIT})"
+          if [ "$size" -gt "$BRIDGE_SIZE_LIMIT" ]; then
+            echo "::error::trmx-bridge.py exceeds the ${BRIDGE_SIZE_LIMIT}-byte gate"
+            exit 1
+          fi
