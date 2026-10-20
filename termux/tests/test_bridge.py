@@ -739,6 +739,72 @@ class TestBridge(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestPairingLive(unittest.TestCase):
+    """Live pairing handshake end-to-end (audit §7-H4).
+
+    The exact flow that failed on device twice: a bridge boots on a
+    FRESH home and mints its own token (ensure_token), the client
+    learns that token through the pair-link hand-off the app actually
+    uses (trmx://pair?token=<redacted> — PairLink on the app side), then
+    probes: wrong/missing token → 401, paired token → 200. test_90/91
+    pair a token the TEST chose via the CLI; here the token is the
+    bridge's own minted one, fetched the way the app fetches it —
+    the path unit tests cannot cover.
+    """
+
+    def test_live_pairing_handshake(self):
+        tmp = tempfile.mkdtemp(prefix="trmx-pairing-live-")
+        home = os.path.join(tmp, "home")
+        os.makedirs(home)
+        port = free_port()
+        bridge = BridgeProc(home, port)
+        env = dict(os.environ, TRMX_HOME=home)
+        cli = str(HERE.parent / "trmx")
+
+        def probe(tok):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                headers = {"X-TRMX-Protocol": "1", "Connection": "close"}
+                if tok is not None:
+                    headers["Authorization"] = f"Bearer {tok}"
+                conn.request("GET", "/v1/system/info", headers=headers)
+                resp = conn.getresponse()
+                resp.read()
+                return resp.status
+            finally:
+                conn.close()
+
+        try:
+            bridge.start()
+            # 1. MINT: the bridge created its own token at first boot —
+            #    nothing has been paired yet.
+            minted = bridge.token()
+            self.assertTrue(minted, "bridge did not mint a token")
+            # 2. PROBE before any pairing, with wrong credentials: 401.
+            self.assertEqual(probe(None), 401)
+            self.assertEqual(
+                probe("pairing-live-wrong-token-0123456789"), 401)
+            # 3. PAIR: learn the token through the real hand-off — the
+            #    trmx://pair link the app's PairLink parses.
+            r = subprocess.run(
+                [sys.executable, cli, "pair-link", "--print"],
+                env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            link = r.stdout.strip()
+            self.assertTrue(link.startswith("trmx://pair?token="), link)
+            paired = link.split("token=", 1)[1].split("&")[0]
+            self.assertEqual(paired, minted,
+                             "hand-off must carry the bridge's minted token")
+            # 4. PROBE with the paired token: the handshake completes;
+            #    a wrong token still 401s — pairing did not loosen auth.
+            self.assertEqual(probe(paired), 200)
+            self.assertEqual(
+                probe("pairing-live-wrong-token-0123456789"), 401)
+        finally:
+            bridge.term()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def port_open(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.4):
