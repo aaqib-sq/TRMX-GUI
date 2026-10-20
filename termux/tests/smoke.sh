@@ -54,7 +54,7 @@ pass "401 AUTH_REQUIRED without token"
 step "4. submit a streaming job and follow it live"
 SUBMIT=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-TRMX-Protocol: 1" \
      -H "Content-Type: application/json" \
-     -d '{"type":"argv","argv":["sh","-c","for i in 1 2 3 4 5; do echo line-$i; sleep 0.3; done"],"name":"smoke stream"}' \
+     -d '{"type":"argv","confirm":true,"argv":["sh","-c","for i in 1 2 3 4 5; do echo line-$i; sleep 0.3; done"],"name":"smoke stream"}' \
      "http://127.0.0.1:$PORT/v1/jobs")
 JOB=$(printf '%s' "$SUBMIT" | python3 -c "import json,sys; print(json.load(sys.stdin)['job_id'])")
 [ -n "$JOB" ] || fail "submit"
@@ -73,7 +73,7 @@ pass "stream ended with COMPLETED terminal frame"
 step "5. submit a long job, then cancel it"
 SUBMIT=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-TRMX-Protocol: 1" \
      -H "Content-Type: application/json" \
-     -d '{"type":"argv","argv":["sleep","120"],"name":"smoke cancel"}' \
+     -d '{"type":"argv","confirm":true,"argv":["sleep","120"],"name":"smoke cancel"}' \
      "http://127.0.0.1:$PORT/v1/jobs")
 JOB2=$(printf '%s' "$SUBMIT" | python3 -c "import json,sys; print(json.load(sys.stdin)['job_id'])")
 sleep 0.5
@@ -90,7 +90,7 @@ pass "job cancelled (reason: $(jget "$TMP/job2.json" "d['cancel_reason']"))"
 step "6. crash the bridge (SIGKILL), restart, verify reconciliation"
 SUBMIT=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-TRMX-Protocol: 1" \
      -H "Content-Type: application/json" \
-     -d '{"type":"argv","argv":["sleep","120"],"name":"smoke adopt"}' \
+     -d '{"type":"argv","confirm":true,"argv":["sleep","120"],"name":"smoke adopt"}' \
      "http://127.0.0.1:$PORT/v1/jobs")
 JOB3=$(printf '%s' "$SUBMIT" | python3 -c "import json,sys; print(json.load(sys.stdin)['job_id'])")
 sleep 0.5

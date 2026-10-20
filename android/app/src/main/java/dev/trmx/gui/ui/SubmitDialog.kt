@@ -4,6 +4,14 @@ package dev.trmx.gui.ui
  * New-job dialog. The argv editor is deliberately line-based — one line =
  * one argument. There is no shell parsing, quoting or escaping: no
  * injection surface by construction (argv-first, ADR-001).
+ *
+ * Raw argv always runs at tier "destructive" (PROTOCOL §3.2, audit
+ * §4-H3): "Run" opens a second-stage "Run this command?" confirmation —
+ * the same flow tool submits use for confirm/destructive tiers — which
+ * additionally shows the destructive-pattern warning when the argv
+ * matches the agent's verb list (SubmitValidator.looksDestructive).
+ * Only that confirmation invokes onSubmit, and AppViewModel marks the
+ * request confirm=true.
  */
 
 import androidx.compose.foundation.layout.Arrangement
@@ -14,10 +22,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.trmx.gui.SubmitFormState
+import dev.trmx.gui.job.SubmitValidator
 
 @Composable
 fun SubmitDialog(
@@ -29,6 +42,10 @@ fun SubmitDialog(
     onSubmit: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var confirmRun by remember { mutableStateOf(false) }
+    val argv = remember(state.argvText) { SubmitValidator.parseArgvText(state.argvText) }
+    val destructive = remember(argv) { SubmitValidator.looksDestructive(argv) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New job") },
@@ -71,7 +88,7 @@ fun SubmitDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onSubmit, enabled = !state.submitting) {
+            TextButton(onClick = { confirmRun = true }, enabled = !state.submitting) {
                 Text(if (state.submitting) "Submitting…" else "Run")
             }
         },
@@ -79,4 +96,34 @@ fun SubmitDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
+
+    // second stage — raw argv is tier destructive (§3.2), so it gets the
+    // same explicit confirmation as a destructive tool submit
+    if (confirmRun) {
+        AlertDialog(
+            onDismissRequest = { confirmRun = false },
+            title = { Text("Run this command?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "The phone will execute exactly these arguments — " +
+                            "a raw command runs with no tool safety net:")
+                    Text(argv.joinToString("\n"), fontFamily = FontFamily.Monospace)
+                    if (destructive) {
+                        Text(
+                            "This matches a destructive pattern — it can " +
+                                "delete, kill or overwrite. Double-check " +
+                                "every argument before running.",
+                            color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmRun = false; onSubmit() }) { Text("run it") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRun = false }) { Text("cancel") }
+            },
+        )
+    }
 }

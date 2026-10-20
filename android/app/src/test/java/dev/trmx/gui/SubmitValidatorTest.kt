@@ -63,4 +63,21 @@ class SubmitValidatorTest {
         // CRLF tolerated
         assertEquals(listOf("a", "b"), SubmitValidator.parseArgvText("a\r\nb"))
     }
+
+    @Test
+    fun `destructive verbs are caught - same list as the agent loop`() {
+        // verb present anywhere in the argv text -> destructive warning
+        assertTrue(SubmitValidator.looksDestructive(listOf("rm", "-rf", "~/x")))
+        assertTrue(SubmitValidator.looksDestructive(listOf("sh", "-c", "kill 1234")))
+        assertTrue(SubmitValidator.looksDestructive(listOf("dd", "if=/dev/zero", "of=/dev/x")))
+        // "git clean -fdx" is NOT in the agent's verb list (audit §4-M4 is a
+        // known gap — the same gap is mirrored here, not papered over)
+        assertTrue(!SubmitValidator.looksDestructive(listOf("git", "clean", "-fdx")))
+        // case-insensitive, matches the agent's DESTRUCTIVE_RE
+        assertTrue(SubmitValidator.looksDestructive(listOf("KILL", "-9", "1234")))
+        // partial words are NOT verbs
+        assertTrue(!SubmitValidator.looksDestructive(listOf("ffmpeg", "-i", "in.mkv", "out.mp4")))
+        assertTrue(!SubmitValidator.looksDestructive(listOf("git", "clone", "https://example.com/r")))
+        assertTrue(!SubmitValidator.looksDestructive(listOf("deletesong", "x")))
+    }
 }
