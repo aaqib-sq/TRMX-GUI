@@ -7,7 +7,8 @@ configured LLM backend (same ai.json as trmx-ai, via trmx_ai_lib), and
 executes a FIXED tool menu against the bridge's local authenticated API.
 
 Stdout is the event stream — one JSON object per line:
-  backend / plan / action / result / confirm-needed / done / failed
+  backend / plan / action / result / confirm-needed / confirm-expired /
+  done / failed
 The app renders it from the job's output stream (GET /v1/jobs/{id}/output).
 
 Trust model (same spirit as ADR-014): the model output is UNTRUSTED —
@@ -49,9 +50,10 @@ TRMX_AGENT_VERSION = "0.1.0"
 
 MAX_STEPS = int(os.environ.get("TRMX_AGENT_MAX_STEPS", "25"))
 TASK_TIMEOUT_S = int(os.environ.get("TRMX_AGENT_TASK_TIMEOUT_S", "1800"))
-CONFIRM_TIMEOUT_S = 600
+CONFIRM_TIMEOUT_S = int(os.environ.get("TRMX_AGENT_CONFIRM_TIMEOUT_S", "600"))
 STEP_JOB_WAIT_S = 1500
 MAX_HISTORY_CHARS = 6000
+HISTORY_TOOL_FULL_CHARS = 4000   # last tool output kept (nearly) full
 MAX_ARG_BYTES = 8000
 
 # Second net under the tool risk_tier check: verbs that always confirm.
@@ -275,17 +277,31 @@ def validate_action(obj: dict) -> dict:
     return obj
 
 
-def is_destructive(tool: str, args: dict, describe: str, bridge: Bridge) -> str | None:
-    """Why this action needs confirmation, or None if it is safe."""
+def is_destructive(tool: str, args: dict, describe: str, bridge: Bridge,
+                   cache: dict | None = None) -> str | None:
+    """Why this action needs confirmation, or None if it is safe.
+
+    `cache` (audit §2-M2) maps tool id -> risk_tier for ONE task run:
+    a hit answers the risk check with no live bridge round-trip, a miss
+    fetches once and is then cached. Only successful fetches are cached
+    — a transient bridge blip still fails closed for that step, but is
+    not remembered as the tool's tier. The caller owns the cache's
+    lifetime; it must never outlive a single task run.
+    """
     if DESTRUCTIVE_RE.search(describe) or DESTRUCTIVE_RE.search(
             json.dumps(args, ensure_ascii=False)):
         return "destructive"
     if tool == "submit_tool":
-        try:
-            info = bridge.check("GET", f"/v1/tools/{args['tool']}")
-        except AgentError:
-            return "risk-tier"  # unknown tool: fail closed
-        tier = info.get("schema", {}).get("risk_tier", "safe")
+        tid = args["tool"]
+        tier = cache.get(tid) if cache is not None else None
+        if tier is None:
+            try:
+                info = bridge.check("GET", f"/v1/tools/{tid}")
+            except AgentError:
+                return "risk-tier"  # unknown tool: fail closed
+            tier = info.get("schema", {}).get("risk_tier", "safe")
+            if cache is not None:
+                cache[tid] = tier
         if tier in ("confirm", "destructive"):
             return "risk-tier"
     return None
@@ -338,7 +354,10 @@ class Agent:
         if not isinstance(self.instruction, str) or not self.instruction.strip():
             raise AgentError("task has no instruction")
         self.bridge = Bridge(home)
-        self.history: list[str] = []
+        self.history: list[dict] = []
+        # Per-run risk-tier cache (§2-M2): seeded from the tool list in
+        # run(), lives and dies with this Agent — never shared across tasks.
+        self._risk_cache: dict[str, str] = {}
         self.step = 0
         self.deadline = time.monotonic() + TASK_TIMEOUT_S
         self.child_job_id: str | None = None
@@ -470,8 +489,40 @@ class Agent:
     def _decision_path(self) -> Path:
         return self.home / "agent" / "decisions" / f"{self.task_id}.json"
 
+    # -- history (working set, audit §2-M1) ------------------------
+
+    def _history_add(self, text: str, summary: str | None = None,
+                     tool: bool = False) -> None:
+        self.history.append({"text": text,
+                             "summary": text if summary is None else summary,
+                             "tool": tool})
+
+    def _record_tool_result(self, describe: str, result: str) -> None:
+        """History is a working set, not a log: the LAST tool output is
+        kept (nearly) full — the next step usually builds on it — while
+        older tool outputs collapse to one-line summaries when a newer
+        tool result lands. Before this, every step was cut to a
+        200-char excerpt and the model guessed at anything older."""
+        full = result[-HISTORY_TOOL_FULL_CHARS:]
+        one_line = " ".join(result.split())[:160]
+        self._history_add(
+            f"step {self.step}: {describe[:120]} → {full}",
+            summary=f"step {self.step}: {describe[:80]} → {one_line}",
+            tool=True)
+
+    def _history_text(self) -> str:
+        entries = self.history[-8:]
+        last_tool = max((i for i, e in enumerate(entries) if e["tool"]),
+                        default=-1)
+        return "\n".join(
+            e["text"] if (not e["tool"] or i == last_tool) else e["summary"]
+            for i, e in enumerate(entries))
+
     def ask_confirm(self, tool: str, args: dict, describe: str,
-                    why: str) -> bool:
+                    why: str) -> bool | None:
+        """Pause for the user's allow/deny. True = allow, False = deny,
+        None = the wait timed out (silence is denial, but the caller
+        reports it as an expiry, not as a user denial — §2-M5)."""
         pending = {"task_id": self.task_id, "step": self.step,
                    "tool": tool, "args": args, "describe": describe,
                    "why": why, "requested_at": time.strftime(
@@ -502,7 +553,13 @@ class Agent:
             pp.unlink(missing_ok=True)
         except OSError:
             pass
-        return False  # silence is denial
+        # §2-M5: a timeout is NOT a denial. Emit a distinct event so the
+        # app replaces the (now unanswerable) confirm card with "timed
+        # out — nothing was done", instead of the user later tapping the
+        # stale card and getting a second, contradictory message.
+        emit({"t": "confirm-expired", "step": self.step, "tool": tool,
+              "describe": describe, "why": why})
+        return None  # silence is denial, but reported as an expiry
 
     # -- main loop ------------------------------------------------
 
@@ -556,10 +613,17 @@ class Agent:
             f"[{s.get('risk_tier', 'safe')}])"
             for t in tools for s in [t.get("schema", {})]
             if s.get("id") != "agent") or "(none)"
+        # §2-M2: seed this run's risk cache from the tool list just
+        # fetched for the prompt — per-step risk checks then need no
+        # live bridge round-trip (and a transient blip can no longer
+        # force a false confirm on a safe tool mid-task).
+        self._risk_cache = {
+            s["id"]: s.get("risk_tier", "safe")
+            for t in tools for s in [t.get("schema", {})] if s.get("id")}
 
         while self.step < MAX_STEPS and time.monotonic() < self.deadline:
             self.step += 1
-            history = "\n".join(self.history[-8:]) or "(nothing yet)"
+            history = self._history_text() or "(nothing yet)"
             prompt = PROMPT_TEMPLATE.format(
                 tools=tools_line, instruction=self.instruction, history=history)
             note(f"step {self.step}: asking the model -- on this phone a "
@@ -592,7 +656,7 @@ class Agent:
                                      f"{self.step}: {e}")
                 note(f"step {self.step}: the model's reply was not valid "
                      "JSON -- asking again")
-                self.history.append(
+                self._history_add(
                     "system: your last reply was not one valid JSON object. "
                     "Reply with exactly one JSON object in the required "
                     "shape, no prose, no markdown fences.")
@@ -601,8 +665,8 @@ class Agent:
             if op == "say":
                 emit({"t": "result", "step": self.step, "ok": True,
                       "excerpt": action["text"]})
-                self.history.append(f"step {self.step}: said "
-                                    f"“{action['text'][:120]}”")
+                self._history_add(f"step {self.step}: said "
+                                  f"“{action['text'][:120]}”")
                 continue
             if op == "done":
                 emit({"t": "done", "summary": action["summary"]})
@@ -616,9 +680,15 @@ class Agent:
                                     action["describe"])
             emit({"t": "plan", "step": self.step, "thought": describe,
                   "describe": describe})
-            why = is_destructive(tool, args, describe, self.bridge)
+            why = is_destructive(tool, args, describe, self.bridge,
+                                 self._risk_cache)
             if why:
-                if not self.ask_confirm(tool, args, describe, why):
+                answer = self.ask_confirm(tool, args, describe, why)
+                if answer is None:
+                    return self.fail(
+                        f"confirmation timed out at step {self.step} — "
+                        f"nothing was done: {describe}")
+                if not answer:
                     return self.fail(
                         f"action denied by user at step {self.step}: {describe}")
             emit({"t": "action", "step": self.step, "tool": tool,
@@ -640,10 +710,10 @@ class Agent:
             excerpt = result[-1500:]
             emit({"t": "result", "step": self.step,
                   "ok": not result.startswith("FAILED"), "excerpt": excerpt})
-            self.history.append(f"step {self.step}: {describe[:120]} → "
-                                f"{excerpt[:200]}")
-            if len("\n".join(self.history)) > MAX_HISTORY_CHARS:
-                self.history = self.history[-6:]
+            self._record_tool_result(describe, result)
+            while len(self._history_text()) > MAX_HISTORY_CHARS \
+                    and len(self.history) > 1:
+                self.history.pop(0)
             if self.consec_failures >= 2:
                 return self.fail("two consecutive action failures — stopping")
         if self.step >= MAX_STEPS:

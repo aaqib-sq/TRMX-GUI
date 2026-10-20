@@ -18,8 +18,10 @@ clear: reading returns only `api_key_set`, saving accepts *keep*
 fully supported — the file is the source of truth, the app is just a
 nicer editor.
 
-The file is written automatically (mode `cli`, documented template) the
-first time `trmx-ai` runs without one. Keep it private — it may hold an
+The file is written automatically (documented template; default mode
+`http_api` — the local GGUF / llama-server setup: `openai_compatible`
+on `127.0.0.1:8080`, model `local-gguf`) the first time `trmx-ai`
+runs without one. Keep it private — it may hold an
 API key: `chmod 600 ~/.trmx/ai.json` (the wrapper does this for the
 template it creates).
 

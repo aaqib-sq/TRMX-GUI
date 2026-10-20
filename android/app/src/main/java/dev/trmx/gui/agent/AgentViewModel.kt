@@ -330,6 +330,12 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
         for (e in events) applyEvent(e)
     }
 
+    /** "Step 3 · " prefix for step rows (audit §2-M4) — without it
+     *  neither the user nor anyone helping them can map the chat to
+     *  the step the agent is on. */
+    private fun stepPrefix(step: Int): String =
+        if (step > 0) "Step $step · " else ""
+
     private fun applyEvent(e: AgentEvent) {
         when (e) {
             is AgentEvent.Backend -> addRow(AgentRow(
@@ -338,27 +344,40 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                     (if (e.model.isNotEmpty()) " · ${e.model}" else "")))
             is AgentEvent.Plan -> addRow(AgentRow(
                 AgentRowKind.THINKING,
-                title = "Thinking…",
+                title = stepPrefix(e.step) + "Thinking…",
                 detail = e.thought.ifEmpty { e.describe.ifEmpty { null } },
-                // step kept out of the row — the VM doesn't need it
             ))
             is AgentEvent.Action -> addRow(AgentRow(
                 AgentRowKind.DOING,
-                title = "I'm about to do this: ${e.describe}"))
+                title = stepPrefix(e.step) +
+                    "I'm about to do this: ${e.describe}"))
             is AgentEvent.Result -> addRow(if (e.ok) AgentRow(
                 AgentRowKind.RESULT_OK,
-                title = if (e.excerpt.isNotEmpty()) e.excerpt else "Done")
+                title = stepPrefix(e.step) +
+                    (if (e.excerpt.isNotEmpty()) e.excerpt else "Done"))
             else AgentRow(
                 AgentRowKind.RESULT_FAIL,
-                title = if (e.excerpt.isNotEmpty()) e.excerpt else "Failed"))
+                title = stepPrefix(e.step) +
+                    (if (e.excerpt.isNotEmpty()) e.excerpt else "Failed")))
             is AgentEvent.ConfirmNeeded -> {
                 addRow(AgentRow(
                     AgentRowKind.DOING,
-                    title = "Permission needed: ${e.describe}"))
+                    title = stepPrefix(e.step) +
+                        "Permission needed: ${e.describe}"))
                 _state.update {
                     it.copy(confirm = AgentConfirm(
                         describe = e.describe, tool = e.tool, why = e.why))
                 }
+            }
+            is AgentEvent.ConfirmExpired -> {
+                // The wait timed out: drop the (now unanswerable) card
+                // so a late tap cannot produce a second, contradictory
+                // "nothing was waiting" message (§2-M5).
+                _state.update { it.copy(confirm = null) }
+                addRow(AgentRow(
+                    AgentRowKind.NOTE,
+                    title = stepPrefix(e.step) +
+                        "Timed out waiting — nothing was done."))
             }
             is AgentEvent.Done -> {
                 _state.update { it.copy(active = false, confirm = null) }
