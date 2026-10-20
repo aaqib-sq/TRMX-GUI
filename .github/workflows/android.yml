@@ -22,6 +22,27 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # Locked debug signature: PR #28 removed the committed debug
+      # keystore (audit §4 — signing material does not belong in a
+      # public repo), which left every CI run signing with a fresh
+      # ephemeral key — and Android refuses to update-install an APK
+      # whose signature changed, so the device needed an uninstall
+      # before every test build. The same keystore now lives in the
+      # DEBUG_KEYSTORE_B64 repo secret (never in the tree); restoring
+      # it here makes every CI build share ONE debug signature.
+      # Without the secret the build still works, just ephemerally.
+      - name: Restore the locked debug keystore (stable APK signature)
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            echo "$DEBUG_KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "locked debug keystore restored"
+          else
+            echo "DEBUG_KEYSTORE_B64 not set — ephemeral debug signature"
+          fi
+
       - name: Spec conformance (Kotlin sources vs frozen contracts)
         run: python3 tests/spec_conformance.py
 
