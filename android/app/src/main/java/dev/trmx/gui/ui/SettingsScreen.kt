@@ -27,8 +27,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import dev.trmx.gui.AiConfigState
 import dev.trmx.gui.wizard.RepairState
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -47,7 +45,6 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     LaunchedEffect(Unit) { onLoadAiConfig() }
-    val clipboard = LocalClipboardManager.current
 
     Column(modifier = modifier.fillMaxSize()) {
         TrmxTopBar(title = "Settings", onBack = onBack)
@@ -169,12 +166,9 @@ fun SettingsScreen(
                                     "ChatterUI use works, no copy needed.",
                                  style = MaterialTheme.typography.labelSmall,
                                  color = P.TextMuted)
-                            TrmxButton(
+                            CopyButton(
                                 label = "Copy the server command",
-                                onClick = {
-                                    clipboard.setText(AnnotatedString(
-                                        "llama-server -m MODEL.gguf --port 8080"))
-                                },
+                                textToCopy = "llama-server -m MODEL.gguf --port 8080",
                                 kind = TrmxButtonKind.Secondary)
                         }
                     }

@@ -10,6 +10,7 @@ package dev.trmx.gui.ui
  *   TrmxButton    — Primary (white) / Secondary (outline) / Ghost / Danger
  *   TrmxTextField — dark input field, tokens + FieldShape
  *   ActionFlowRow — action cluster that wraps whole buttons, never squeezes
+ *   CopyButton    — copy action with "Copied ✓" feedback on every tap
  *   CopyableId    — monospace id that copies on tap
  */
 
@@ -44,6 +45,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -58,6 +64,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trmx.gui.ui.Tokens.Palette as P
+import kotlinx.coroutines.delay
 
 // ---- TrmxTopBar ------------------------------------------------------------
 
@@ -345,14 +352,59 @@ fun TrmxNavItemColors() = androidx.compose.material3.NavigationBarItemDefaults.c
     indicatorColor = P.AccentContainer,
 )
 
+// ---- Copy feedback ----------------------------------------------------------
+
+/**
+ * The copy button (audit §1-M1): every tap visibly confirms itself —
+ * the label flips to "Copied ✓" for ~1.5 s, so a tap never reads as
+ * broken. One composable, used by every copy action in the app.
+ */
+@Composable
+fun CopyButton(
+    label: String,
+    textToCopy: String,
+    kind: TrmxButtonKind = TrmxButtonKind.Primary,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
+    TrmxButton(
+        label = if (copied) "Copied ✓" else label,
+        onClick = {
+            clipboard.setText(AnnotatedString(textToCopy))
+            copied = true
+        },
+        kind = kind,
+        enabled = enabled,
+        modifier = modifier,
+    )
+}
+
 // ---- CopyableId -------------------------------------------------------------
 
-/** Small monospace id line that copies itself on tap. */
+/** Small monospace id line that copies itself on tap (with feedback). */
 @Composable
 fun CopyableId(id: String, modifier: Modifier = Modifier) {
     val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
     Row(
-        modifier = modifier.clickable { clipboard.setText(AnnotatedString(id)) },
+        modifier = modifier.clickable {
+            clipboard.setText(AnnotatedString(id))
+            copied = true
+        },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -362,8 +414,14 @@ fun CopyableId(id: String, modifier: Modifier = Modifier) {
             color = P.TextMuted,
         )
         Spacer(Modifier.width(Sp.xs))
-        Icon(Icons.Outlined.ContentCopy, contentDescription = "copy",
-             tint = P.TextMuted, modifier = Modifier.size(12.dp))
+        if (copied) {
+            Text("Copied ✓",
+                 fontSize = 11.sp,
+                 color = P.Accent)
+        } else {
+            Icon(Icons.Outlined.ContentCopy, contentDescription = "copy",
+                 tint = P.TextMuted, modifier = Modifier.size(12.dp))
+        }
     }
 }
 

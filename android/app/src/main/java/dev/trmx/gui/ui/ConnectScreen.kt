@@ -50,8 +50,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,7 +74,6 @@ fun ConnectScreen(
     onStartPolling: () -> Unit,
     onStopPolling: () -> Unit,
 ) {
-    val clipboard = LocalClipboardManager.current
     var helpOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
@@ -145,9 +142,9 @@ fun ConnectScreen(
             Spacer(Modifier.height(Sp.s))
             MonoBox(INSTALL_LINE)
             Spacer(Modifier.height(Sp.s))
-            TrmxButton(
+            CopyButton(
                 label = "Copy the line",
-                onClick = { clipboard.setText(AnnotatedString(INSTALL_LINE)) },
+                textToCopy = INSTALL_LINE,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -178,9 +175,9 @@ fun ConnectScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(Sp.s))
-            TrmxButton(
+            CopyButton(
                 label = "Copy the connect command",
-                onClick = { clipboard.setText(AnnotatedString(PAIR_LINK_CMD)) },
+                textToCopy = PAIR_LINK_CMD,
                 kind = if (state.bridgeSeen) TrmxButtonKind.Primary
                        else TrmxButtonKind.Secondary,
                 enabled = state.bridgeSeen,
@@ -224,23 +221,23 @@ fun ConnectScreen(
                 val pairLine = "~/.trmx/trmx pair --force -- $manualToken"
                 MonoBox(pairLine)
                 Spacer(Modifier.height(Sp.s))
-                TrmxButton(
+                CopyButton(
                     label = "Copy the pair line",
-                    onClick = { clipboard.setText(AnnotatedString(pairLine)) },
+                    textToCopy = pairLine,
                     kind = TrmxButtonKind.Secondary,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(Sp.s))
-                TrmxButton(
+                CopyButton(
                     label = "Copy token only",
-                    onClick = { clipboard.setText(AnnotatedString(manualToken)) },
+                    textToCopy = manualToken,
                     kind = TrmxButtonKind.Secondary,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(Sp.s))
-                TrmxButton(
+                CopyButton(
                     label = "Copy the status command",
-                    onClick = { clipboard.setText(AnnotatedString(STATUS_CMD)) },
+                    textToCopy = STATUS_CMD,
                     kind = TrmxButtonKind.Secondary,
                     modifier = Modifier.fillMaxWidth(),
                 )
