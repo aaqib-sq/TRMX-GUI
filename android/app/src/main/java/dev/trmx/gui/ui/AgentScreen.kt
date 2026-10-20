@@ -234,6 +234,17 @@ private fun AgentRowCard(row: AgentRow) {
                  color = detailColor,
                  modifier = Modifier.padding(top = 2.dp))
         }
+        // Copy (user request, 2026-10-20): every answer/step card can be
+        // copied like in a chat app — the FULL uncapped text, not the
+        // 300-char display cap. Uses the design system's CopyButton
+        // ("Copied ✓" feedback built in).
+        CopyButton(
+            label = "Copy",
+            textToCopy = listOfNotNull(row.title, row.detail)
+                .joinToString("\n"),
+            kind = TrmxButtonKind.Ghost,
+            modifier = Modifier.padding(top = Sp.xs),
+        )
     }
 }
 
