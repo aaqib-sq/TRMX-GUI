@@ -54,13 +54,8 @@ import androidx.core.content.pm.ShortcutManagerCompat
 import dev.trmx.gui.files.FileMime
 import dev.trmx.gui.model.ToolStatus
 import dev.trmx.gui.model.ToolSubmitRequest
-import dev.trmx.gui.store.ChainStore
 import dev.trmx.gui.store.Recipe
 import dev.trmx.gui.store.RecipeStore
-import dev.trmx.gui.tools.ChainDef
-import dev.trmx.gui.tools.ChainPlanner
-import dev.trmx.gui.tools.ChainRunState
-import dev.trmx.gui.tools.ChainStep
 import dev.trmx.gui.tools.FieldValue
 import dev.trmx.gui.tools.Artifact
 import dev.trmx.gui.tools.Artifacts
@@ -173,7 +168,6 @@ data class ToolFormState(
     val error: String? = null,
     val notice: String? = null,
     val pathArg: String? = null,        // arg being picked in the Files browser
-    val stepIndex: Int? = null,         // set = editing a chain step, not submitting
 )
 
 /** Artifacts of the opened (completed) job — Phase 9.5. */
@@ -182,15 +176,6 @@ data class ArtifactsState(
     val artifacts: List<Artifact> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
-)
-
-/** Chains: saved defs + the open builder + the live run. */
-data class ChainsState(
-    val defs: List<ChainDef> = emptyList(),
-    val editing: ChainDef? = null,
-    val run: ChainRunState? = null,
-    val error: String? = null,
-    val notice: String? = null,
 )
 
 data class JobDetailState(
@@ -221,7 +206,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _files = MutableStateFlow(FileBrowserState())
 
     private val recipeStore = RecipeStore(getApplication<Application>().filesDir)
-    private val chainStore = ChainStore(getApplication<Application>().filesDir)
 
     private val _tools = MutableStateFlow(ToolsState())
     val tools = _tools.asStateFlow()
@@ -238,15 +222,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _services = MutableStateFlow(ServicesState())
     val services = _services.asStateFlow()
 
-    private val _chains = MutableStateFlow(ChainsState())
-    val chains = _chains.asStateFlow()
-
     private val _recipes = MutableStateFlow<List<Recipe>>(emptyList())
     val recipes = _recipes.asStateFlow()
 
     init {
         _recipes.value = recipeStore.list()
-        _chains.update { it.copy(defs = chainStore.list()) }
+        // Chains were removed (ADR-010 amendment, 2026-10-20 audit §6-H1);
+        // drop any chains.json an older build left behind.
+        runCatching { File(getApplication<Application>().filesDir,
+                           "chains.json").delete() }
         refreshShortcuts()
     }
 
@@ -256,7 +240,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** tool jobs submitted this session: jobId -> outputs/outdir (Ph 9.5) */
     private val toolJobMeta = HashMap<String, ToolJobMeta>()
 
-    private var chainRunner: Job? = null
     private var installWatch: String? = null   // job_id of a running pkg install
     private var aiWatch: String? = null        // job_id of a running trmx-ai job
     val files = _files.asStateFlow()
@@ -281,7 +264,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _output.value = null
         _files.value = FileBrowserState()
         _toolForm.value = ToolFormState()
-        _chains.value = ChainsState()
         _recipes.value = recipeStore.list()
         _artifacts.value = ArtifactsState()
     }
@@ -589,7 +571,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
 
-    // ---- tools, recipes & chains (Phase 9) ------------------------------
+    // ---- tools & recipes (Phase 9) --------------------------------------
 
     fun loadTools() {
         if (_tools.value.loading) return
@@ -661,7 +643,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- dynamic form ------------------------------------------------------
 
-    fun openToolForm(toolId: String, stepIndex: Int? = null,
+    fun openToolForm(toolId: String,
                      preset: Map<String, JsonElement>? = null) {
         val schema = _tools.value.tools.firstOrNull { it.schema.id == toolId }?.schema
         if (schema == null) {
@@ -676,7 +658,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 FieldValue(bool = text == "true" || text == "1") else FieldValue(text = text ?: ""))
         }
         _toolForm.value = ToolFormState(schema = schema, values = values,
-                                      stepIndex = stepIndex, touched = preset?.keys?.toSet() ?: emptySet())
+                                      touched = preset?.keys?.toSet() ?: emptySet())
     }
 
     fun closeToolForm() { _toolForm.value = ToolFormState() }
@@ -734,10 +716,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val args = FormEngine.argsPayload(schema, f.values)
-        if (f.stepIndex != null) {          // chain-step edit mode
-            applyStepArgs(f.stepIndex, args)
-            return
-        }
         // One live job per tool. The Run button used to stack duplicates
         // without a word — for a server-style tool that is a port war
         // (device lesson, 2026-10-19: a pile of llama-server jobs racing
@@ -1030,7 +1008,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun saveServiceFromForm() {
         val f = _toolForm.value
         val schema = f.schema ?: return
-        if (f.stepIndex != null) return
         if (!FormEngine.isSubmittable(schema, f.values)) {
             _toolForm.update { it.copy(error = "fill the required fields first",
                                        touched = f.values.keys) }
@@ -1194,180 +1171,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             if (infos.isNotEmpty()) ShortcutManagerCompat.addDynamicShortcuts(context, infos)
         }
-    }
-
-    // ---- chains ---------------------------------------------------------------
-
-    fun newChainBuilder() {
-        _chains.update {
-            it.copy(editing = ChainDef(RecipeStore.newId(), "", emptyList(),
-                                       System.currentTimeMillis()),
-                    error = null, notice = null)
-        }
-    }
-
-    fun editChainDef(id: String) {
-        _chains.update { it.copy(editing = it.defs.firstOrNull { d -> d.id == id }) }
-    }
-
-    fun setChainTitle(t: String) {
-        _chains.update { s -> s.editing?.let { s.copy(editing = it.copy(title = t.take(80))) } ?: s }
-    }
-
-    fun addChainStep(toolId: String) {
-        _chains.update { s ->
-            val def = s.editing ?: return@update s
-            s.copy(editing = def.copy(steps = def.steps + ChainStep(toolId = toolId)))
-        }
-    }
-
-    fun removeChainStep(i: Int) {
-        _chains.update { s ->
-            val def = s.editing ?: return@update s
-            if (i !in def.steps.indices) return@update s
-            s.copy(editing = def.copy(
-                steps = def.steps.filterIndexed { idx, _ -> idx != i }))
-        }
-    }
-
-    fun editChainStep(i: Int) {
-        val def = _chains.value.editing ?: return
-        val step = def.steps.getOrNull(i) ?: return
-        openToolForm(step.toolId, stepIndex = i, preset = step.args)
-    }
-
-    private fun applyStepArgs(i: Int, args: Map<String, JsonElement>) {
-        _toolForm.value = ToolFormState()
-        _chains.update { s ->
-            val def = s.editing ?: return@update s
-            if (i !in def.steps.indices) return@update s
-            s.copy(editing = def.copy(
-                steps = def.steps.toMutableList().also { st -> st[i] = st[i].copy(args = args) }))
-        }
-    }
-
-    fun saveChainDef() {
-        val def = _chains.value.editing ?: return
-        if (def.title.isBlank()) {
-            _chains.update { it.copy(error = "give the chain a title first") }; return
-        }
-        val schemas = _tools.value.tools.associate { it.schema.id to it.schema }
-        val errs = ChainPlanner.validate(def, schemas)
-        if (errs.isNotEmpty()) {
-            _chains.update { it.copy(error = errs.joinToString("; ")) }; return
-        }
-        chainStore.save(def)
-        _chains.update { it.copy(defs = chainStore.list(), editing = null,
-                                  error = null, notice = "chain saved: ${def.title}") }
-    }
-
-    fun deleteChainDef(id: String) {
-        chainStore.delete(id)
-        _chains.update { it.copy(defs = chainStore.list()) }
-    }
-
-    fun runChain(def: ChainDef) {
-        val schemas = _tools.value.tools.associate { it.schema.id to it.schema }
-        val errs = ChainPlanner.validate(def, schemas)
-        if (errs.isNotEmpty()) {
-            _chains.update { it.copy(error = errs.joinToString("; ")) }; return
-        }
-        chainRunner?.cancel()
-        _chains.update { it.copy(run = ChainRunState(def, 0), error = null, notice = null) }
-        chainRunner = viewModelScope.launch { driveChain(def, 0, emptyMap()) }
-    }
-
-    fun resumeChain() {
-        val run = _chains.value.run ?: return
-        if (run.status != "PAUSED") return
-        chainRunner?.cancel()
-        _chains.update { s -> s.copy(run = run.copy(status = "RUNNING", error = null)) }
-        chainRunner = viewModelScope.launch { driveChain(run.def, run.currentStep, run.stepJobIds) }
-    }
-
-    /** Stops orchestrating; a job already on the phone keeps running there. */
-    fun stopChainRun() {
-        chainRunner?.cancel()
-        _chains.update { s ->
-            s.run?.let { s.copy(run = it.copy(status = "PAUSED",
-                error = "orchestration stopped — the current job (if any) keeps running")) } ?: s
-        }
-    }
-
-    private suspend fun driveChain(def: ChainDef, fromStep: Int, priorJobs: Map<Int, String>) {
-        val schemas = _tools.value.tools.associate { it.schema.id to it.schema }
-        var stepJobIds = priorJobs
-        var prevOutput: String? = null
-        if (fromStep > 0) {
-            prevOutput = ChainPlanner.outputsUpTo(def, schemas, fromStep)[fromStep - 1]
-        }
-        var i = fromStep
-        while (i < def.steps.size) {
-            val step = def.steps[i]
-            val schema = schemas[step.toolId]
-            if (schema == null) {
-                _chains.update { s -> s.copy(run = s.run?.copy(status = "FAILED",
-                    error = "step ${i + 1}: tool '${step.toolId}' disappeared from the registry")) }
-                return
-            }
-            // Legacy defs saved before the native-number fix carry int/float
-            // args as strings; re-type them per the schema (UX-audit P0).
-            val args = FormEngine.coerceLegacyArgs(
-                schema, ChainPlanner.resolveArgs(step, prevOutput))
-            val req = ToolSubmitRequest(
-                name = "${def.title} — ${ChainPlanner.stepTitle(step, schema)}",
-                tool = step.toolId, args = args, cwd = "~")
-            val jid = when (val r = client().submitToolJob(req)) {
-                is BridgeResult.Success -> r.data.response.job_id
-                is BridgeResult.HttpError ->
-                    { _chains.update { s -> s.copy(run = s.run?.copy(status = "FAILED",
-                        error = "step ${i + 1} rejected: HTTP ${r.status} ${r.code} — ${r.message}")) }
-                      return }
-                is BridgeResult.NetworkError ->
-                    { _chains.update { s -> s.copy(run = s.run?.copy(
-                        status = "PAUSED", currentStep = i, stepJobIds = stepJobIds,
-                        error = "bridge unreachable — resume when it is back")) }
-                      return }
-            }
-            toolJobMeta[jid] = Artifacts.metaFor(schema, args)
-            stepJobIds = stepJobIds + (i to jid)
-            _chains.update { s -> s.copy(run = s.run?.copy(
-                currentStep = i, stepJobIds = stepJobIds, status = "RUNNING")) }
-            // watch the step to its terminal status (2 s poll; local + cheap)
-            var misses = 0
-            var done: dev.trmx.gui.model.JobSummary? = null
-            while (done == null) {
-                delay(2_000L)
-                when (val r = client().getJob(jid)) {
-                    is BridgeResult.Success ->
-                        if (r.data.status in TERMINAL) done = r.data
-                    is BridgeResult.HttpError -> {
-                        _chains.update { s -> s.copy(run = s.run?.copy(status = "PAUSED",
-                            error = "step ${i + 1}: job vanished (HTTP ${r.status}) — resume?")) }
-                        return
-                    }
-                    is BridgeResult.NetworkError -> {
-                        if (++misses > 5) {
-                            _chains.update { s -> s.copy(run = s.run?.copy(
-                                status = "PAUSED",
-                                error = "bridge unreachable — resume when it is back")) }
-                            return
-                        }
-                    }
-                }
-            }
-            if (done.status != "COMPLETED") {
-                _chains.update { s -> s.copy(run = s.run?.copy(status = "FAILED",
-                    error = "step ${i + 1} (${ChainPlanner.stepTitle(step, schema)}) " +
-                            "ended ${done.status}")) }
-                return
-            }
-            prevOutput = args["output"]?.let { a ->
-                runCatching { a.jsonPrimitive.content }.getOrNull()
-            }
-            i++
-        }
-        _chains.update { s -> s.copy(run = s.run?.copy(status = "COMPLETED")) }
     }
 
     // ---- live output stream (Phase 6) -----------------------------------

@@ -227,7 +227,7 @@ fun AppRoot(
             }
 
             // Live events while the app is open (dashboard updates everywhere;
-            // chains and the self-healing toolbox install ride on this).
+            // the self-healing toolbox install rides on this).
             LaunchedEffect(Unit) { vm.startEvents() }
 
             if (detailState != null) {
@@ -282,7 +282,7 @@ fun AppRoot(
                 )
             } else if (toolForm.schema != null) {
                 // The form renders above the tab content; closing it returns
-                // to whichever tab opened it (Toolbox, Chains, or Dashboard).
+                // to whichever tab opened it (Toolbox or Dashboard).
                 BackHandler { vm.closeToolForm() }
                 ToolFormScreen(
                     state = toolForm,
@@ -294,7 +294,6 @@ fun AppRoot(
                     },
                     onExample = { ex: ToolExample ->
                         vm.openToolForm(toolForm.schema.id,
-                                        stepIndex = toolForm.stepIndex,
                                         preset = ex.args)
                     },
                     onSubmit = vm::submitToolForm,
