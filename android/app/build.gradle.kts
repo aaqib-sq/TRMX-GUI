@@ -20,8 +20,34 @@ android {
     // to AGP's standard per-developer local debug key (~/.android/
     // debug.keystore). Distributed builds must use release signing with a
     // key that is never committed (Phase 11, ADR-006).
+    //
+    // Locked CI debug signing (device feedback, 2026-10-20): when the
+    // TRMX_DEBUG_KEYSTORE env var names a keystore file, the debug build
+    // type signs with it. CI restores that file from a repo SECRET —
+    // never committed, and this config only reads a path the
+    // environment provides. (Restoring to the conventional
+    // ~/.android location was tried first, PRs #61/#62: the file was
+    // verifiably in place and keytool-readable, yet the build still
+    // signed with a fresh key — so the path is explicit now.) Without
+    // the env var, local builds keep AGP's standard debug key.
+    signingConfigs {
+        create("lockedDebug") {
+            val ks = System.getenv("TRMX_DEBUG_KEYSTORE")
+            if (ks != null) {
+                storeFile = file(ks)
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
 
     buildTypes {
+        debug {
+            if (System.getenv("TRMX_DEBUG_KEYSTORE") != null) {
+                signingConfig = signingConfigs.getByName("lockedDebug")
+            }
+        }
         release {
             isMinifyEnabled = false   // Phase 10: R8 + rules
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
