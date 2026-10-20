@@ -865,6 +865,164 @@ class TestBridgeErrorUnwrap(unittest.TestCase):
             self.assertIn("no such path: ~/Downloads", str(cm.exception))
 
 
+class TestFileOp(unittest.TestCase):
+    """The agent could only LIST files — every delete/move/rename was
+    refused with 'cannot' (device, 2026-10-20: 'No tool can delete
+    multiple files at once'). tool_file_op wraps POST /v1/files:
+    batch delete in one action, per-file failure reporting, and the
+    confirm gate treats delete/move/rename as destructive."""
+
+    def _agent(self, td, calls):
+        home = Path(td)
+        (home / "bridge.json").write_text(json.dumps({"token": "tok"}))
+        (home / "agent" / "tasks").mkdir(parents=True)
+        (home / "agent" / "tasks" / "t1.json").write_text(
+            json.dumps({"instruction": "tidy up"}))
+        agent = trmx_agent.Agent(home, "t1")
+
+        class Stub:
+            def check(self, method, path, body=None, timeout=30):
+                calls.append((method, path, body))
+                if body and "bad" in str(body.get("path", "")):
+                    raise trmx_agent.AgentError(
+                        "POST /v1/files -> HTTP 404 PATH_NOT_FOUND: "
+                        "no such path")
+                return {"ok": True}
+        agent.bridge = Stub()
+        return agent
+
+    def test_batch_delete_one_call_per_path(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            agent = self._agent(td, calls)
+            out = agent.tool_file_op(
+                {"op": "delete", "paths": ["~/a.txt", "~/b.txt"]})
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(c[2]["op"] == "delete" for c in calls))
+            self.assertTrue(all(c[2]["confirm"] for c in calls))
+            self.assertIn("delete ok (2)", out)
+
+    def test_partial_failure_is_reported_not_fatal(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            agent = self._agent(td, calls)
+            out = agent.tool_file_op(
+                {"op": "delete", "paths": ["~/ok.txt", "~/bad.txt"]})
+            self.assertIn("delete ok (1)", out)
+            self.assertIn("FAILED (1)", out)
+            self.assertIn("PATH_NOT_FOUND", out)
+
+    def test_rename_uses_new_name_and_rejects_batch(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            agent = self._agent(td, calls)
+            agent.tool_file_op({"op": "rename", "path": "~/a.txt",
+                                "new_name": "b.txt"})
+            self.assertEqual(calls[0][2]["new_name"], "b.txt")
+            with self.assertRaises(trmx_agent.AgentError):
+                agent.tool_file_op({"op": "rename",
+                                    "paths": ["~/a", "~/b"],
+                                    "new_name": "x"})
+
+    def test_validation_and_confirm_gate(self):
+        with self.assertRaises(ValueError):
+            trmx_agent.validate_action(
+                {"op": "do", "tool": "file_op",
+                 "args": {"op": "delete"}, "describe": "x"})
+        ok = trmx_agent.validate_action(
+            {"op": "do", "tool": "file_op",
+             "args": {"op": "delete", "paths": ["~/a.txt"]},
+             "describe": "delete a.txt"})
+        self.assertEqual(ok["tool"], "file_op")
+        self.assertEqual(
+            trmx_agent.is_destructive(
+                "file_op", {"op": "delete", "paths": ["~/a"]},
+                "remove a", None, {}),
+            "destructive")
+        self.assertIsNone(
+            trmx_agent.is_destructive(
+                "file_op", {"op": "mkdir", "path": "~/x"},
+                "make a folder", None, {}))
+
+
+class TestReadWriteFiles(unittest.TestCase):
+    """Same class of gap as file_op (device, 2026-10-20): the agent
+    could list a directory but could not READ a file or WRITE one —
+    the bridge endpoints existed, the agent menu didn't."""
+
+    def _agent(self, td, files):
+        home = Path(td)
+        (home / "bridge.json").write_text(json.dumps({"token": "tok"}))
+        (home / "agent" / "tasks").mkdir(parents=True)
+        (home / "agent" / "tasks" / "t1.json").write_text(
+            json.dumps({"instruction": "read and write"}))
+        agent = trmx_agent.Agent(home, "t1")
+
+        class Stub:
+            def check(self, method, path, body=None, timeout=30):
+                name = path.split("path=")[-1]
+                import urllib.parse as up
+                name = up.unquote(name)
+                if name in files:
+                    return {"path": name,
+                            "entry": {"name": name, "type": "file"}}
+                raise trmx_agent.AgentError(
+                    f"GET {path} -> HTTP 404 PATH_NOT_FOUND: no such path")
+
+            def call(self, method, path, body=None, timeout=30):
+                import urllib.parse as up
+                name = up.unquote(path.split("path=")[-1])
+                if name in files:
+                    return 200, files[name]
+                return 404, {"error": {"code": "PATH_NOT_FOUND",
+                                        "message": f"no such path: {name}"}}
+
+            def put_text(self, path, text, timeout=30):
+                import urllib.parse as up
+                name = up.unquote(path.split("path=")[-1]
+                                         .split("&")[0])
+                files[name] = text
+        agent.bridge = Stub()
+        return agent
+
+    def test_read_text_and_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = self._agent(td, {"~/note.txt": "hello world"})
+            self.assertEqual(agent.tool_read_file({"path": "~/note.txt"}),
+                             "hello world")
+            with self.assertRaises(trmx_agent.AgentError) as cm:
+                agent.tool_read_file({"path": "~/nope.txt"})
+            self.assertIn("no such path", str(cm.exception))
+
+    def test_read_binary_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = self._agent(td, {"~/a.bin": "ab\x00cd"})
+            with self.assertRaises(trmx_agent.AgentError):
+                agent.tool_read_file({"path": "~/a.bin"})
+
+    def test_write_then_read_back(self):
+        with tempfile.TemporaryDirectory() as td:
+            files = {}
+            agent = self._agent(td, files)
+            out = agent.tool_write_file(
+                {"path": "~/new.txt", "content": "namaste"})
+            self.assertIn("wrote 7 chars", out)
+            self.assertEqual(files["~/new.txt"], "namaste")
+
+    def test_overwrite_pauses_new_file_does_not(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = self._agent(td, {"~/old.txt": "x"})
+            self.assertEqual(
+                trmx_agent.is_destructive(
+                    "write_file", {"path": "~/old.txt", "content": "y"},
+                    "write old.txt", agent.bridge, {}),
+                "overwrite")
+            self.assertIsNone(
+                trmx_agent.is_destructive(
+                    "write_file", {"path": "~/fresh.txt", "content": "y"},
+                    "write fresh.txt", agent.bridge, {}))
+
+
 class TestSayGuard(AgentTestBase):
     """The say-loop guard (device report, 2026-10-20). A separate
     class on purpose: AgentStepCapTest re-runs AgentTestBase under

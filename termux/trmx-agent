@@ -97,7 +97,8 @@ def action_hash(task_id: str, step: int, tool: str, args: dict) -> str:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 TOOL_MENU = ("submit_tool", "list_jobs", "job_output", "list_files",
-             "service_action", "cancel_job")
+             "service_action", "cancel_job", "file_op", "read_file",
+             "write_file")
 
 
 # ---------------------------------------------------------------- events
@@ -195,6 +196,34 @@ class Bridge:
         if not isinstance(data, dict):
             raise AgentError(f"{method} {path} -> non-JSON response")
         return data
+
+    def put_text(self, path: str, text: str, timeout: int = 30) -> None:
+        """PUT raw UTF-8 bytes (the files/content upload endpoint takes
+        the file body verbatim, not JSON). Raises AgentError with the
+        bridge's own message on failure, like check()."""
+        headers = {"Authorization": f"Bearer {self.token}",
+                   "X-TRMX-Protocol": "1",
+                   "Content-Type": "application/octet-stream"}
+        conn = http.client.HTTPConnection("127.0.0.1", self.port,
+                                          timeout=timeout)
+        try:
+            conn.request("PUT", path, body=text.encode("utf-8"),
+                         headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            st = resp.status
+        finally:
+            conn.close()
+        if 200 <= st < 300:
+            return
+        msg = None
+        try:
+            err = json.loads(data.decode("utf-8")).get("error", {})
+            msg = err.get("message") or err.get("code")
+        except Exception:  # noqa: BLE001
+            pass
+        raise AgentError(f"PUT {path} -> HTTP {st}: "
+                         f"{msg or data[:200]!r}")
 
     def sse_text(self, path: str, timeout: int = 120) -> str:
         """GET an SSE stream to completion; return concatenated
@@ -312,6 +341,32 @@ def validate_action(obj: dict) -> dict:
         elif tool in ("job_output", "cancel_job"):
             if not isinstance(a.get("job_id"), str) or not a["job_id"]:
                 raise ValueError(f"{tool} needs args.job_id (a string)")
+        elif tool == "file_op":
+            if a.get("op") not in ("delete", "mkdir", "touch", "rename",
+                                   "move", "copy"):
+                raise ValueError("file_op.op must be "
+                                 "delete|mkdir|touch|rename|move|copy")
+            has_path = isinstance(a.get("path"), str) and bool(a["path"])
+            has_paths = (isinstance(a.get("paths"), list)
+                         and len(a["paths"]) > 0
+                         and all(isinstance(x, str) and x
+                                 for x in a["paths"]))
+            if not (has_path or has_paths):
+                raise ValueError("file_op needs args.path or args.paths")
+            if a["op"] == "rename" and not (
+                    isinstance(a.get("new_name"), str) and a["new_name"]):
+                raise ValueError("file_op rename needs args.new_name")
+            if a["op"] in ("move", "copy") and not (
+                    isinstance(a.get("dest_dir"), str) and a["dest_dir"]):
+                raise ValueError("file_op move/copy needs args.dest_dir")
+        elif tool == "read_file":
+            if not isinstance(a.get("path"), str) or not a["path"]:
+                raise ValueError("read_file needs args.path (a string)")
+        elif tool == "write_file":
+            if not isinstance(a.get("path"), str) or not a["path"]:
+                raise ValueError("write_file needs args.path (a string)")
+            if not isinstance(a.get("content"), str):
+                raise ValueError("write_file needs args.content (a string)")
         elif tool == "service_action":
             if not isinstance(a.get("service_id"), str) or not a["service_id"]:
                 raise ValueError("service_action needs args.service_id")
@@ -343,6 +398,24 @@ def is_destructive(tool: str, args: dict, describe: str, bridge: Bridge,
     # unconfirmed because no verb in the list matched it.
     if tool == "service_action" and args.get("action") in ("stop", "restart"):
         return "destructive"
+    # The agent's file-changing tool: deleting, moving or renaming the
+    # user's files always pauses for approval (device, 2026-10-20 —
+    # before this tool existed the agent could only LIST files and had
+    # to refuse every delete). mkdir/touch/copy only create, no pause.
+    if tool == "file_op" and args.get("op") in ("delete", "move", "rename"):
+        return "destructive"
+    # write_file: replacing an existing file destroys its content —
+    # pause. A brand-new file only creates — no pause. Stat via the
+    # bridge decides (404 = new); any other doubt fails closed.
+    if tool == "write_file" and bridge is not None:
+        try:
+            bridge.check("GET", "/v1/files?stat=1&path="
+                         + urllib.parse.quote(str(args.get("path", ""))))
+            return "overwrite"
+        except AgentError as e:
+            if "HTTP 404" in str(e):
+                return None
+            return "risk-tier"
     if tool == "submit_tool":
         tid = args["tool"]
         tier = cache.get(tid) if cache is not None else None
@@ -380,6 +453,9 @@ Tool menu:
 - list_jobs {{"status"?: "active", "limit"?: 1..50}} — recent jobs
 - job_output {{"job_id": "...", "tail_chars"?: 1..8000}} — last output of a job
 - list_files {{"path"?: "~"}} — list a directory. "~" is the Termux home. Shared phone storage is under "~/storage": "~/storage/downloads" is the Downloads folder, "~/storage/shared" the internal-storage root, "~/storage/dcim" the camera photos
+- file_op {{"op": "delete"|"mkdir"|"touch"|"rename"|"move"|"copy", "path"?: "...", "paths"?: ["...", ...], "new_name"?: "...", "dest_dir"?: "..."}} — change files. delete takes "paths" to remove MANY files in ONE action; rename takes "new_name"; move/copy take "dest_dir". delete/move/rename pause for the user's approval automatically — propose them normally
+- read_file {{"path": "..."}} — read a text file's contents (first ~6000 chars)
+- write_file {{"path": "...", "content": "..."}} — create a text file, or overwrite an existing one (overwriting pauses for the user's approval automatically)
 - service_action {{"service_id": "...", "action": "start"|"stop"|"restart"}}
 - cancel_job {{"job_id": "..."}} — cancel a running job
 
@@ -523,6 +599,75 @@ class Agent:
         lines = [f"{e.get('type','?')[:4]} {e.get('size','')} {e.get('name','')}"
                  for e in entries[:50]]
         return "\n".join(lines) or "(empty)"
+
+    def tool_file_op(self, args: dict) -> str:
+        op = args.get("op")
+        paths = args.get("paths")
+        if not (isinstance(paths, list) and paths):
+            paths = [args.get("path")]
+        paths = [p for p in paths if isinstance(p, str) and p]
+        if not paths:
+            raise AgentError("file_op needs path or paths")
+        if op in ("rename", "move", "copy") and len(paths) > 1:
+            raise AgentError(f"file_op {op} takes a single path "
+                             "(it has one destination)")
+        done, failed = [], []
+        for p in paths:
+            body: dict = {"op": op, "path": p}
+            if op == "delete":
+                # The loop's own confirm gate has already paused for the
+                # user's approval of THIS batch (bound by the §4-M3
+                # hash) — the bridge's per-call flags for directory
+                # deletes are therefore satisfied honestly.
+                body["recursive"] = True
+                body["confirm"] = True
+            elif op == "mkdir":
+                body["recursive"] = True
+            elif op == "rename":
+                body["new_name"] = args.get("new_name")
+            elif op in ("move", "copy"):
+                body["dest_dir"] = args.get("dest_dir")
+            try:
+                self.bridge.check("POST", "/v1/files", body)
+                done.append(p)
+            except AgentError as e:
+                failed.append(f"{p}: {e}")
+        out = f"{op} ok ({len(done)}): " + ", ".join(done[:10])
+        if len(done) > 10:
+            out += f" … and {len(done) - 10} more"
+        if failed:
+            out += f"; FAILED ({len(failed)}): " + "; ".join(failed[:5])
+        return out
+
+    def tool_read_file(self, args: dict) -> str:
+        path = str(args.get("path", ""))
+        st, data = self.bridge.call(
+            "GET", f"/v1/files/content?path={urllib.parse.quote(path)}")
+        if not (200 <= st < 300):
+            err = data.get("error") if isinstance(data, dict) else None
+            msg = (err or {}).get("message") if isinstance(err, dict) \
+                else str(data)[:200]
+            raise AgentError(f"GET file -> HTTP {st}: {msg}")
+        text = data if isinstance(data, str) else str(data)
+        if "\x00" in text:
+            raise AgentError(f"{path} looks like a binary file, "
+                             "not text — cannot read it as text")
+        if len(text) > 6000:
+            return text[:6000] + f"\n… (truncated — file is {len(text)} chars)"
+        return text or "(empty file)"
+
+    def tool_write_file(self, args: dict) -> str:
+        path = str(args.get("path", ""))
+        content = args.get("content")
+        if not isinstance(content, str):
+            raise AgentError("write_file needs content (a string)")
+        # overwrite=1: the confirm gate has already paused when the
+        # target existed (see is_destructive) — reaching here means
+        # creating was free or replacing was approved.
+        self.bridge.put_text(
+            f"/v1/files/content?path={urllib.parse.quote(path)}"
+            "&overwrite=1", content)
+        return f"wrote {len(content)} chars to {path}"
 
     def tool_service_action(self, args: dict) -> str:
         data = self.bridge.check(
