@@ -212,9 +212,11 @@ fun ToolboxScreen(
             onDismissRequest = { confirmInstall = null },
             title = { Text("Install ${t.schema.pkg ?: t.schema.binary}?") },
             text = {
+                // Scrollable body: actions stay pinned at large fonts.
                 Text("Runs `pkg install -y ${t.schema.pkg ?: t.schema.binary}` as a " +
                      "normal job with a live console. The toolbox rescans " +
-                     "automatically when it finishes.")
+                     "automatically when it finishes.",
+                     modifier = Modifier.verticalScroll(rememberScrollState()))
             },
             confirmButton = {
                 TextButton(onClick = { onInstall(t); confirmInstall = null }) {
@@ -231,8 +233,10 @@ fun ToolboxScreen(
             onDismissRequest = { deleteTarget = null },
             title = { Text("Delete recipe “${r.title}”?") },
             text = {
+                // Scrollable body: actions stay pinned at large fonts.
                 Text("This permanently removes the recipe. " +
-                    "There is no undo — this cannot be recovered.")
+                    "There is no undo — this cannot be recovered.",
+                     modifier = Modifier.verticalScroll(rememberScrollState()))
             },
             confirmButton = {
                 TextButton(onClick = { onDeleteRecipe(r.id); deleteTarget = null }) {

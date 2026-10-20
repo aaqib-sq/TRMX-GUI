@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -217,7 +218,8 @@ fun SchemaBuilderScreen(
         }
 
         // Sticky primary action: full-width 48 dp, white (monochrome identity).
-        Surface(color = P.Background, modifier = Modifier.fillMaxWidth()) {
+        // imePadding: rides above the keyboard, never covered by it.
+        Surface(color = P.Background, modifier = Modifier.fillMaxWidth().imePadding()) {
             Box(modifier = Modifier.padding(Sp.m)) {
                 TrmxButton(
                     label = if (state.submitting) "Building…" else "Generate Tool",
@@ -421,7 +423,8 @@ private fun AiConfigEditor(
         }
 
         // Sticky primary action (P4 pattern): full-width 48 dp save.
-        Surface(color = P.Background, modifier = Modifier.fillMaxWidth()) {
+        // imePadding: rides above the keyboard, never covered by it.
+        Surface(color = P.Background, modifier = Modifier.fillMaxWidth().imePadding()) {
             Box(modifier = Modifier.padding(Sp.m)) {
                 TrmxButton(
                     label = if (state.saving) "Saving…" else "Save Configuration",

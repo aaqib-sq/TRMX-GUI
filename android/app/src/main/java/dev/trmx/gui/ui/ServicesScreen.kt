@@ -8,6 +8,8 @@ package dev.trmx.gui.ui
  */
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -100,8 +102,12 @@ fun ServicesScreen(
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
             title = { Text("Delete ${s.name}?") },
-            text = { Text("The definition is removed from ~/.trmx/services/. " +
-                          "The tool itself stays installed.") },
+            text = {
+                // Scrollable body: actions stay pinned at large fonts.
+                Text("The definition is removed from ~/.trmx/services/. " +
+                     "The tool itself stays installed.",
+                     modifier = Modifier.verticalScroll(rememberScrollState()))
+            },
             confirmButton = {
                 TextButton(onClick = {
                     onDelete(s.id)
