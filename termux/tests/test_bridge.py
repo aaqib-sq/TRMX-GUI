@@ -571,6 +571,30 @@ class TestBridge(unittest.TestCase):
         TestBridge.bridge.start()
         job = self.wait_status(job_id, {"LOST"})
         self.assertEqual(job["status"], "LOST")
+        # audit §5-H4: a LOST job must carry its cause, not just the badge
+        self.assertEqual(job["cancel_reason"], "bridge restarted, process gone")
+
+    def test_11c_restart_lifecycle_event(self):
+        # audit §5-H4: restart reconciliation summarizes the outcome on the
+        # bridge.lifecycle SSE event, delivered to new /v1/events subscribers
+        job_id = self.submit(["sleep", "60"], name="lose me too")
+        running = self.wait_status(job_id, {"RUNNING"})
+        self.bridge.kill9()
+        os.killpg(running["pgid"], signal.SIGKILL)
+        TestBridge.bridge = BridgeProc(self.home, self.port)
+        TestBridge.bridge.start()
+        self.wait_status(job_id, {"LOST"})
+        sse = SSEClient(self.port, "/v1/events", self.token)
+        got = None
+        for ev, eid, data in sse.frames(10):
+            if ev == "bridge.lifecycle":
+                got = data
+                break
+        sse.close()
+        self.assertIsNotNone(got, "bridge.lifecycle must reach /v1/events after a restart")
+        self.assertEqual(got["type"], "restarted")
+        self.assertGreaterEqual(got.get("jobs_lost", 0), 1)
+        self.assertIn("jobs_readopted", got)
 
     # ---- 12: ring eviction ------------------------------------------------
 

@@ -235,6 +235,11 @@ private fun DetailsCard(state: JobDetailState) {
             job.signal?.let { KV("signal", it.toString()) }
             job.timeout_s?.let { KV("timeout (s)", it.toString()) }
             job.error?.let { KV("error", "${it.code}: ${it.message}") }
+            if (job.status == "LOST") {
+                // audit §5-H4: the bridge records why the job was lost in
+                // cancel_reason — show the cause, not just the LOST badge
+                job.cancel_reason?.let { KV("lost reason", it) }
+            }
             KV("output bytes", "${job.stdout_bytes} / ${job.stderr_bytes}")
             KV("log frames", job.log_seq.toString() +
                 if (job.log_truncated) " (older frames evicted)" else "")

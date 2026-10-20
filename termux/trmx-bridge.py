@@ -537,6 +537,10 @@ class JobManager:
         self.queue: deque[str] = deque()
         self.idem: dict[str, tuple[str, float]] = {}
         self.started_at = time.time()
+        # summary of the last reconcile() (audit §5-H4) — served to /v1/events
+        # subscribers as the bridge.lifecycle announcement; None until the
+        # first reconcile has run
+        self.last_lifecycle: dict | None = None
 
     # -- helpers ---------------------------------------------------------
 
@@ -983,11 +987,16 @@ class JobManager:
     # -- restart reconciliation (PROTOCOL §3.1 LOST, §4.1 reattached) -----
 
     async def reconcile(self) -> None:
+        # Audit §5-H4: a LOST job carries its cause, not just the badge —
+        # reason lands on the job row (cancel_reason) and the whole restart
+        # is summarized on the bridge.lifecycle SSE event.
+        lost, readopted, requeued = 0, 0, 0
         for job in self.store.active_jobs():
             job_id = job["job_id"]
             rt = self._runtime(job_id, seq=job["log_seq"])
             if job["status"] == "QUEUED":
                 self.queue.append(job_id)
+                requeued += 1
                 continue
             alive = False
             if job["pgid"]:
@@ -1005,9 +1014,16 @@ class JobManager:
                 self.bus.publish("job.updated", job)
                 rt.tasks.add(asyncio.create_task(self._probe_adopted(job_id)))
                 LOG.info("reconcile: re-adopted %s (pgid %s)", job_id, job["pgid"])
+                readopted += 1
             else:
                 LOG.info("reconcile: %s LOST (pgid %s gone)", job_id, job["pgid"])
-                self._finalize(job_id, "LOST")
+                self._finalize(job_id, "LOST",
+                               reason="bridge restarted, process gone")
+                lost += 1
+        self.last_lifecycle = {"type": "restarted", "jobs_lost": lost,
+                               "jobs_readopted": readopted,
+                               "jobs_requeued": requeued}
+        self.bus.publish("bridge.lifecycle", self.last_lifecycle)
         await self._try_start_next()
 
     async def _probe_adopted(self, job_id: str) -> None:
@@ -1017,7 +1033,8 @@ class JobManager:
             if not job or job["status"] in TERMINAL_STATES:
                 return
             if not job["pgid"]:
-                self._finalize(job_id, "LOST")
+                self._finalize(job_id, "LOST",
+                               reason="no process group recorded")
                 return
             try:
                 os.killpg(job["pgid"], 0)
@@ -1025,7 +1042,8 @@ class JobManager:
                 if job["cancel_requested"]:
                     self._finalize(job_id, "CANCELLED")
                 else:
-                    self._finalize(job_id, "LOST")
+                    self._finalize(job_id, "LOST",
+                                   reason="process group gone")
                 return
 
 
@@ -1851,9 +1869,16 @@ class BridgeApp:
 
     async def h_events(self, req, m):
         bus = self.bus
+        lifecycle = self.manager.last_lifecycle
 
         async def fn(writer):
             q = bus.subscribe()
+            if lifecycle is not None:
+                # reconcile() already ran (before the port bound), so its
+                # live publish reached no subscriber — hand the restart
+                # summary to each new /v1/events subscriber as its first
+                # frame instead (audit §5-H4).
+                q.put_nowait((next(bus.counter), "bridge.lifecycle", lifecycle))
             lock = asyncio.Lock()
             main_task = asyncio.current_task()
 

@@ -114,7 +114,7 @@ The one route that does **not** require the bearer token. Returns `{"hmac": "<he
 | `exit_code` | int \| null | |
 | `signal` | int \| null | signal number if killed |
 | `cancel_requested` | bool | |
-| `cancel_reason` | `user` \| `timeout` \| null | |
+| `cancel_reason` | `user` \| `timeout` \| null | for `LOST` jobs, a free-text cause instead (e.g. `bridge restarted, process gone`) |
 | `error` | `{code, message}` \| null | typed spawn/infra failure (e.g. `ENOENT`) |
 | `timeout_s` | int \| null | default null; hard cap 2 592 000 (30 days) |
 | `progress_pct` | float 0–100 \| null | parsed via tool `progress_regex` when defined |
@@ -135,7 +135,7 @@ The one route that does **not** require the bearer token. Returns `{"hmac": "<he
 | `COMPLETED` | exited with code 0 |
 | `FAILED` | non-zero exit, fatal signal, or spawn error |
 | `CANCELLED` | terminated due to cancellation; `cancel_reason` ∈ `user` \| `timeout` |
-| `LOST` | bridge restarted; recorded process group no longer exists and no exit was observed. Honest admission, never guessed |
+| `LOST` | bridge restarted; recorded process group no longer exists and no exit was observed. Honest admission, never guessed. `cancel_reason` carries the cause (e.g. `bridge restarted, process gone`) |
 
 ### 3.2 `POST /v1/jobs` — submit
 Request body (one of three execution models):
@@ -213,6 +213,7 @@ One long-lived SSE stream the app holds whenever connected. Event types:
 | `job.updated` | the full Job object |
 | `system.updated` | the `system/info` object (throttled to ≤ 1 per 5 s) |
 | `bridge.stopping` | `{ "reason": "restart" \| "stop" \| "upgrade", "resume_hint_s": 5 }` |
+| `bridge.lifecycle` | `{ "type": "restarted", "jobs_lost": N, "jobs_readopted": N, "jobs_requeued": N }` — emitted by startup reconciliation; also delivered as the first frame to each new `/v1/events` subscriber (reconcile runs before the port binds, so a live-only publish would reach nobody) |
 
 - SSE `id:` = the global `event_id` (§1.5). On reconnect the client passes it via `Last-Event-ID`; the bridge replays up to **1000** buffered events, then continues live.
 - Heartbeat: a `: ping` comment every **15 s** (detects half-dead connections).
