@@ -129,12 +129,16 @@ class Config:
         self.path = path
         self.data: dict = {}
         self._mtime_ns: int | None = None
+        self.used_last_good = False
 
     def _note_mtime(self) -> None:
         try:
             self._mtime_ns = self.path.stat().st_mtime_ns
         except OSError:
             self._mtime_ns = None
+
+    def _last_good_path(self) -> Path:
+        return self.path.with_name(self.path.name + ".last-good")
 
     def load(self) -> "Config":
         if self.path.exists():
@@ -143,7 +147,22 @@ class Config:
                 if not isinstance(self.data, dict):
                     raise ValueError("config root must be an object")
             except Exception as e:  # noqa: BLE001
-                raise SystemExit(f"trmx-bridge: unreadable config {self.path}: {e}")
+                # Audit §5-H2: a torn write (SIGKILL mid-save before the
+                # atomic-save fix, or a hand edit) must not brick every
+                # future launch — fall back to the last-good copy, loudly.
+                last_good = self._last_good_path()
+                try:
+                    recovered = json.loads(last_good.read_text("utf-8"))
+                    if not isinstance(recovered, dict):
+                        raise ValueError("config root must be an object")
+                except Exception:  # noqa: BLE001 — no usable fallback
+                    raise SystemExit(
+                        f"trmx-bridge: unreadable config {self.path}: {e}")
+                LOG.error("trmx-bridge: unreadable config %s (%s) — "
+                          "fell back to last-good copy %s",
+                          self.path, e, last_good)
+                self.data = recovered
+                self.used_last_good = True
         merged = dict(DEFAULT_CONFIG)
         merged.update(self.data)
         self.data = merged
@@ -151,12 +170,27 @@ class Config:
         return self
 
     def save(self) -> None:
+        # Audit §5-H2: never write in place — a SIGKILL mid-write must not
+        # tear bridge.json. Write a temp file, fsync, then atomically
+        # rename over the live config; afterwards refresh the last-good
+        # copy that load() falls back to if the live file is ever corrupt.
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2)
             f.write("\n")
-        os.chmod(self.path, 0o600)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+        last_good = self._last_good_path()
+        fd = os.open(last_good, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as dst, open(self.path, "rb") as src:
+            shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+        os.chmod(last_good, 0o600)
         self._note_mtime()
 
     def __getitem__(self, k):
@@ -2170,6 +2204,13 @@ class BridgeApp:
     # -- serve ----------------------------------------------------------------
 
     async def serve(self) -> None:
+        if self.config.used_last_good:
+            # audit §5-H2: the recovery must be visible in the audit log,
+            # not just stderr (load() already LOG.error'd it)
+            self.store.audit(
+                "config.last_good_fallback",
+                f"{self.config.path} unreadable at startup; "
+                f"recovered from {self.config.path.name}.last-good")
         await self.manager.reconcile()
         # protocol 1.1: autostart services launch after reconciliation —
         # best-effort per service (see ServiceRegistry.autostart_boot)

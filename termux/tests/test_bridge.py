@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -811,6 +812,81 @@ def port_open(port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _load_bridge_module():
+    """Import trmx-bridge.py as a module (unit-level tests only)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("trmx_bridge_p1", str(BRIDGE))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---- audit §5-H2: atomic bridge.json writes + last-good fallback ----------
+
+class TestConfigAtomicity(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.trmx = _load_bridge_module()
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="trmx-cfg-")
+        self.path = Path(self.tmp) / "bridge.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _config(self, data: dict):
+        c = self.trmx.Config(self.path)
+        c.data = dict(data)
+        return c
+
+    def test_atomic_save_no_partial_left(self):
+        c = self._config({"token": "t1"})
+        c.save()
+        c2 = self._config({"token": "t2"})
+        c2.save()
+        main = self.path.read_text("utf-8")
+        last_good = Path(str(self.path) + ".last-good").read_text("utf-8")
+        self.assertEqual(json.loads(main)["token"], "t2")
+        self.assertEqual(json.loads(last_good)["token"], "t2",
+                         "last-good must track the latest successful save")
+        self.assertFalse(Path(str(self.path) + ".tmp").exists(),
+                         "no partial tmp file may remain after a save")
+        for p in (self.path, Path(str(self.path) + ".last-good")):
+            self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600",
+                             f"{p.name} must stay 0600")
+
+    def test_failed_save_never_tears_main(self):
+        # a crash between opening tmp and rename must leave main untouched
+        c = self._config({"token": "good"})
+        c.save()
+        before = self.path.read_text("utf-8")
+        c2 = self._config({"token": "new"})
+        with unittest.mock.patch.object(os, "fsync", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                c2.save()
+        self.assertEqual(self.path.read_text("utf-8"), before,
+                         "main config must be byte-identical after a failed save")
+
+    def test_corrupt_main_falls_back_to_last_good(self):
+        c = self._config({"token": "saved-token", "port": 27342})
+        c.save()
+        self.path.write_text("{torn json", encoding="utf-8")
+        c2 = self.trmx.Config(self.path)
+        with self.assertLogs("trmx-bridge", level="ERROR") as cm:
+            c2.load()
+        self.assertTrue(c2.used_last_good, "fallback must be recorded")
+        self.assertEqual(c2.data["token"], "saved-token",
+                         "load must recover the last-good copy")
+        self.assertTrue(any("last-good" in r for r in cm.output),
+                        "the fallback must be logged loudly")
+
+    def test_corrupt_main_without_backup_still_exits(self):
+        self.path.write_text("{torn json", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            self.trmx.Config(self.path).load()
 
 
 if __name__ == "__main__":
