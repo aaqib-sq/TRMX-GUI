@@ -137,6 +137,10 @@ class Config:
         self.data: dict = {}
         self._mtime_ns: int | None = None
         self.used_last_good = False
+        # Optional callback(old_token, new_token) fired by fresh_token()
+        # when the token VALUE changes in the file (audit §5-M4):
+        # BridgeApp wires it to a bridge.token_changed event.
+        self.on_token_change = None
 
     def _note_mtime(self) -> None:
         try:
@@ -213,17 +217,12 @@ class Config:
     def fresh_token(self):
         """The token as it stands in the config FILE right now.
 
-        Until 2026-10-17 the bridge trusted only the token loaded into
-        memory at startup, so a `trmx pair` written while the bridge was
-        running never took effect until the process was restarted — and
-        a bridge started before pairing, or during an unpaired window
-        (when ensure_token() invents its own token), rejected the app
-        with 401s forever, however correct the file on disk was
-        (on-device round 1). Auth now re-reads the file whenever its
-        mtime changes, so pairing takes effect on the next request: no
-        restart, no stop/start ordering for the pairing to depend on.
-        The common path is one stat() call; a half-written or unreadable
-        file falls back to the in-memory value instead of failing auth.
+        Auth re-reads the file whenever its mtime changes, so a
+        `trmx pair` written while the bridge runs takes effect on the
+        next request — no restart (before 2026-10-17 the in-memory
+        token was trusted forever and pairing silently never landed).
+        Common path is one stat(); an unreadable file falls back to
+        the in-memory value instead of failing auth.
         """
         try:
             mtime_ns = self.path.stat().st_mtime_ns
@@ -241,10 +240,17 @@ class Config:
             # the NEXT call (mtime unchanged) would fall back to the
             # stale startup token and both old and new tokens would
             # half-work, alternating by call order.
+            old_token = self.data.get("token")
             if "token" in data:
                 self.data["token"] = data["token"]
             else:
                 self.data.pop("token", None)
+            if self.data.get("token") != old_token \
+                    and self.on_token_change is not None:
+                try:
+                    self.on_token_change(old_token, self.data.get("token"))
+                except Exception:  # noqa: BLE001 — a bad listener must not kill auth
+                    LOG.exception("token-change callback failed")
             return self.token
         return self.token
 
@@ -399,8 +405,6 @@ class FrameLog:
     Each line: {"seq": n, "event": "stdout"|"stderr"|"status"|"info", "data": {...}}
     After rotation the first line is {"_min_seq": n} = lowest retained seq,
     which powers the honest `evicted` replay notice (PROTOCOL §4.1).
-    PoC note: rotation rewrites the whole file (fine at 2 MiB caps); Phase 5
-    will replace this with a proper fixed-size ring if profiling demands it.
     """
 
     def __init__(self, path: Path, cap_bytes: int):
@@ -481,15 +485,31 @@ class FrameLog:
 
 # --------------------------------------------------------------------------- event bus
 
+ENV_REDACTED = "***"
+
+
+def redact_job_env(job: dict) -> dict:
+    """Copy of a job dict with env VALUES redacted (audit §4-M8).
+
+    The stored row and the spawned process keep the real values, but
+    no API read-back (GET, list, cancel response, job.updated event)
+    may hand them out. Keys survive so clients can show WHICH vars
+    were set."""
+    if not isinstance(job, dict) or not job.get("env"):
+        return job
+    out = dict(job)
+    out["env"] = {k: ENV_REDACTED for k in job["env"]}
+    return out
+
+
 class EventBus:
     """Fan-out for the global /v1/events stream (PROTOCOL §5).
 
     §3-M6: the last BUFFER_SIZE published events are kept in a ring
-    buffer (PROTOCOL §5.1 already promised "replays up to 1000 buffered
-    events"). A reconnecting subscriber passes its Last-Event-ID to
-    subscribe() and the buffered events after that id are queued for it
-    before any live event. Without an id, the stream is live-only, as
-    before. One event = one global id, shared by every subscriber."""
+    buffer; a reconnecting subscriber passes its Last-Event-ID to
+    subscribe() and gets the buffered events after that id before any
+    live event. Without an id, the stream is live-only. One event =
+    one global id, shared by every subscriber."""
 
     BUFFER_SIZE = 1000
 
@@ -511,9 +531,12 @@ class EventBus:
         self.subs.discard(q)
 
     def publish(self, event: str, data: dict) -> None:
+        if event == "job.updated":
+            data = redact_job_env(data)   # §4-M8: env secrets never ride SSE
         eid = next(self.counter)
         # snapshot for the replay buffer: job dicts keep mutating after
         # publish, and a replayed frame must show the state AT publish time
+        # (the redacted copy, so a replay can never leak env either)
         self.buffer.append((eid, event, dict(data)))
         for q in list(self.subs):
             try:
@@ -529,16 +552,11 @@ def sweep_upload_temps(roots, max_depth: int = 4) -> int:
     """§3-M17: remove orphaned upload temp files; returns the count.
 
     Uploads stream to `.trmx-upload-*` beside the destination and are
-    renamed into place (or unlinked on a handled failure) — but a bridge
-    CRASH mid-upload orphans the temp file, and no later upload ever
-    cleans it up. Run once at bridge start.
-
-    The sweep is BOUNDED so startup never scans the whole device: it
-    walks each root to `max_depth`, does not follow symlinked dirs
-    (shared-storage roots are passed in already resolved, so their top
-    levels are covered), prunes dot-directories other than a root
-    itself, and unlinks only regular files carrying the prefix (never
-    a directory or symlink of that name)."""
+    renamed into place, but a crash mid-upload orphans the temp and
+    nothing else ever cleans it. Run once at bridge start. BOUNDED:
+    walks each root to `max_depth`, never follows symlinked dirs,
+    prunes dot-directories, unlinks only regular files with the prefix.
+    """
     removed = 0
     seen: set = set()
     for root in roots:
@@ -1206,14 +1224,11 @@ class JobManager:
                                reason=job.get("cancel_reason") or "user")
                 cancelled += 1
             else:
-                # §3-M4: with no reaper, the exit of a process that ended
-                # while the bridge was down is UNOBSERVABLE — it may have
-                # finished successfully (its output/artifacts are on disk)
-                # or died with the bridge. The status stays LOST (never
-                # guess a success), but the reason carries that caveat
-                # instead of implying a certain failure. The one case
-                # that IS distinguishable — the job never got a recorded
-                # process (still STARTING / no pgid) — says so plainly.
+                # §3-M4: the exit of a process that ended while the
+                # bridge was down is UNOBSERVABLE — it may have finished
+                # or died with the bridge. Status stays LOST (never guess
+                # a success) and the reason carries that caveat; a job
+                # with no recorded process (STARTING / no pgid) says so.
                 if job["pgid"]:
                     reason = ("bridge restarted, process gone — it may "
                               "have finished while the bridge was down "
@@ -1263,17 +1278,34 @@ def shlex_join(parts: list[str]) -> str:
     return " ".join(parts)
 
 
+def agent_action_hash(task_id, step, tool, args) -> str:
+    """Binding hash for one agent confirm (audit §4-M3).
+
+    sha256 over the canonical JSON of {task_id, step, tool, args} — a
+    confirm decision is valid ONLY for the action this hash names.
+    trmx-agent computes the same hash (same canonical form — keep
+    the two in sync)."""
+    canon = json.dumps({"task_id": task_id, "step": step, "tool": tool,
+                        "args": args},
+                       sort_keys=True, ensure_ascii=False,
+                       separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
 # =========================================================================== HTTP layer
 
 class Request:
     __slots__ = ("method", "path", "query", "headers", "body", "keep_alive",
-                 "content_length")
+                 "content_length", "peer")
 
     def __init__(self, method, path, query, headers, body, keep_alive,
-                 content_length=None):
+                 content_length=None, peer=None):
         self.method, self.path, self.query = method, path, query
         self.headers, self.body, self.keep_alive = headers, body, keep_alive
         self.content_length = content_length
+        # peer address (ip, port) of the connection — the "source" for
+        # the per-source auth backoff (PROTOCOL §1.3, audit §4-M5)
+        self.peer = peer
 
 
 class RawStream:
@@ -1336,6 +1368,18 @@ class BridgeApp:
                                   self.registry)
         self.services = ServiceRegistry(home, self.registry, self.manager,
                                         self.store, self.bus)
+        # Per-source auth backoff state (PROTOCOL §1.3, audit §4-M5):
+        # source -> {"count": consecutive failures, "blocked_until":
+        # monotonic deadline}. The spec always promised PER-SOURCE
+        # refusal; the old code only slept per connection, so a fresh
+        # connection reset the counter. On loopback the peer IP is the
+        # finest source identity available.
+        self._auth_fail: dict[str, dict] = {}
+        # Last token rotation (audit §5-M4) — handed to each new
+        # /v1/events subscriber (like last_lifecycle), because the
+        # rotation is usually detected between connections.
+        self.last_token_change: dict | None = None
+        config.on_token_change = self._on_token_change
         self.started = time.time()
         self._upload_seq = itertools.count(1)
         self.routes = [
@@ -1375,6 +1419,48 @@ class BridgeApp:
              self.h_agent_task_confirm),
         ]
 
+    # -- token rotation (audit §5-M4) ---------------------------------------
+
+    def _on_token_change(self, old_token, new_token) -> None:
+        """Config.fresh_token() noticed the file's token change value.
+
+        Emit bridge.token_changed so connected clients can drop their
+        cached token + state and re-pair. The payload carries NO token
+        material — only what changed and when."""
+        kind = ("unpaired" if new_token is None
+                else "paired" if old_token is None else "rotated")
+        payload = {"type": kind, "at": now_iso()}
+        self.last_token_change = payload
+        self.store.audit("token.changed", kind)
+        self.bus.publish("bridge.token_changed", payload)
+
+    # -- auth backoff (PROTOCOL §1.3, audit §4-M5) ---------------------------
+
+    @staticmethod
+    def _auth_source(req: Request) -> str:
+        peer = req.peer
+        if isinstance(peer, tuple) and peer:
+            return str(peer[0])
+        return "loopback"
+
+    def _auth_blocked_s(self, source: str) -> float:
+        st = self._auth_fail.get(source)
+        if not st:
+            return 0.0
+        return max(0.0, st["blocked_until"] - time.monotonic())
+
+    def _note_auth_failure(self, source: str) -> None:
+        st = self._auth_fail.setdefault(
+            source, {"count": 0, "blocked_until": 0.0})
+        st["count"] += 1
+        if st["count"] >= 5:
+            # spec formula: refuse for min(2^(n-5) * 2s, 60s)
+            st["blocked_until"] = time.monotonic() + min(
+                2 ** (st["count"] - 5) * 2, 60)
+
+    def _note_auth_success(self, source: str) -> None:
+        self._auth_fail.pop(source, None)
+
     # -- connection handling ----------------------------------------------
 
     async def handle_conn(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -1394,8 +1480,8 @@ class BridgeApp:
                     if e.code in ("AUTH_REQUIRED", "AUTH_INVALID"):
                         failures += 1
                         self.store.audit("auth.fail", f"{e.code} path={req.path} n={failures}")
-                        if failures >= 5:  # per-connection backoff (PROTOCOL §1.3 subset)
-                            await asyncio.sleep(min(2 ** (failures - 5) * 2, 60))
+                        # the backoff itself is per-source and lives in
+                        # dispatch() (§1.3, audit §4-M5) — no sleep here
                     else:
                         failures = 0
                     # an upload body may still be unread on the wire — the
@@ -1482,7 +1568,8 @@ class BridgeApp:
                                   f"upload exceeds {MAX_UPLOAD_BODY} bytes")
             # 100-continue is sent by the upload handler AFTER path validation
             return Request("PUT", unquote(u.path), query, headers, b"",
-                           keep_alive, content_length=n)
+                           keep_alive, content_length=n,
+                           peer=writer.get_extra_info("peername"))
         body = b""
         if "content-length" in headers:
             try:
@@ -1500,7 +1587,8 @@ class BridgeApp:
                     body = await reader.readexactly(n)
                 except asyncio.IncompleteReadError:
                     raise BridgeError(400, "VALIDATION_FAILED", "truncated body")
-        return Request(method.upper(), unquote(u.path), query, headers, body, keep_alive)
+        return Request(method.upper(), unquote(u.path), query, headers, body,
+                       keep_alive, peer=writer.get_extra_info("peername"))
 
     async def dispatch(self, req: Request):
         # PROTOCOL §1.1: never a browser client
@@ -1525,12 +1613,26 @@ class BridgeApp:
         # protocol-header checks above still apply; see h_proof.
         if req.method == "GET" and req.path == "/v1/proof":
             return await self.h_proof(req, None)
+        # Per-source auth backoff (PROTOCOL §1.3, audit §4-M5): after 5
+        # consecutive failures the source is REFUSED — every request,
+        # even with the right token — until min(2^(n-5) * 2s, 60s)
+        # expires. A successful auth or a restart resets the count.
+        source = self._auth_source(req)
+        blocked_s = self._auth_blocked_s(source)
+        if blocked_s > 0:
+            raise BridgeError(429, "RATE_LIMITED",
+                              "too many failed auth attempts — source "
+                              "temporarily refused (PROTOCOL §1.3 backoff)",
+                              details={"retry_after_s": int(blocked_s) + 1})
         m = re.match(r"^Bearer\s+(.+)$", req.headers.get("authorization", ""))
         token = m.group(1) if m else None
         if not token:
+            self._note_auth_failure(source)
             raise BridgeError(401, "AUTH_REQUIRED", "missing bearer token")
         if not hmac.compare_digest(self.config.fresh_token() or "", token):
+            self._note_auth_failure(source)
             raise BridgeError(401, "AUTH_INVALID", "invalid token")
+        self._note_auth_success(source)
         path_matched = False
         for method, rx, handler in self.routes:
             m = rx.match(req.path)
@@ -1619,6 +1721,7 @@ class BridgeApp:
                          "runit": shutil.which("sv") is not None,
                          "scheduler": False,
                          "tool_schema_errors": list(self.registry.schema_errors),
+                         "binary_shadow_warnings": list(self.policy.shadow_warnings),
                          "service_registry": True,          # protocol 1.1 (§14)
                          "agent_tasks": True,               # protocol 1.1 (§16, bridge >= 0.6.0)
                          "service_errors": list(self.services.errors)},
@@ -1640,8 +1743,8 @@ class BridgeApp:
 
         Returns {"hmac": hex(HMAC-SHA256(key=pairing token, msg=nonce))}.
         Dispatched before the bearer check: proving possession without
-        revealing the token is the entire point. The nonce is caller-chosen
-        and response carries no token material, so the HMAC leaks nothing.
+        revealing the token is the entire point; the response carries
+        no token material.
         """
         nonce = req.query.get("nonce", "")
         if not (1 <= len(nonce) <= 128) or not PROOF_NONCE_RE.fullmatch(nonce):
@@ -1704,13 +1807,14 @@ class BridgeApp:
         jobs, next_cursor = self.store.list_jobs(status, before_n, limit)
         for j in jobs:
             self.manager._overlay_runtime(j)
-        return JsonResponse({"jobs": jobs, "next_cursor": next_cursor})
+        return JsonResponse({"jobs": [redact_job_env(j) for j in jobs],
+                             "next_cursor": next_cursor})
 
     async def h_job_get(self, req, m):
         job = self.manager.get_job(m.group(1))
         if not job:
             raise BridgeError(404, "JOB_NOT_FOUND", f"no such job: {m.group(1)}")
-        return JsonResponse(job)
+        return JsonResponse(redact_job_env(job))
 
     async def h_job_cancel(self, req, m):
         body = self.parse_json_body(req)
@@ -1722,7 +1826,7 @@ class BridgeApp:
         if not isinstance(force, bool):
             raise BridgeError(400, "VALIDATION_FAILED", "force must be a boolean", field="force")
         job = await self.manager.cancel(m.group(1), grace_ms, force)
-        return JsonResponse(job)
+        return JsonResponse(redact_job_env(job))
 
     # ---- files (PROTOCOL §6) ----------------------------------------------
 
@@ -2093,6 +2197,7 @@ class BridgeApp:
     async def h_events(self, req, m):
         bus = self.bus
         lifecycle = self.manager.last_lifecycle
+        token_change = self.last_token_change
         # §3-M6 / PROTOCOL §5.1: a reconnecting client sends the last event
         # id it saw; buffered events after it are replayed first. A missing
         # or unparsable header means live-only (the pre-replay behaviour).
@@ -2106,6 +2211,13 @@ class BridgeApp:
 
         async def fn(writer):
             q = bus.subscribe(last_event_id)
+            if token_change is not None:
+                # audit §5-M4: a subscriber that connected after a
+                # rotation still learns it happened (its cached state
+                # predates the change) — same first-frame pattern as
+                # bridge.lifecycle below.
+                q.put_nowait((next(bus.counter), "bridge.token_changed",
+                              token_change))
             if lifecycle is not None:
                 # reconcile() already ran (before the port bound), so its
                 # live publish reached no subscriber — hand the restart
@@ -2424,14 +2536,24 @@ class BridgeApp:
             awaiting = False
         elif awaiting:
             status = "awaiting_confirm"
+        pending_view = None
+        if pending_action:
+            # §4-M3: expose the binding (step + action hash) so a client
+            # can echo exactly WHICH action its decision approves.
+            pa = pending_action
+            pending_view = {
+                "describe": pa.get("describe"),
+                "tool": pa.get("tool"),
+                "at": pa.get("requested_at"),
+                "step": pa.get("step"),
+                "action_hash": pa.get("action_hash") or agent_action_hash(
+                    task["task_id"], pa.get("step"), pa.get("tool"),
+                    pa.get("args")),
+            }
         return JsonResponse({
             "task_id": task["task_id"], "job_id": job_id, "status": status,
             "awaiting_confirm": awaiting,
-            "pending_action": (({
-                "describe": (pending_action or {}).get("describe"),
-                "tool": (pending_action or {}).get("tool"),
-                "at": (pending_action or {}).get("requested_at"),
-            }) if pending_action else None),
+            "pending_action": pending_view,
             "summary": task.get("summary"), "error": task.get("error"),
         })
 
@@ -2447,16 +2569,57 @@ class BridgeApp:
         if not pending_p.is_file():
             raise BridgeError(409, "NO_PENDING_CONFIRM",
                               "this task is not awaiting confirmation")
+        # Audit §4-M3: the decision is BOUND to the pending action
+        # (step + hash of task/step/tool/args). A client MAY echo
+        # step/action_hash to prove which action it saw — a mismatch
+        # means the decision must NOT land: 409, pending stays open.
+        try:
+            pending = json.loads(pending_p.read_text(encoding="utf-8"))
+            if not isinstance(pending, dict):
+                raise ValueError("pending is not an object")
+        except Exception:  # noqa: BLE001 — an unreadable binding cannot be approved safely
+            raise BridgeError(409, "CONFIRM_STALE",
+                              "pending confirm is unreadable — refusing "
+                              "to record an unbound decision")
+        p_step = pending.get("step")
+        p_hash = pending.get("action_hash") or agent_action_hash(
+            task["task_id"], p_step, pending.get("tool"),
+            pending.get("args"))
+        if body.get("step") is not None and body.get("step") != p_step:
+            raise BridgeError(409, "CONFIRM_STALE",
+                              "the action changed since this decision — "
+                              "re-approval is required for the new action")
+        if body.get("action_hash") is not None \
+                and body.get("action_hash") != p_hash:
+            raise BridgeError(409, "CONFIRM_STALE",
+                              "the action changed since this decision — "
+                              "re-approval is required for the new action")
         dec_p = (self._agent_home() / "decisions"
                  / f"{task['task_id']}.json")
-        dec_p.write_text(json.dumps({"decision": decision, "decided_at":
-                                     now_iso()}), encoding="utf-8")
+        if dec_p.is_file():
+            # a decision was already recorded for this pending action
+            # and the agent has not consumed it yet — a second (double-
+            # tapped or replayed) decision must not overwrite the first
+            raise BridgeError(409, "CONFIRM_STALE",
+                              "a decision was already recorded for this "
+                              "confirm")
+        # Stamp the decision with the PENDING action's binding (from
+        # the pending file, never trusted from the request body alone):
+        # the agent honours only a decision whose step+hash match the
+        # action it is actually waiting on.
+        dec_p.write_text(json.dumps({"decision": decision,
+                                     "decided_at": now_iso(),
+                                     "step": p_step,
+                                     "action_hash": p_hash}),
+                         encoding="utf-8")
         try:
             pending_p.unlink()
         except OSError:
             pass
-        self.store.audit("agent.confirm", f"{task['task_id']} {decision}")
-        return JsonResponse({"ok": True})
+        self.store.audit("agent.confirm",
+                         f"{task['task_id']} {decision} step={p_step}")
+        return JsonResponse({"ok": True, "step": p_step,
+                             "action_hash": p_hash})
 
     async def h_bridge_ctl(self, req, m):
         body = self.parse_json_body(req)
@@ -2485,10 +2648,9 @@ class BridgeApp:
         """Touch ~/.trmx/heartbeat every 30 s while serving (audit §5-H3).
 
         Liveness evidence for the boot chain: port closed + a heartbeat
-        older than ~2 min means the bridge died (phantom-process kill,
-        crash) rather than never having run, so the Termux:Boot script /
-        a watchdog may safely restart it. Best-effort by design — a
-        failed touch must never take the bridge down.
+        older than ~2 min means the bridge died, so Termux:Boot / a
+        watchdog may safely restart it. Best-effort — a failed touch
+        must never take the bridge down.
         """
         hb = self.home / "heartbeat"
         while True:

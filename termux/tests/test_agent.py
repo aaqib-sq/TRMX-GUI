@@ -277,6 +277,78 @@ class AgentTestBase(unittest.TestCase):
         self.assertIn("action", kinds)
         self.assertIn("result", kinds)
 
+    def test_12b_confirm_is_bound_to_the_action(self):
+        # audit §4-M3: a decision must approve the ACTION it was shown,
+        # not just "whatever is pending". Echoing a stale step or hash
+        # (the action changed, or a double-tap raced a newer confirm)
+        # is refused 409 CONFIRM_STALE and the pending confirm survives;
+        # echoing the pending action's own step+hash lands the decision.
+        self.queue_responses(
+            json.dumps({"op": "do", "tool": "submit_tool",
+                        "args": {"tool": "test-noop", "args": {}},
+                        "describe": "delete the old cache files"}),
+            json.dumps({"op": "done", "summary": "cleaned"}))
+        t = self.create_task("clean up")
+        got = self.wait_task(t["task_id"], {"awaiting_confirm"})
+        pending = got["pending_action"]
+        self.assertIsNotNone(pending.get("action_hash"))
+        self.assertIsNotNone(pending.get("step"))
+        st, resp = self.api("POST",
+                            f"/v1/agent/tasks/{t['task_id']}/confirm",
+                            {"decision": "allow",
+                             "action_hash": "0" * 64})
+        self.assertEqual((st, resp["error"]["code"]),
+                         (409, "CONFIRM_STALE"))
+        st, resp = self.api("POST",
+                            f"/v1/agent/tasks/{t['task_id']}/confirm",
+                            {"decision": "allow",
+                             "step": pending["step"] + 99})
+        self.assertEqual((st, resp["error"]["code"]),
+                         (409, "CONFIRM_STALE"))
+        # still waiting — the stale decisions did not consume the confirm
+        got = self.wait_task(t["task_id"], {"awaiting_confirm"})
+        st, resp = self.api("POST",
+                            f"/v1/agent/tasks/{t['task_id']}/confirm",
+                            {"decision": "allow",
+                             "step": pending["step"],
+                             "action_hash": pending["action_hash"]})
+        self.assertEqual(st, 200, resp)
+        got = self.wait_task(t["task_id"], {"done"})
+        self.assertEqual(got["summary"], "cleaned")
+
+    def test_19_service_stop_needs_confirm(self):
+        # audit §4-M4: service_action stop used to run unconfirmed.
+        self.queue_responses(json.dumps(
+            {"op": "do", "tool": "service_action",
+             "args": {"service_id": "nope", "action": "stop"},
+             "describe": "stop the web service"}))
+        t = self.create_task("stop the service")
+        got = self.wait_task(t["task_id"], {"awaiting_confirm"})
+        self.assertEqual(got["pending_action"]["tool"], "service_action")
+        st, resp = self.api("POST",
+                            f"/v1/agent/tasks/{t['task_id']}/confirm",
+                            {"decision": "deny"})
+        self.assertEqual(st, 200, resp)
+        got = self.wait_task(t["task_id"], {"failed"})
+        self.assertIn("denied", got["error"])
+
+    def test_19b_chmod_recursive_needs_confirm(self):
+        # audit §4-M4: chmod -R is not a verb in DESTRUCTIVE_RE — the
+        # multi-token pattern net must catch it.
+        self.queue_responses(json.dumps(
+            {"op": "do", "tool": "submit_tool",
+             "args": {"tool": "test-noop", "args": {}},
+             "describe": "chmod -R 755 the whole data folder"}))
+        t = self.create_task("fix permissions")
+        got = self.wait_task(t["task_id"], {"awaiting_confirm"})
+        self.assertIn("chmod -R", got["pending_action"]["describe"])
+        st, resp = self.api("POST",
+                            f"/v1/agent/tasks/{t['task_id']}/confirm",
+                            {"decision": "deny"})
+        self.assertEqual(st, 200, resp)
+        got = self.wait_task(t["task_id"], {"failed"})
+        self.assertIn("denied", got["error"])
+
     def test_13_confirm_deny_stops(self):
         self.queue_responses(
             json.dumps({"op": "do", "tool": "submit_tool",
@@ -428,6 +500,7 @@ import contextlib  # noqa: E402
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
 import io  # noqa: E402
+import threading  # noqa: E402
 import signal  # noqa: E402
 
 # Load trmx-agent (no .py suffix) as a module for direct unit tests of
@@ -577,21 +650,44 @@ class TestConfirmExpired(unittest.TestCase):
         self.assertEqual(events[-1]["step"], self.agent.step)
         self.assertFalse(self.agent._pending_path().exists())
 
-    def test_deny_returns_false_without_expired_event(self):
+    def _answer_pending(self, decision):
+        """Answer the pending confirm the way the bridge does in
+        production (audit §4-M3 binding): while the confirm is open,
+        stamp the decision with the pending file's step + action_hash.
+        A decision written before the confirm exists — or without the
+        stamp — is a leftover for a different action and ask_confirm
+        must discard it, so these tests cannot pre-write one."""
         dp = self.agent._decision_path()
         dp.parent.mkdir(parents=True, exist_ok=True)
-        dp.write_text(json.dumps({"decision": "deny"}))
+        pp = self.agent._pending_path()
+
+        def answer():
+            for _ in range(200):
+                if pp.is_file():
+                    break
+                time.sleep(0.05)
+            pend = json.loads(pp.read_text())
+            dp.write_text(json.dumps({
+                "decision": decision, "step": pend["step"],
+                "action_hash": pend["action_hash"]}))
+
+        th = threading.Thread(target=answer, daemon=True)
+        th.start()
+        return th
+
+    def test_deny_returns_false_without_expired_event(self):
+        th = self._answer_pending("deny")
         got, events = self._ask("submit_tool", {"tool": "x"},
                                 "delete a thing", "destructive")
+        th.join(timeout=5)
         self.assertFalse(got)
         self.assertEqual([e["t"] for e in events], ["confirm-needed"])
 
     def test_allow_returns_true_without_expired_event(self):
-        dp = self.agent._decision_path()
-        dp.parent.mkdir(parents=True, exist_ok=True)
-        dp.write_text(json.dumps({"decision": "allow"}))
+        th = self._answer_pending("allow")
         got, events = self._ask("submit_tool", {"tool": "x"},
                                 "delete a thing", "destructive")
+        th.join(timeout=5)
         self.assertTrue(got)
         self.assertEqual([e["t"] for e in events], ["confirm-needed"])
 
@@ -677,6 +773,74 @@ class AgentConfirmTimeoutTest(AgentTestBase):
         expired = next(e for e in events if e["t"] == "confirm-expired")
         needed = next(e for e in events if e["t"] == "confirm-needed")
         self.assertEqual(expired["step"], needed["step"])
+
+def _load_agent_module():
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader(
+        "trmx_agent_mod", str(TERMUX / "trmx-agent"))
+    spec = importlib.util.spec_from_loader("trmx_agent_mod", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class TestDestructivePatterns(unittest.TestCase):
+    """Direct unit tests for trmx-agent.is_destructive (audit §4-M4)
+    and the confirm action hash (§4-M3). Bridge is only consulted for
+    submit_tool tier checks, so pattern cases pass bridge=None."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.agent = _load_agent_module()
+
+    def hit(self, tool, args, describe):
+        return self.agent.is_destructive(tool, args, describe, None)
+
+    def test_mv_into_system_paths(self):
+        self.assertEqual(self.hit("list_jobs", {},
+                                  "mv the archive to /dev/null"),
+                         "destructive")
+        self.assertEqual(self.hit("list_jobs", {},
+                                  "mv x /data/data/com.termux/files/usr/bin/x"),
+                         "destructive")
+        self.assertIsNone(self.hit("list_jobs", {},
+                                   "mv the archive to ~/downloads"))
+
+    def test_chmod_recursive(self):
+        self.assertEqual(self.hit("list_jobs", {}, "chmod -R 755 ~/data"),
+                         "destructive")
+        self.assertEqual(self.hit("list_jobs", {}, "chown --recursive a:b ~/x"),
+                         "destructive")
+        self.assertIsNone(self.hit("list_jobs", {}, "chmod 755 ~/data"))
+
+    def test_service_stop_and_restart(self):
+        self.assertEqual(self.hit("service_action",
+                                  {"service_id": "s", "action": "stop"},
+                                  "stop it"), "destructive")
+        self.assertEqual(self.hit("service_action",
+                                  {"service_id": "s", "action": "restart"},
+                                  "bounce it"), "destructive")
+        self.assertIsNone(self.hit("service_action",
+                                   {"service_id": "s", "action": "start"},
+                                   "start it"))
+
+    def test_action_hash_matches_bridge(self):
+        # the agent and the bridge MUST hash identically, or no stamped
+        # decision would ever be honoured
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "trmx_bridge_mod", str(TERMUX / "trmx-bridge.py"))
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        args = {"tool": "test-noop", "args": {"b": 1, "a": "x"}}
+        self.assertEqual(
+            self.agent.action_hash("AT-1", 3, "submit_tool", args),
+            bridge.agent_action_hash("AT-1", 3, "submit_tool", args))
+        # and the hash actually binds: changing the action changes it
+        self.assertNotEqual(
+            self.agent.action_hash("AT-1", 3, "submit_tool", args),
+            self.agent.action_hash("AT-1", 4, "submit_tool", args))
 
 
 class AgentStepCapTest(AgentTestBase):
