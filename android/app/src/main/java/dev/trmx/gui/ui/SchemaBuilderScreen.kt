@@ -36,7 +36,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,13 +80,6 @@ fun SchemaBuilderScreen(
     modifier: Modifier = Modifier,
 ) {
     var showConfig by remember { mutableStateOf(false) }
-
-    // A successful save closes the editor (device feedback, 2026-10-20:
-    // staying on the form with only a "backend saved" line at the bottom
-    // read as a stuck button). Failures keep the editor open, error shown.
-    LaunchedEffect(config.saveCount) {
-        if (config.saveCount > 0) showConfig = false
-    }
 
     // Native backend settings (protocol 1.1, §15): edit ~/.trmx/ai.json
     // through the bridge instead of hand-editing it in Termux.

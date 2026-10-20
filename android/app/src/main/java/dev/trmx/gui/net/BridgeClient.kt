@@ -92,16 +92,6 @@ class BridgeClient(
      * is listening (yet).
      */
     suspend fun verifyBridgeIdentity(): BridgeResult<Unit> {
-        // No token = nothing to verify against (fresh install, not yet
-        // paired): the HMAC key would be empty and SecretKeySpec throws
-        // (device crash report, 2026-10-20). Surface it as a plain 401
-        // so the wizard's not-paired flows take over — the proof only
-        // makes sense once a token exists. No request is sent either.
-        if (token.isBlank()) {
-            return BridgeResult.HttpError(
-                401, "NOT_PAIRED",
-                "no pairing token yet — pair the app with the bridge first")
-        }
         val nonceBytes = ByteArray(16)
         SecureRandom().nextBytes(nonceBytes)
         val nonce = nonceBytes.joinToString("") { "%02x".format(it) }
