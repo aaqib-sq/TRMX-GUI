@@ -3,7 +3,8 @@ package dev.trmx.gui
 /*
  * AppViewModel — orchestrates the data plane (BridgeClient) and exposes UI
  * state for the tab screens. First-run setup / repair lives in
- * SetupViewModel; the agent chat in AgentViewModel. Kept deliberately
+ * SetupViewModel; the agent chat in AgentViewModel; file browsing in
+ * FilesViewModel; the AI backend config in AiConfigViewModel. Kept deliberately
  * thin: all decision logic lives in pure, tested helpers (OutputReducer,
  * SubmitValidator, FormEngine, …).
  */
@@ -17,12 +18,7 @@ import dev.trmx.gui.job.JobOutputState
 import dev.trmx.gui.model.FileEntry
 import dev.trmx.gui.job.OutputReducer
 import dev.trmx.gui.job.SubmitValidator
-import dev.trmx.gui.model.FileOpRequest
 import dev.trmx.gui.model.JobSummary
-import dev.trmx.gui.model.AiConfig
-import dev.trmx.gui.model.AiConfigUpdate
-import dev.trmx.gui.model.AiHttpUpdate
-import dev.trmx.gui.model.AiCliUpdate
 import dev.trmx.gui.model.ServiceDefRequest
 import dev.trmx.gui.model.ServiceStatus
 import dev.trmx.gui.model.SubmitRequest
@@ -48,11 +44,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import android.net.Uri
-import android.os.Environment
 import android.content.Intent
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
-import dev.trmx.gui.files.FileMime
 import dev.trmx.gui.model.ToolStatus
 import dev.trmx.gui.model.ToolSubmitRequest
 import dev.trmx.gui.store.Recipe
@@ -85,38 +79,6 @@ data class SubmitFormState(
     val errors: List<SubmitValidator.FieldError> = emptyList(),
 )
 
-data class FileBrowserState(
-    val path: String = "~",
-    val entries: List<FileEntry> = emptyList(),
-    val loading: Boolean = false,
-    val error: String? = null,
-    val notice: String? = null,
-    val opPending: Boolean = false,
-    val transfer: Transfer? = null,
-    val pendingOpen: PendingOpen? = null,
-    /** Next page offset from the bridge's paged listing (§6), or null
-     *  when this folder fit in one page — see loadMoreFiles(). */
-    val nextOffset: Int? = null,
-    val loadingMore: Boolean = false,
-)
-
-/** One in-flight file transfer (download / upload / open / share). */
-data class Transfer(
-    val label: String,        // "Downloading" | "Uploading" | "Opening" | "Sharing"
-    val name: String,
-    val bytes: Long,
-    val total: Long?,         // null → indeterminate progress
-)
-
-/**
- * A bridge file staged in cache/shared, ready for the UI to fire
- * ACTION_VIEW / ACTION_SEND through the FileProvider (ADR-008).
- */
-data class PendingOpen(
-    val path: String,         // absolute local path
-    val mime: String,
-    val share: Boolean,
-)
 
 /** Toolbox state (PROTOCOL §7). */
 data class ToolsState(
@@ -136,23 +98,6 @@ data class SchemaBuilderState(
     val error: String? = null,      // submit-side error (validation/HTTP)
 )
 
-/** AI backend config form state (protocol 1.1, §15). */
-data class AiConfigState(
-    val loading: Boolean = false,
-    val saving: Boolean = false,
-    val loaded: Boolean = false,
-    val exists: Boolean = false,
-    val mode: String = "cli",           // cli | http_api
-    val provider: String = "groq",
-    val endpoint: String = "",
-    val model: String = "",
-    val apiKeySet: Boolean = false,
-    val apiKeyInput: String = "",       // blank = keep the saved key
-    val clearKey: Boolean = false,      // explicit "forget saved key"
-    val command: String = "ollama run llama3.2",
-    val error: String? = null,
-    val notice: String? = null,
-)
 
 /** Services state (protocol 1.1, §14). */
 data class ServicesState(
@@ -208,7 +153,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _output = MutableStateFlow<JobOutputState?>(null)
     val output = _output.asStateFlow()
 
-    private val _files = MutableStateFlow(FileBrowserState())
 
     private val recipeStore = RecipeStore(getApplication<Application>().filesDir)
 
@@ -221,8 +165,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _schemaBuilder = MutableStateFlow(SchemaBuilderState())
     val schemaBuilder = _schemaBuilder.asStateFlow()
 
-    private val _aiConfig = MutableStateFlow(AiConfigState())
-    val aiConfig = _aiConfig.asStateFlow()
 
     private val _services = MutableStateFlow(ServicesState())
     val services = _services.asStateFlow()
@@ -247,7 +189,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var installWatch: String? = null   // job_id of a running pkg install
     private var aiWatch: String? = null        // job_id of a running trmx-ai job
-    val files = _files.asStateFlow()
 
     private var pollJob: Job? = null
     private var outputJob: Job? = null
@@ -267,7 +208,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         eventsJob?.cancel()
         _dashboard.value = DashboardState()
         _output.value = null
-        _files.value = FileBrowserState()
         _toolForm.value = ToolFormState()
         _recipes.value = recipeStore.list()
         _artifacts.value = ArtifactsState()
@@ -381,234 +321,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ---- file browser (Phase 7) ------------------------------------------
-
-    fun openPath(path: String) {
-        _files.update { it.copy(path = path, loading = true, error = null, notice = null,
-                                nextOffset = null, loadingMore = false) }
-        viewModelScope.launch {
-            when (val r = client().listFiles(path)) {
-                is BridgeResult.Success ->
-                    _files.update { it.copy(entries = r.data.entries, loading = false,
-                                            nextOffset = r.data.next_offset) }
-                is BridgeResult.HttpError ->
-                    _files.update { it.copy(loading = false, error = "HTTP ${r.status}: ${r.code} — ${r.message}") }
-                is BridgeResult.NetworkError ->
-                    _files.update { it.copy(loading = false, error = "bridge unreachable: ${r.cause.message}") }
-            }
-        }
-    }
-
-    fun refreshFiles() = openPath(_files.value.path)
-
-    /**
-     * Append the next page of the current folder (Arena finding 17): the
-     * bridge's §6 listing is paged (offset + next_offset), but the screen
-     * used to stop at the first page, silently truncating folders with
-     * more than a page of entries. Appends to [FileBrowserState.entries];
-     * a failure keeps the loaded entries and surfaces the error.
-     */
-    fun loadMoreFiles() {
-        val s = _files.value
-        val offset = s.nextOffset ?: return
-        if (s.loading || s.loadingMore) return
-        _files.update { it.copy(loadingMore = true, error = null) }
-        viewModelScope.launch {
-            when (val r = client().listFiles(s.path, offset = offset)) {
-                is BridgeResult.Success ->
-                    _files.update {
-                        // another openPath may have won the race — only
-                        // append while we are still on the same folder
-                        if (it.path != s.path) it.copy(loadingMore = false)
-                        else it.copy(entries = it.entries + r.data.entries,
-                                     loadingMore = false,
-                                     nextOffset = r.data.next_offset)
-                    }
-                is BridgeResult.HttpError ->
-                    _files.update { it.copy(loadingMore = false,
-                        error = "HTTP ${r.status}: ${r.code} — ${r.message}") }
-                is BridgeResult.NetworkError ->
-                    _files.update { it.copy(loadingMore = false,
-                        error = "bridge unreachable: ${r.cause.message}") }
-            }
-        }
-    }
-
-    /** @return true when we moved up, false at the root (caller may pop). */
-    fun filesUp(): Boolean {
-        val cur = _files.value.path
-        if (cur == "~") return false
-        val parent = cur.removeSuffix("/").substringBeforeLast('/')
-        openPath(if (parent.isEmpty() || parent == "~") "~" else parent)
-        return true
-    }
-
-    fun makeDir(name: String) {
-        val base = _files.value.path.trimEnd('/')
-        runOp(FileOpRequest(op = "mkdir", path = "$base/$name"))
-    }
-
-    fun renameEntry(entry: FileEntry, newName: String) {
-        val base = _files.value.path.trimEnd('/')
-        runOp(FileOpRequest(op = "rename", path = "$base/${entry.name}", new_name = newName))
-    }
-
-    fun deleteEntry(entry: FileEntry) {
-        val base = _files.value.path.trimEnd('/')
-        val req = if (entry.type == "dir") {
-            FileOpRequest(op = "delete", path = "$base/${entry.name}",
-                          recursive = true, confirm = true)
-        } else {
-            FileOpRequest(op = "delete", path = "$base/${entry.name}")
-        }
-        runOp(req)
-    }
-
-    private fun runOp(req: FileOpRequest) {
-        _files.update { it.copy(opPending = true, error = null, notice = null) }
-        viewModelScope.launch {
-            when (val r = client().fileOp(req)) {
-                is BridgeResult.Success -> {
-                    _files.update { it.copy(opPending = false, notice = "${req.op}: ok") }
-                    refreshFiles()
-                }
-                is BridgeResult.HttpError ->
-                    _files.update { it.copy(opPending = false, error = "${req.op} failed: HTTP ${r.status} ${r.code} — ${r.message}") }
-                is BridgeResult.NetworkError ->
-                    _files.update { it.copy(opPending = false, error = "bridge unreachable: ${r.cause.message}") }
-            }
-        }
-    }
-
-    /** Download into the app's external files dir (no permissions needed). */
-    fun downloadEntry(entry: FileEntry) {
-        val base = _files.value.path.trimEnd('/')
-        val remote = "$base/${entry.name}"
-        val progress = TransferPoster("Downloading", entry.name)
-        _files.update {
-            it.copy(opPending = true, notice = null, error = null,
-                    transfer = Transfer("Downloading", entry.name, 0, null))
-        }
-        viewModelScope.launch {
-            val destDir = getApplication<Application>()
-                .getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                ?: getApplication<Application>().filesDir
-            val dest = File(destDir, entry.name)
-            when (val r = client().downloadFile(remote, dest, progress::onBytes)) {
-                is BridgeResult.Success ->
-                    _files.update { it.copy(opPending = false, transfer = null,
-                                            notice = "saved ${r.data} bytes → ${dest.absolutePath}") }
-                is BridgeResult.HttpError ->
-                    _files.update { it.copy(opPending = false, transfer = null,
-                                            error = "download failed: HTTP ${r.status} ${r.code}") }
-                is BridgeResult.NetworkError ->
-                    _files.update { it.copy(opPending = false, transfer = null,
-                                            error = "download failed: ${r.cause.message}") }
-            }
-        }
-    }
-
-    /**
-     * Phase 8 download-then-open (ADR-008): stream the entry into the
-     * single-slot cache/shared dir (cleared first, so the cache stays
-     * bounded), then the UI fires ACTION_VIEW / ACTION_SEND through the
-     * FileProvider.
-     */
-    fun openEntry(entry: FileEntry, share: Boolean) {
-        if (entry.type == "dir") return
-        val base = _files.value.path.trimEnd('/')
-        openRemote("$base/${entry.name}", entry.name, share)
-    }
-
-    /** Path-based open/share (files browser AND artifact cards use this). */
-    fun openRemote(remote: String, name: String, share: Boolean) {
-        val label = if (share) "Sharing" else "Opening"
-        val progress = TransferPoster(label, name)
-        _files.update {
-            it.copy(opPending = true, notice = null, error = null,
-                    transfer = Transfer(label, name, 0, null))
-        }
-        viewModelScope.launch {
-            val sharedDir = File(getApplication<Application>().cacheDir, "shared")
-            sharedDir.listFiles()?.forEach { it.delete() }   // single slot
-            val dest = File(sharedDir, remote.substringAfterLast('/'))
-            when (val r = client().downloadFile(remote, dest, progress::onBytes)) {
-                is BridgeResult.Success ->
-                    _files.update {
-                        it.copy(opPending = false, transfer = null,
-                                pendingOpen = PendingOpen(
-                                    dest.absolutePath, FileMime.of(name), share))
-                    }
-                is BridgeResult.HttpError ->
-                    _files.update { it.copy(opPending = false, transfer = null,
-                                            error = "${label.lowercase()} failed: " +
-                                                "HTTP ${r.status} ${r.code} — ${r.message}") }
-                is BridgeResult.NetworkError ->
-                    _files.update { it.copy(opPending = false, transfer = null,
-                                            error = "${label.lowercase()} failed: ${r.cause.message}") }
-            }
-        }
-    }
-
-    /** UI fired the open/share intent (or it failed) — clear the slot. */
-    fun afterOpen(error: String?) {
-        _files.update { it.copy(pendingOpen = null, error = error) }
-    }
-
-    /** Upload a picked document into the current directory. */
-    fun uploadFromUri(uri: Uri, displayName: String) {
-        val base = _files.value.path.trimEnd('/')
-        val dest = "$base/$displayName"
-        val progress = TransferPoster("Uploading", displayName)
-        _files.update {
-            it.copy(opPending = true, notice = null, error = null,
-                    transfer = Transfer("Uploading", displayName, 0, null))
-        }
-        viewModelScope.launch {
-            val tmp = File(getApplication<Application>().cacheDir, "upload-$${System.currentTimeMillis()}")
-            try {
-                val resolver = getApplication<Application>().contentResolver
-                resolver.openInputStream(uri)?.use { input ->
-                    tmp.outputStream().use { input.copyTo(it) }
-                } ?: throw java.io.IOException("cannot open picked document")
-                val total = tmp.length()
-                when (val r = client().uploadFile(dest, tmp) { n -> progress.onBytes(n, total) }) {
-                    is BridgeResult.Success -> {
-                        _files.update { it.copy(opPending = false, transfer = null,
-                                                notice = "uploaded $displayName") }
-                        refreshFiles()
-                    }
-                    is BridgeResult.HttpError ->
-                        _files.update { it.copy(opPending = false, transfer = null,
-                                                error = "upload failed: HTTP ${r.status} ${r.code} — ${r.message}") }
-                    is BridgeResult.NetworkError ->
-                        _files.update { it.copy(opPending = false, transfer = null,
-                                                error = "upload failed: ${r.cause.message}") }
-                }
-            } catch (e: Exception) {
-                _files.update { it.copy(opPending = false, transfer = null,
-                                        error = "upload failed: ${e.message}") }
-            } finally {
-                tmp.delete()
-            }
-        }
-    }
-
-    fun clearFilesNotice() = _files.update { it.copy(notice = null, error = null) }
-
-    /** Throttles progress callbacks to ~10 Hz (plus the final value). */
-    private inner class TransferPoster(private val label: String, private val name: String) {
-        private var last = 0L
-
-        fun onBytes(bytes: Long, total: Long?) {
-            val now = android.os.SystemClock.elapsedRealtime()
-            val done = total != null && bytes >= total
-            if (done || now - last >= 100) {
-                last = now
-                _files.update { it.copy(transfer = Transfer(label, name, bytes, total)) }
-            }
-        }
-    }
 
 
     // ---- tools & recipes (Phase 9) --------------------------------------
@@ -845,118 +557,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ---- AI backend config (protocol 1.1, §15) --------------------------------
-
-    fun loadAiConfig() {
-        if (_aiConfig.value.loading || _aiConfig.value.saving) return
-        _aiConfig.update { it.copy(loading = true, error = null) }
-        viewModelScope.launch {
-            when (val r = client().getAiConfig()) {
-                is BridgeResult.Success -> _aiConfig.update {
-                    aiConfigFrom(r.data, it.copy(loading = false, loaded = true))
-                }
-                is BridgeResult.HttpError -> _aiConfig.update {
-                    it.copy(loading = false, loaded = true, error = aiCfgError(r))
-                }
-                is BridgeResult.NetworkError -> _aiConfig.update {
-                    it.copy(loading = false, loaded = true,
-                            error = "bridge unreachable: ${r.cause.message}")
-                }
-            }
-        }
-    }
-
-    private fun aiCfgError(r: BridgeResult.HttpError): String =
-        if (r.status == 404)
-            "AI configuration needs bridge v0.5.1+ — update the backend first"
-        else "HTTP ${r.status} ${r.code} — ${r.message}"
-
-    /** Rebuild the form fields from a (masked) server view. */
-    private fun aiConfigFrom(c: AiConfig, base: AiConfigState): AiConfigState = base.copy(
-        exists = c.exists,
-        mode = c.mode,
-        provider = c.http_api?.provider ?: "groq",
-        endpoint = c.http_api?.endpoint ?: "",
-        model = c.http_api?.model ?: "",
-        apiKeySet = c.http_api?.api_key_set ?: false,
-        apiKeyInput = "",
-        clearKey = false,
-        command = (c.cli?.command ?: emptyList()).joinToString(" "),
-    )
-
-    fun setAiMode(mode: String) = _aiConfig.update { it.copy(mode = mode, error = null) }
-    fun setAiProvider(p: String) = _aiConfig.update { it.copy(provider = p, error = null) }
-    fun setAiEndpoint(v: String) = _aiConfig.update { it.copy(endpoint = v) }
-    fun setAiModel(v: String) = _aiConfig.update { it.copy(model = v) }
-    fun setAiApiKey(v: String) =
-        _aiConfig.update { it.copy(apiKeyInput = v, clearKey = false) }
-    fun setAiCommand(v: String) = _aiConfig.update { it.copy(command = v) }
-    fun forgetAiKey() = _aiConfig.update { it.copy(clearKey = true, apiKeyInput = "") }
-    fun clearAiNotice() = _aiConfig.update { it.copy(notice = null, error = null) }
-
-    /**
-     * Redesign v2: one-tap LOCAL GGUF preset. The bridge talks to a
-     * llama.cpp server (OpenAI-compatible) running on this phone — the
-     * SAME .gguf file the owner already has (PocketPal/ChatterUI use it
-     * read-only from shared storage), no copy, no internet, no API money.
-     * A dummy key is stored because openai_compatible expects one;
-     * llama-server ignores it.
-     */
-    fun applyLocalGgufPreset() {
-        _aiConfig.update {
-            it.copy(mode = "http_api", provider = "openai_compatible",
-                endpoint = "http://127.0.0.1:8080/v1/chat/completions",
-                model = "local-gguf", apiKeyInput = "local",
-                clearKey = false, error = null)
-        }
-        saveAiConfig()
-    }
-
-    fun saveAiConfig() {
-        val s0 = _aiConfig.value
-        if (s0.saving) return
-        val cmd = s0.command.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-        if (s0.mode == "cli" && cmd.isEmpty()) {
-            _aiConfig.update { it.copy(error = "offline mode needs a command, e.g. ollama run llama3.2") }
-            return
-        }
-        if (s0.mode == "http_api" && s0.model.isBlank()) {
-            _aiConfig.update { it.copy(error = "cloud mode needs a model") }
-            return
-        }
-        _aiConfig.update { it.copy(saving = true, error = null, notice = null) }
-        val request = AiConfigUpdate(
-            mode = s0.mode,
-            cli = AiCliUpdate(command = cmd),
-            http_api = AiHttpUpdate(
-                provider = s0.provider,
-                endpoint = s0.endpoint.trim(),
-                model = s0.model.trim(),
-                api_key = when {
-                    s0.clearKey -> ""                       // clear
-                    s0.apiKeyInput.isNotBlank() -> s0.apiKeyInput.trim()
-                    else -> null                            // keep
-                },
-            ),
-        )
-        viewModelScope.launch {
-            when (val r = client().updateAiConfig(request)) {
-                is BridgeResult.Success -> {
-                    _aiConfig.update {
-                        aiConfigFrom(r.data, it.copy(saving = false,
-                                                     notice = "backend saved"))
-                    }
-                }
-                is BridgeResult.HttpError ->
-                    _aiConfig.update { it.copy(saving = false, error = aiCfgError(r)) }
-                is BridgeResult.NetworkError ->
-                    _aiConfig.update {
-                        it.copy(saving = false,
-                                error = "bridge unreachable: ${r.cause.message}")
-                    }
-            }
-        }
-    }
 
     // ---- services (protocol 1.1, §14) ----------------------------------------
 
@@ -1108,8 +708,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Open/share an artifact card (download-then-open, ADR-008 path). */
-    fun openArtifact(a: Artifact, share: Boolean) = openRemote(a.path, a.name, share)
 
     // ---- recipes -------------------------------------------------------------
 
@@ -1154,23 +752,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Share a recipe as JSON via the Phase 8 staging mechanism. */
-    fun shareRecipe(r: Recipe) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching {
-                val sharedDir = File(getApplication<Application>().cacheDir, "shared")
-                sharedDir.mkdirs()
-                sharedDir.listFiles()?.forEach { it.delete() }   // single slot
-                val safe = r.title.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                val f = File(sharedDir, "trmx-recipe-$safe.json")
-                f.writeText(RecipeStore.export(r))
-                _files.update { it.copy(pendingOpen =
-                    PendingOpen(f.absolutePath, "application/json", true)) }
-            }.onFailure { e ->
-                _tools.update { it.copy(error = "share failed: ${e.message}") }
-            }
-        }
-    }
+    /** Recipe-share failure surface: FilesViewModel.shareRecipe (which
+     *  owns the staged file since the split) reports through this
+     *  adapter — the same _tools update the pre-split shareRecipe
+     *  performed inline. */
+    fun reportToolError(message: String) =
+        _tools.update { it.copy(error = message) }
 
     fun importRecipe(uri: Uri) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
