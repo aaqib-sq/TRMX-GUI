@@ -120,6 +120,12 @@ DEFAULT_CONFIG = {
     "queue_depth": 32,
     "log_ring_bytes": 2 * 1024 * 1024,
     "cancel_grace_ms": 5000,
+    # Retention (§6-H2/H3, §3-M14) — policy in termux/README.md.
+    "retention_days": 30,
+    "retention_keep_terminal": 50,
+    "audit_max_rows": 5000,
+    "agent_task_ttl_days": 30,
+    "runtime_evict_grace_s": 300,
 }
 
 
@@ -554,6 +560,63 @@ class JobManager:
                 job_id, FrameLog(self._log_path(job_id), cap), seq)
         return self.runtimes[job_id]
 
+    def _track(self, rt: JobRuntime, coro) -> asyncio.Task:
+        """Register a job task; finished ones self-remove (§6-H2)."""
+        task = asyncio.create_task(coro)
+        rt.tasks.add(task)
+        task.add_done_callback(rt.tasks.discard)
+        return task
+
+    def apply_retention(self) -> dict:
+        """Bridge-start retention pass (audit §6-H3, §3-M14) — policy in
+        termux/README.md ("Retention"). ACTIVE jobs are never pruned."""
+        counts = {"jobs": 0, "log_dirs": 0, "audit_rows": 0, "agent_tasks": 0}
+        db = self.store.db
+        now = time.time()
+        days = float(self.config.get("retention_days", 30))
+        keep = int(self.config.get("retention_keep_terminal", 50))
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%S.000Z",
+                               time.gmtime(now - days * 86400))
+        ph = ",".join("?" for _ in TERMINAL_STATES)
+        stale = db.execute(
+            f"SELECT job_id FROM jobs WHERE status IN ({ph}) AND ended_at < ?"
+            f" AND job_id NOT IN (SELECT job_id FROM jobs"
+            f" WHERE status IN ({ph}) ORDER BY n DESC LIMIT ?)",
+            (*TERMINAL_STATES, cutoff, *TERMINAL_STATES, keep)).fetchall()
+        counts["jobs"] = len(stale)
+        for r in stale:
+            db.execute("DELETE FROM jobs WHERE job_id=?", (r[0],))
+            log_dir = self.home / "logs" / r["job_id"]
+            if log_dir.is_dir():
+                shutil.rmtree(log_dir, ignore_errors=True)
+                counts["log_dirs"] += 1
+        cur = db.execute(
+            "DELETE FROM audit WHERE id NOT IN"
+            " (SELECT id FROM audit ORDER BY id DESC LIMIT ?)",
+            (int(self.config.get("audit_max_rows", 5000)),))
+        counts["audit_rows"] = cur.rowcount
+        db.commit()
+        ttl_s = float(self.config.get("agent_task_ttl_days", 30)) * 86400
+        tasks_dir = self.home / "agent" / "tasks"
+        if tasks_dir.is_dir():
+            for p in tasks_dir.glob("*.json"):
+                try:
+                    if now - p.stat().st_mtime < ttl_s:
+                        continue
+                    task = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue  # unreadable: kept
+                job_id = task.get("job_id") if isinstance(task, dict) else None
+                job = self.store.get_job(job_id) if job_id else None
+                if job and job["status"] in ACTIVE_STATES:
+                    continue  # its job is still ACTIVE
+                p.unlink(missing_ok=True)
+                (self.home / "agent" / "pending" / p.name).unlink(missing_ok=True)
+                counts["agent_tasks"] += 1
+        if any(counts.values()):
+            LOG.info("retention: pruned %s", counts)
+        return counts
+
     def get_job(self, job_id: str) -> dict | None:
         job = self.store.get_job(job_id)
         if job:
@@ -744,13 +807,11 @@ class JobManager:
         self.store.save_job(job)
         self._emit_status(job)
         self.bus.publish("job.updated", job)
-        t_out = asyncio.create_task(self._pump(job_id, proc.stdout, "stdout"))
-        t_err = asyncio.create_task(self._pump(job_id, proc.stderr, "stderr"))
-        rt.pumps = [t_out, t_err]
-        rt.tasks.update(rt.pumps)
-        rt.tasks.add(asyncio.create_task(self._wait_exit(job_id, proc)))
+        rt.pumps = [self._track(rt, self._pump(job_id, proc.stdout, "stdout")),
+                    self._track(rt, self._pump(job_id, proc.stderr, "stderr"))]
+        self._track(rt, self._wait_exit(job_id, proc))
         if job["timeout_s"]:
-            rt.tasks.add(asyncio.create_task(self._timeout_watch(job_id, job["timeout_s"])))
+            self._track(rt, self._timeout_watch(job_id, job["timeout_s"]))
 
     async def _pump(self, job_id: str, stream, kind: str) -> None:
         rt = self.runtimes.get(job_id)
@@ -924,6 +985,13 @@ class JobManager:
             self._emit_status(job)
         self.bus.publish("job.updated", job)
         LOG.info("job %s -> %s%s", job_id, status, f" ({reason})" if reason else "")
+        if rt:   # §6-H2: evict the finished runtime after a grace period
+            grace = float(self.config.get("runtime_evict_grace_s", 300))
+            if grace <= 0:
+                self.runtimes.pop(job_id, None)
+            else:   # (a running loop is guaranteed: create_task below)
+                asyncio.get_running_loop().call_later(
+                    grace, self.runtimes.pop, job_id, None)
         asyncio.get_running_loop().create_task(self._try_start_next())
         return job
 
@@ -1024,7 +1092,7 @@ class JobManager:
                 self.store.save_job(job)
                 self._emit_info(rt, {"type": "reattached"})
                 self.bus.publish("job.updated", job)
-                rt.tasks.add(asyncio.create_task(self._probe_adopted(job_id)))
+                self._track(rt, self._probe_adopted(job_id))
                 LOG.info("reconcile: re-adopted %s (pgid %s)", job_id, job["pgid"])
                 readopted += 1
             else:
@@ -2285,6 +2353,7 @@ class BridgeApp:
                 "config.last_good_fallback",
                 f"{self.config.path} unreadable at startup; "
                 f"recovered from {self.config.path.name}.last-good")
+        self.manager.apply_retention()   # §6-H3: prune before reconcile
         await self.manager.reconcile()
         # protocol 1.1: autostart services launch after reconciliation —
         # best-effort per service (see ServiceRegistry.autostart_boot)
