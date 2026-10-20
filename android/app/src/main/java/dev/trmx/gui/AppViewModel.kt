@@ -29,6 +29,7 @@ import dev.trmx.gui.model.SubmitRequest
 import dev.trmx.gui.model.SystemInfo
 import dev.trmx.gui.net.BridgeClient
 import dev.trmx.gui.net.BridgeResult
+import dev.trmx.gui.net.SseBackoff
 import dev.trmx.gui.net.SseClient
 import dev.trmx.gui.net.SseFrame
 import dev.trmx.gui.store.TokenStore
@@ -1240,19 +1241,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- global event stream (Phase 6) ----------------------------------
 
-    /** Subscribe to /v1/events while the dashboard is visible. */
+    /**
+     * Subscribe to /v1/events while the app is foregrounded (MainActivity
+     * stops this loop on ON_STOP). Reconnects back off exponentially —
+     * 2 s → 30 s cap (§6-H4): with the bridge down the old flat 2 s retry
+     * burned a connection attempt every 2 s for as long as the app was
+     * open. A stream that connected resets the backoff, so a healthy
+     * stream that drops still reconnects at the fast 2 s pace.
+     */
     fun startEvents() {
         if (eventsJob?.isActive == true) return
         eventsJob = viewModelScope.launch {
+            val backoff = SseBackoff()
             while (isActive) {
+                var connected = false
                 try {
-                    sseClient().stream("/v1/events").collect { frame -> onEvent(frame) }
+                    sseClient().stream("/v1/events").collect { frame ->
+                        connected = true
+                        onEvent(frame)
+                    }
+                    connected = true   // clean close ⇒ the stream did connect
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
-                    // bridge stopped or connection lost — retry below
+                    // bridge stopped or connection lost — back off below
                 }
-                delay(2_000L)
+                if (connected) backoff.reset()
+                delay(backoff.nextDelayMs())
             }
         }
     }
