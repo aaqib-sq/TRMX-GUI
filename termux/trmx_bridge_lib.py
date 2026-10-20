@@ -30,6 +30,7 @@ from pathlib import Path
 
 TERMINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED", "LOST"}
 ACTIVE_STATES = {"QUEUED", "STARTING", "RUNNING", "CANCELLING"}
+IDEM_TTL_S = 86400  # idempotency-key dedup window (PROTOCOL §3.3)
 
 
 def now_iso() -> str:
