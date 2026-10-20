@@ -2248,6 +2248,23 @@ class BridgeApp:
 
     # -- serve ----------------------------------------------------------------
 
+    async def _liveness_heartbeat(self) -> None:
+        """Touch ~/.trmx/heartbeat every 30 s while serving (audit §5-H3).
+
+        Liveness evidence for the boot chain: port closed + a heartbeat
+        older than ~2 min means the bridge died (phantom-process kill,
+        crash) rather than never having run, so the Termux:Boot script /
+        a watchdog may safely restart it. Best-effort by design — a
+        failed touch must never take the bridge down.
+        """
+        hb = self.home / "heartbeat"
+        while True:
+            try:
+                hb.touch()
+            except OSError:
+                LOG.warning("cannot write heartbeat file %s", hb)
+            await asyncio.sleep(30)
+
     async def serve(self) -> None:
         if self.config.used_last_good:
             # audit §5-H2: the recovery must be visible in the audit log,
@@ -2263,6 +2280,7 @@ class BridgeApp:
         server = await asyncio.start_server(self.handle_conn, "127.0.0.1", self.port)
         LOG.info("trmx-bridge %s listening on 127.0.0.1:%s (home=%s)",
                  VERSION, self.port, self.home)
+        asyncio.get_running_loop().create_task(self._liveness_heartbeat())
         async with server:
             await server.serve_forever()
 
