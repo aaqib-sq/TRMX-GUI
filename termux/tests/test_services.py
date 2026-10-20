@@ -340,5 +340,71 @@ class TestServices(unittest.TestCase):
             bridge2.close()
 
 
+    def test_42_bindings_survive_bridge_restart(self):
+        # §5-H1 regression: the binding (service -> job) is persisted on
+        # disk. When the bridge process is replaced, reconcile re-adopts
+        # the still-running service job, status reports running with the
+        # same job, and stop() cancels it — no phantom "stopped", no
+        # duplicate start.
+        sid = "persist"
+        self.create_service(id=sid, name="Persist Service", args={"port": 8457})
+        status, st = self.http("POST", f"/v1/services/{sid}/start", {})
+        self.assertEqual(status, 200, st)
+        job_id = st["job_id"]
+        self.assertTrue(job_id.startswith("J-"), st)
+        # the binding is on disk, not just in RAM
+        bindings = json.loads((Path(self.home) / "services" / "_bindings.json")
+                              .read_text(encoding="utf-8"))
+        self.assertEqual(bindings.get(sid), job_id)
+
+        # replace the bridge process entirely — the service job survives in
+        # its own session while the new bridge reconciles it
+        port2 = free_port()
+        bridge2 = BridgeProc(self.home, port2)
+        try:
+            bridge2.start()
+            token2 = bridge2.token()
+
+            def api2(method, path, body=None):
+                conn = http.client.HTTPConnection("127.0.0.1", port2, timeout=10)
+                headers = {"X-TRMX-Protocol": "1",
+                           "Authorization": f"Bearer {token2}",
+                           "Connection": "close"}
+                data = json.dumps(body).encode() if body is not None else None
+                if body is not None:
+                    headers["Content-Type"] = "application/json"
+                conn.request(method, path, body=data, headers=headers)
+                r = conn.getresponse()
+                out = (r.status, json.loads(r.read() or b"null"))
+                conn.close()
+                return out
+
+            status, st2 = api2("GET", f"/v1/services/{sid}")
+            self.assertEqual(status, 200, st2)
+            self.assertEqual(st2["state"], "running", st2)
+            self.assertEqual(st2["job_id"], job_id,
+                             "restart must re-link the live job, not start a duplicate")
+            status, job = api2("GET", f"/v1/jobs/{job_id}")
+            self.assertEqual(job["status"], "RUNNING")
+            # stop() on the re-adopted binding actually cancels the job
+            status, st3 = api2("POST", f"/v1/services/{sid}/stop", {})
+            self.assertEqual(status, 200, st3)
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                _, job = api2("GET", f"/v1/jobs/{job_id}")
+                if job["status"] in ("CANCELLED", "COMPLETED", "FAILED", "LOST"):
+                    break
+                time.sleep(0.2)
+            self.assertEqual(job["status"], "CANCELLED",
+                             "re-adopted stop must cancel the live job")
+            status, st4 = api2("GET", f"/v1/services/{sid}")
+            self.assertEqual(st4["state"], "stopped", st4)
+        finally:
+            bridge2.term()
+            bridge2.close()
+        # clean up: the "persist" definition was only for this test
+        self.http("DELETE", f"/v1/services/{sid}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
