@@ -27,8 +27,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -183,11 +188,24 @@ private fun AgentRowCard(row: AgentRow) {
         modifier = Modifier.fillMaxWidth(),
         contentPadding = Sp.s,
     ) {
-        Text(row.title,
+        // Result excerpts can run to 1500 chars (§2-M7) — render them
+        // capped at ~300 with a tap to expand, never as a wall of text.
+        // Display-only: the stored row keeps the full text.
+        val isResult = row.kind == AgentRowKind.RESULT_OK ||
+            row.kind == AgentRowKind.RESULT_FAIL
+        val capped = isResult && row.title.length > RESULT_CAP
+        var expanded by remember(row.title) { mutableStateOf(false) }
+        Text(if (capped && !expanded) row.title.take(RESULT_CAP) + "…" else row.title,
              style = MaterialTheme.typography.bodyMedium,
              fontWeight = if (row.kind == AgentRowKind.DOING ||
                  row.kind == AgentRowKind.DONE) FontWeight.SemiBold else null,
              color = titleColor)
+        if (capped) {
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Show less" else "Show more",
+                     style = MaterialTheme.typography.labelSmall)
+            }
+        }
         row.detail?.let {
             Text(it,
                  style = MaterialTheme.typography.bodySmall,
@@ -196,6 +214,8 @@ private fun AgentRowCard(row: AgentRow) {
         }
     }
 }
+
+private const val RESULT_CAP = 300
 
 /** The destructive pause (§5): plain description, Allow / Deny. */
 @Composable

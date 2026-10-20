@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -72,6 +75,7 @@ import dev.trmx.gui.ui.ToolboxScreen
 import dev.trmx.gui.ui.TrmxIconButton
 import dev.trmx.gui.ui.TrmxNavItemColors
 import dev.trmx.gui.ui.TrmxTopBar
+import dev.trmx.gui.ui.Tokens.Palette as P
 import dev.trmx.gui.ui.TRMXTheme
 import dev.trmx.gui.wizard.PairLink
 import dev.trmx.gui.wizard.SetupViewModel
@@ -445,11 +449,22 @@ fun AppRoot(
                                 selected = screen == Screen.AGENT,
                                 onClick = { screen = Screen.AGENT },
                                 icon = {
-                                    Icon(
-                                        if (screen == Screen.AGENT) Icons.Filled.AutoAwesome
-                                        else Icons.Outlined.AutoAwesome,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp))
+                                    Box {
+                                        Icon(
+                                            if (screen == Screen.AGENT) Icons.Filled.AutoAwesome
+                                            else Icons.Outlined.AutoAwesome,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(24.dp))
+                                        // Running dot (§1-M9): a task in
+                                        // flight stays visible from any tab.
+                                        if (agentState.active) {
+                                            Box(
+                                                Modifier
+                                                    .size(8.dp)
+                                                    .align(Alignment.TopEnd)
+                                                    .background(P.Accent, CircleShape))
+                                        }
+                                    }
                                 },
                                 label = { Text("Agent", style = MaterialTheme.typography.labelSmall) },
                                 colors = TrmxNavItemColors())
