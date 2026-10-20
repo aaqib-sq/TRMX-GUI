@@ -57,7 +57,7 @@ jobs:
       - name: SHA256SUMS freshness (audit §7-H5)
         run: |
           cd termux
-          sha256sum trmx-bridge.py trmx trmx-ai trmx_ai_lib.py trmx-agent > /tmp/sums.fresh
+          sha256sum trmx-bridge.py trmx_bridge_lib.py trmx trmx-ai trmx_ai_lib.py trmx-agent > /tmp/sums.fresh
           if ! diff -u SHA256SUMS /tmp/sums.fresh; then
             echo "::error::termux/SHA256SUMS is stale — regenerate it from the tree"
             exit 1
@@ -65,13 +65,13 @@ jobs:
 
       - name: Bridge size gate (audit §7-H2)
         env:
-          # RATCHET (Zeeni, 2026-10-20): the audit's §7-H2 target is 126976
-          # (124 KiB), but the Batch 1 + 1B safety fixes grew trmx-bridge.py
-          # to 139860 bytes — already past it. The gate therefore ratchets
-          # at 143360 (140 KiB) today: any further growth fails CI, and the
-          # limit MUST be tightened back to 126976 once the bridge is
-          # split into modules (tracked follow-up from the audit roadmap).
-          BRIDGE_SIZE_LIMIT: "143360"
+          # Audit §7-H2 target: 124 KiB — safety margin under the ~128 KB
+          # tooling wall. (It ratcheted at 143360 while the Batch 1 + 1B
+          # safety fixes had the bridge at 139860 bytes; the module split
+          # — Policy/ToolRegistry/ServiceRegistry into trmx_bridge_lib.py
+          # — brought the bridge back under the target, so the audit
+          # number is restored. Growth past this fails CI.)
+          BRIDGE_SIZE_LIMIT: "126976"
         run: |
           size=$(stat -c%s termux/trmx-bridge.py)
           echo "trmx-bridge.py: ${size} bytes (limit ${BRIDGE_SIZE_LIMIT})"
