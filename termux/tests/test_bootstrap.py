@@ -83,6 +83,26 @@ class BootstrapTest(unittest.TestCase):
                     os.kill(pid, signal.SIGKILL)
             except (ValueError, ProcessLookupError, PermissionError, OSError):
                 pass
+        # The pidfile tracks only ONE bridge, but a class can run two at
+        # once (test_01's default-port start, then test_05's --port start):
+        # the first bridge becomes untracked and squats the default port,
+        # which made later fresh-home installs fail their first start
+        # (CI, 2026-10-20). Scan /proc for any bridge whose cmdline names
+        # this sandbox and kill it too, then wait for the ports to close.
+        sandbox = str(cls.sandbox).encode()
+        for proc in Path("/proc").glob("[0-9]*"):
+            try:
+                cmdline = (proc / "cmdline").read_bytes()
+            except OSError:
+                continue
+            if b"trmx-bridge.py" in cmdline and sandbox in cmdline:
+                try:
+                    os.kill(int(proc.name), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+        deadline = time.time() + 10
+        while time.time() < deadline and (port_open(27342) or port_open(BRIDGE_PORT)):
+            time.sleep(0.2)
 
     @classmethod
     def base_env(cls):
@@ -297,6 +317,9 @@ class BootstrapTest(unittest.TestCase):
     # -- remote (fetch) mode, exercised network-free via file:// base -----
 
     def test_11_remote_mode_fetch_and_verify(self):
+        # fresh-home install first-starts on the default port: the
+        # class bridges from test_01/05 must not squat it
+        self.stop_bridge()
         # the app-facing flow (CONTROL-PLANE.md op INSTALL) is: fetch from a
         # base URL + verify against SHA256SUMS. file:// exercises exactly
         # that code path without network access.
@@ -327,6 +350,9 @@ class BootstrapTest(unittest.TestCase):
 
 
     def test_13_relative_source_path(self):
+        # fresh-home install first-starts on the default port: the
+        # class bridges from test_01/05 must not squat it
+        self.stop_bridge()
         # regression: `sh termux/install.sh --source termux` from the repo
         # root must work — the checksum check runs inside the staging dir,
         # where a relative source path would not resolve
