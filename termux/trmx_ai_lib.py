@@ -332,18 +332,24 @@ def call_backend(cfg: dict, model: str | None, prompt: str,
 
 # --------------------------------------------- untrusted-output handling
 
-def extract_json(text: str) -> dict:
-    """First balanced, string-aware {...} block. Fences/prose tolerated,
-    but the JSON itself must parse — anything else is invalid."""
-    text = text[:MAX_LLM_BYTES]
-    start = text.find("{")
-    if start < 0:
-        raise ValueError("no JSON object found in the model output")
+def _balanced_blocks(text: str) -> list[tuple[int, int]]:
+    """(start, end) spans of every top-level balanced {...} block.
+
+    String-aware exactly like the original first-block scan: braces
+    inside a JSON string do not move the depth. Quote state is only
+    tracked inside a block — prose quotes before/between blocks are
+    ignored, as they were when only the first block was scanned.
+    """
+    spans: list[tuple[int, int]] = []
     depth = 0
+    start = -1
     in_str = False
     esc = False
-    for i in range(start, len(text)):
-        c = text[i]
+    for i, c in enumerate(text):
+        if depth == 0:
+            if c == "{":
+                start, depth = i, 1
+            continue
         if in_str:
             if esc:
                 esc = False
@@ -359,11 +365,52 @@ def extract_json(text: str) -> dict:
         elif c == "}":
             depth -= 1
             if depth == 0:
-                try:
-                    obj = json.loads(text[start:i + 1])
-                except Exception as e:  # noqa: BLE001
-                    raise ValueError(f"model JSON does not parse: {e}") from e
-                if not isinstance(obj, dict):
-                    raise ValueError("model output is not a JSON object")
-                return obj
-    raise ValueError("unbalanced braces in the model output")
+                spans.append((start, i + 1))
+    return spans
+
+
+def _parse_block(text: str, span: tuple[int, int]) -> dict:
+    """Parse one balanced block with the original error wording."""
+    try:
+        obj = json.loads(text[span[0]:span[1]])
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"model JSON does not parse: {e}") from e
+    if not isinstance(obj, dict):
+        raise ValueError("model output is not a JSON object")
+    return obj
+
+
+def extract_json(text: str, validator=None) -> dict:
+    """One JSON object out of untrusted model text.
+
+    Without a validator: the first balanced, string-aware {...} block
+    (the original behaviour) — fences/prose tolerated, but the JSON
+    itself must parse; anything else is invalid.
+
+    With a validator (a callable that raises ValueError to reject a
+    candidate): every balanced block is parsed and the LAST one the
+    validator accepts wins. A small model that chats around its JSON
+    often emits a prose/example object first and the real action last,
+    and the first block used to be executed as-is (audit §2-M3). If NO
+    block validates, fall back to the first block exactly as above, so
+    the caller sees the same object/error it would have seen before.
+    """
+    text = text[:MAX_LLM_BYTES]
+    if "{" not in text:
+        raise ValueError("no JSON object found in the model output")
+    spans = _balanced_blocks(text)
+    if not spans:
+        raise ValueError("unbalanced braces in the model output")
+    if validator is None:
+        return _parse_block(text, spans[0])
+    chosen = None
+    for span in spans:
+        try:
+            obj = _parse_block(text, span)
+            validator(obj)
+        except ValueError:
+            continue
+        chosen = obj
+    if chosen is not None:
+        return chosen
+    return _parse_block(text, spans[0])

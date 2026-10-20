@@ -575,7 +575,11 @@ class Agent:
                 return self.fail(f"backend error at step {self.step}: "
                                  f"{re.sub(r'^trmx:\\s*', '', msg)}")
             try:
-                action = validate_action(extract_json(text))
+                # §2-M3: prefer the LAST block that validates as an
+                # action — a chatty model may put a prose/example object
+                # before the action it actually means.
+                action = validate_action(
+                    extract_json(text, validator=validate_action))
                 self.parse_failures = 0
             except ValueError as e:
                 # A small local model often wraps the JSON in prose or
