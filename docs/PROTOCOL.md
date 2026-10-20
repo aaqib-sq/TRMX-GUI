@@ -78,7 +78,8 @@ Response `200`:
   "storage": { "home_free_mb": 10240, "shared_available": true },
   "termux": { "home": "/data/data/com.termux/files/home", "prefix": "/data/data/com.termux/files/usr" },
   "caps": { "max_concurrent_jobs": 4, "queue_depth": 32, "log_ring_mb": 2 },
-  "features": { "termux_api": true, "runit": true, "scheduler": false },
+  "features": { "termux_api": true, "runit": true, "scheduler": false,
+                "service_registry": true, "agent_tasks": true },
   "tools_detected": 17
 }
 ```
@@ -387,7 +388,28 @@ data: {"job_id":"J-1042","seq":4821,"text":"[download]  42.1% of ~123.45MiB"}
 ## 13. Versioning & governance
 
 - This document is the single source of truth for TRMX-P/1. Changes require: (a) an ADR in `docs/decisions/`, (b) updated fixtures (§15), (c) a `CHANGELOG.md` entry — in that order, in the same commit.
-- **Current minor: 1.1** (§14, services — bridge ≥ 0.5.0). The request header stays `X-TRMX-Protocol: 1`; minors are additive and capability-gated via `system/info.features`.
+- **Current minor: 1.1** (§14 services — bridge ≥ 0.5.0; §15 AI config — bridge ≥ 0.5.1; §16 agent tasks — bridge ≥ 0.6.0). The request header stays `X-TRMX-Protocol: 1`; minors are additive and capability-gated via `system/info.features`.
+
+### 13.1 Compatibility matrix (app ↔ bridge)
+
+The app and the bridge update independently (APK vs Termux installer), so
+any pairing of recent versions must degrade honestly — a missing
+capability shows an "update the backend" card, never a crash or a silent
+no-op. Feature flags live in `GET /v1/system/info` → `features`.
+
+| Bridge | Protocol | `features` advertised | App behaviour with this bridge |
+|---|---|---|---|
+| **0.6.0** | 1.1 (§§14–16) | `service_registry`, `agent_tasks` | Full surface: jobs, files, tools, services, AI config, agent tasks |
+| 0.5.1 | 1.1 (§§14–15) | `service_registry` | Agent routes 404 and `agent_tasks` is absent — agent UI must stay gated off / show the update hint |
+| 0.5.0 | 1.1 (§14) | `service_registry` | As 0.5.1, plus `/v1/ai/config` 404 — the AI backend editor shows its "needs bridge v0.5.1+" hint |
+| 0.4.x | 1.0 + §7 tools | *(no registry flags)* | Core jobs/files/tools only; Services tab shows the "Bridge update needed" card |
+| < 0.4.0 | 1.0 | — | Update the backend before use (installer is idempotent; pairing survives) |
+
+Rules: clients MUST gate §14 UI on `features.service_registry` and §16
+UI on `features.agent_tasks` (never on the version string alone);
+bridges MUST keep advertising flags they support and MUST NOT advertise
+a flag whose routes they do not serve; unknown `features` keys are
+ignored by older clients (§1.2).
 - Additive changes (new optional fields, new endpoints, new error codes, new event names) bump the **protocol minor** (`1.x`) and MUST be ignored-unknown-field-safe by older clients.
 - Breaking changes (field removal/retyping, semantic changes) open `/v2/`, mounted beside `/v1` for ≥ 1 bridge release; the app supports both during the migration window.
 - Both test suites (Kotlin app, Python bridge) validate against the same fixtures — drift is a CI failure, not a runtime surprise.
@@ -464,7 +486,10 @@ Validation of the FINAL config: `cli.command` a non-empty string list; in `http_
 
 ## 16. Agent tasks (protocol 1.1, additive — bridge ≥ 0.6.0)
 
-Capability: route presence (older bridges 404). The agent is an LLM task
+Capability: `system/info.features.agent_tasks` = `true` (bridge ≥ 0.6.0
+serves these routes — the routes existed in the 0.5.1 code line without
+the flag, which is why the version now matches the doc); older bridges
+404 them and do not advertise the flag (see the §13.1 matrix). The agent is an LLM task
 loop (`termux/trmx-agent`) that the bridge runs as an ordinary job: the app
 creates a task, the bridge submits the internal `agent` tool, and the agent
 process prints a JSON-lines event stream to its stdout — rendered by the app

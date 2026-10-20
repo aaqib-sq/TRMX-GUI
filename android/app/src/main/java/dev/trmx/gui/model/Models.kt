@@ -59,6 +59,7 @@ data class Features(
     val scheduler: Boolean = false,
     val tool_schema_errors: List<String> = emptyList(),   // §7.2 (bridge v0.4.0+)
     val service_registry: Boolean = false,                // protocol 1.1 (§14, bridge v0.5.0+)
+    val agent_tasks: Boolean = false,                     // protocol 1.1 (§16, bridge v0.6.0+)
     val service_errors: List<String> = emptyList(),       // malformed ~/.trmx/services/*.json
 )
 

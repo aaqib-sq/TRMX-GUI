@@ -439,6 +439,47 @@ class BootstrapTest(unittest.TestCase):
                         "running bridge did not refresh ~/.trmx/heartbeat")
 
 
+    def test_16_cmd_stop_verifies_pidfile_pid(self):
+        # audit §5-M1: `trmx stop`'s signal fallback must verify the
+        # pidfile pid really is the bridge before signalling it — a
+        # stale pidfile + a recycled pid must never kill a stranger.
+        target = self.sandbox / "stopcheck" / ".trmx"
+        target.mkdir(parents=True)
+        env = dict(self.base_env(), TRMX_HOME=str(target))
+        stranger = subprocess.Popen(["sleep", "60"])
+        try:
+            (target / "bridge.pid").write_text(str(stranger.pid))
+            r = self.trmx("stop", env=env)
+            self.assertEqual(r.returncode, 1, f"{r.stdout}\n{r.stderr}")
+            self.assertIn("not the bridge", r.stdout)
+            self.assertIn("refusing to signal", r.stdout)
+            self.assertIsNone(stranger.poll(),
+                              "cmd_stop signalled a stranger process")
+        finally:
+            stranger.kill()
+            stranger.wait()
+        # positive control: a pid whose cmdline names trmx-bridge.py
+        # IS signalled (the fallback still stops a real bridge whose
+        # API is unreachable).
+        fake_bridge = subprocess.Popen(["trmx-bridge.py", "60"],
+                                       executable="/bin/sleep")
+        try:
+            (target / "bridge.pid").write_text(str(fake_bridge.pid))
+            r = self.trmx("stop", env=env)
+            self.assertEqual(r.returncode, 0, f"{r.stdout}\n{r.stderr}")
+            self.assertIn("trmx stop:", r.stdout)
+            # (the fake is this process's own child, so after SIGTERM it
+            # lingers as a zombie that kill(pid, 0) still "sees" —
+            # cmd_stop may report the SIGKILL-after-grace wording; what
+            # matters is that the verified pid WAS signalled and died)
+            rc = fake_bridge.wait(timeout=10)
+            self.assertIn(rc, (-signal.SIGTERM, -signal.SIGKILL))
+        finally:
+            if fake_bridge.poll() is None:
+                fake_bridge.kill()
+                fake_bridge.wait()
+
+
 if __name__ == "__main__":
     print(f"bridge under test: v{BRIDGE_VERSION}, source={TERMUX}")
     unittest.main(verbosity=2)

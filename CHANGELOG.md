@@ -6,6 +6,89 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+### Added — reliability hygiene & release process (Batch 3, Group E)
+- **Restart re-arms timers for adopted jobs** (audit §5-M2): reconcile
+  now re-arms the SIGKILL grace timer for a re-adopted `CANCELLING`
+  job (it could previously sit forever if it ignored SIGTERM) and the
+  timeout watch for a re-adopted `RUNNING` job, with the *remaining*
+  time counted from the job's original start.
+- **`trmx stop` verifies the pidfile pid** (audit §5-M1): the signal
+  fallback checks `/proc/<pid>/cmdline` names `trmx-bridge` before
+  signalling; a stale pidfile pointing at a stranger process is
+  refused, never signalled.
+- **Spec conformance deepened** (audit §7-M4): per-route fixture
+  payload shapes (§§2/3/6/7/14/15/16 + both SSE fixtures), the bridge
+  route table vs PROTOCOL.md, the §10 error-code registry, the version
+  handshake, and SHA256SUMS freshness are now gated in
+  `tests/spec_conformance.py`.
+- **Fake device-home fixture** (audit §7-M5):
+  `termux/tests/device_home.py` builds the real Termux layout (real
+  `~/storage` dir, symlink children into shared storage, $PREFIX
+  sibling, `~/.trmx` state) and is exercised by `test_files.py`.
+- **Release process documented** (audit §7-M1/L2): `docs/RELEASE.md`
+  (red-run rule: code-red vs infra-red, plus the release steps) and a
+  root `CONTRIBUTING.md`. `docs/ON-DEVICE-TEST.md` refreshed to the
+  current flows; this changelog gained real version sections.
+
+## [0.6.0] — 2026-10-20 · bridge 0.6.0 / app 0.1.0 / protocol 1.1
+
+The audit-fix release: a full-codebase audit (164 findings) fixed in
+prioritised batches — P0 (PRs #22–#26), the bridge module split
+(PR #35), and P1 (PRs #33–#49) — on top of the October pairing and
+startup fixes recorded below. Per-PR detail lives in the git history;
+this section is the release-level summary.
+
+### Security — P0 batch
+- `http-server` tool binds `127.0.0.1` only, defaults to `~/downloads`,
+  and is tier `confirm` (was: LAN-exposed home directory at `safe`).
+- **Bridge proof-of-identity** (PROTOCOL §2.3): the app verifies an
+  HMAC challenge against its pairing token *before* sending the token
+  anywhere — a port-squatter can no longer harvest it.
+- The public debug keystore is removed from the repo; debug builds
+  use the builder's local key, distributed builds need release
+  signing with a key kept outside the repo (see docs/RELEASE.md).
+- Raw `type:"argv"` submits are tier `destructive` end-to-end: the
+  bridge requires `confirm:true`, the app shows a two-stage dialog.
+- Storage policy roots are an allowlist of the known
+  `termux-setup-storage` children under `/storage/emulated` — planted
+  symlinks no longer widen the policy.
+- yt-dlp audio downloads are MP3-first (`bestaudio`, `--no-playlist`
+  unconditional) instead of full-video-then-convert.
+
+### Fixed — P1 batch
+- Service bindings persist across bridge restarts; `bridge.json`
+  writes are atomic with a last-good fallback; idempotency keys
+  survive restarts (SQLite); cancel during STARTING is honoured;
+  LOST jobs carry a reason and startup emits `bridge.lifecycle`.
+- Boot chain wired: opt-in `install.sh --enable-boot`, bridge
+  heartbeat file, honest "Bridge is down" app state.
+- Retention: finished runtimes evicted, old jobs/logs/audit/agent
+  files pruned at startup under `bridge.json` tunables.
+- Service status diagnoses process/port state and `start()` is
+  locked per service; live pairing handshake integration test;
+  Gemini replies capped at 512 tokens; `extract_json` prefers the
+  last block that validates as an action.
+- App: Chains (dead feature) removed; `/v1/events` reconnect backs
+  off exponentially and pauses in the background; copy feedback,
+  Agent-tab running badge, capped result rows; recipe delete and
+  Stop-bridge confirm dialogs; Files paging; agent session restore.
+
+### Changed
+- **Bridge split** (audit §7-H2): `Policy`, `ToolRegistry` and
+  `ServiceRegistry` moved to `termux/trmx_bridge_lib.py` (pure code
+  motion) — the daemon is back under the CI size gate, and
+  SHA256SUMS covers 6 files.
+- **Bridge version is 0.6.0** — the version the protocol doc already
+  required for the §16 agent routes it serves — and `system/info`
+  now advertises `features.agent_tasks` alongside
+  `features.service_registry`; the app model decodes it, and
+  PROTOCOL §13.1 carries the app ↔ bridge compatibility matrix.
+- CI gates the Termux half (audit §7-H1/H2/H5): the Python suites,
+  SHA256SUMS freshness, and the bridge size gate run on every PR.
+- Repository owner is `aaqib-sq` everywhere (install line included);
+  the installer fails closed when SHA256SUMS is missing.
+
+
 ### Fixed — startup screen overhaul: no invisible text, no dead progress bar (2026-10-18)
 Deep analysis of the startup/setup code after device round 2 (the
 screen sat at a bare progress bar, immune to force-stop):
@@ -70,6 +153,8 @@ screen sat at a bare progress bar, immune to force-stop):
   one-line errors with one repair button, and manual pairing reduced
   to ONE pasted Termux line (`trmx pair … --force`) + "चेक करो".
 
+## [0.5.1] — 2026-09-11 · bridge 0.5.1 / protocol 1.1
+
 ### Fixed — AI Backend editor: Save button occluded by the NavigationBar (2026-09-11)
 - Root cause: `AiConfigEditor` ignored the screen `modifier` — its root
   Column was `fillMaxSize()` WITHOUT the Scaffold innerPadding, so the
@@ -102,6 +187,8 @@ screen sat at a bare progress bar, immune to force-stop):
   AiConfigWireTest 5 (fixture-locked GET, tri-state encoding, typed 404).
 - Fixtures: `ai.config.response.json` · `ai.config.request.json` (§15).
 
+## [0.5.0] — 2026-09-11 · bridge 0.5.0 / protocol 1.1
+
 ### Added — Services milestone: protocol 1.1 service registry (2026-09-11, ADR-015)
 - **Bridge v0.5.0 — `~/.trmx/services/*.json` definitions** (id/name/
   tool/args/autostart) running REGISTRY TOOLS: start submits a normal
@@ -128,6 +215,10 @@ screen sat at a bare progress bar, immune to force-stop):
 - Tests: test_services.py 15 (CRUD, lifecycle, idempotency,
   autostart-at-boot on a fresh bridge, malformed files);
   ServicesWireTest 6 (fixture-locked wire shapes).
+
+## [0.4.2] — 2026-09-11 · bridge 0.4.2
+
+_Includes the app-only UX-audit rounds (P0–P4, Phase 9.5) shipped while the bridge was at 0.4.1–0.4.2._
 
 ### Added — trmx-ai 0.2.0: dual LLM backend (offline cli + cloud http_api)
 - `~/.trmx/ai.json` config v2: `"mode": "cli" | "http_api"` with clean
@@ -312,6 +403,8 @@ screen sat at a bare progress bar, immune to force-stop):
   artifact derivation/merge/dedupe).
 
 
+## [0.4.1] — 2026-09-10 · bridge 0.4.1
+
 ### Changed — universal runtime: broadened bundled tools + fully generic progress engine (bridge v0.4.1, 2026-09-10)
 - Framing made explicit: TRMX-GUI is a **Universal Linux Runtime & Visual
   Control Plane for Android** — the media trio was a showcase, never the
@@ -329,6 +422,8 @@ screen sat at a bare progress bar, immune to force-stop):
 - Tests: `test_tools` 14 → 17 (stderr+CR progress via a fake git, port-line
   detail-only, refresh reload); full Termux suite 66/66.
 
+
+## [0.4.0] — 2026-09-09 · bridge 0.4.0
 
 ### Added — Phase 9: Tool Registry, dynamic forms, recipes, shortcuts & chains (2026-09-09)
 - **Bridge v0.4.0 — PROTOCOL §7 implemented** (frozen since Phase 1):
@@ -370,6 +465,8 @@ screen sat at a bare progress bar, immune to force-stop):
   63/63; app `ToolsWireTest` (4) + `FormEngineTest` (4) + `ChainPlannerTest`
   (3) + `RecipeStoreTest` (4).
 
+
+## [0.3.0] — 2026-09-08 · bridge 0.3.0
 
 ### Added — Phase 8: polish, UX & FileProvider (2026-09-08, app-only)
 - **Open/Share (ADR-008, download-then-open)**: long-press action sheet with
@@ -434,6 +531,10 @@ browser verified — `~` listing, navigation, folder create/rename/delete,
 file download — and the §6 wire shape with protocol headers
 (`X-TRMX-Protocol: 1`) confirmed working end-to-end.
 
+
+## [0.2.0] — 2026-09-07 · bridge 0.2.0
+
+_The app Phases 4–6 and bootstrap Phase 3 below shipped against bridge 0.2.0–0.3.0; the bridge itself entered at 0.2.0 in Phase 2._
 
 ### Added — Phase 6: live output streaming (SSE) (2026-09-08)
 - **`SseClient`** (pure JVM, OkHttp/Okio): TRMX-P/1 §4 stream parser —

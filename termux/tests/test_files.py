@@ -395,6 +395,51 @@ class TestStorageSymlinkRoots(unittest.TestCase):
                     policy.resolve_in_roots(str(home / "storage" / name / "etc/passwd"))
                 self.assertEqual(cm.exception.status, 403)
 
+    def test_device_home_fixture_layout(self):
+        # audit §7-M5: the canonical fake device home (device_home.py)
+        # must keep the real Termux shape this class's regressions came
+        # from — ~/storage a REAL dir, its children symlinks into
+        # shared storage, bridge state under ~/.trmx, $PREFIX a sibling.
+        from device_home import STORAGE_LINKS, make_device_home
+        with tempfile.TemporaryDirectory() as td:
+            dev = make_device_home(Path(td))
+            self.assertTrue(dev.home.is_dir() and dev.prefix.is_dir())
+            self.assertEqual(dev.home.parent, dev.prefix.parent)
+            storage = dev.home / "storage"
+            self.assertTrue(storage.is_dir())
+            self.assertFalse(storage.is_symlink(),
+                             "~/storage itself must be a real directory")
+            for name in STORAGE_LINKS:
+                link = dev.storage_link(name)
+                self.assertTrue(link.is_symlink(), f"{name} must be a symlink")
+                self.assertTrue(link.resolve().is_dir(),
+                                f"{name} target must exist")
+            for d in ("logs", "tools", "bin", "services"):
+                self.assertTrue((dev.trmx_home / d).is_dir(), f".trmx/{d} missing")
+            self.assertTrue((dev.prefix / "bin").is_dir())
+
+    def test_device_home_all_links_become_roots(self):
+        # Every ~/storage child the fixture builds is a known
+        # termux-setup-storage name, so with the device resolve targets
+        # (/storage/emulated/0/…) each one must become a policy root —
+        # not just downloads, which the older tests covered.
+        from device_home import STORAGE_LINKS, make_device_home
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            dev = make_device_home(Path(td))
+            mod, policy = self._policy(dev.home)
+            policy.user_home = dev.home
+            policy.roots = [dev.home, dev.home / "storage"]
+            resolve = Path.resolve
+            android = {dev.storage_link(name): Path("/storage/emulated/0") / folder
+                       if folder else Path("/storage/emulated/0")
+                       for name, folder in STORAGE_LINKS.items()}
+            with patch.object(Path, "resolve", autospec=True,
+                              side_effect=lambda p: android.get(p, resolve(p))):
+                roots = policy.file_roots()
+            for target in android.values():
+                self.assertIn(target, roots)
+
     def test_unknown_name_under_shared_storage_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "home"

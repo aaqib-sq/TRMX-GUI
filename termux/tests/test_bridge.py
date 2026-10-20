@@ -596,6 +596,50 @@ class TestBridge(unittest.TestCase):
         self.assertGreaterEqual(got.get("jobs_lost", 0), 1)
         self.assertIn("jobs_readopted", got)
 
+    def test_11d_restart_cancelling_rearms_grace(self):
+        # audit §5-M2: a job in CANCELLING at bridge death had already
+        # been SIGTERM'd; a process ignoring SIGTERM could then sit in
+        # CANCELLING forever, because _grace was an in-memory task in
+        # the dead bridge and _probe_adopted never re-escalates.
+        # Reconcile must re-arm the grace timer: after the configured
+        # grace (5 s default), the pgid gets SIGKILL and the job lands
+        # CANCELLED.
+        job_id = self.submit(
+            ["python3", "-c",
+             "import signal, time\n"
+             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+             "time.sleep(60)\n"],
+            name="cancelling orphan")
+        self.wait_status(job_id, {"RUNNING"})
+        time.sleep(1.0)   # let the script install its SIGTERM handler
+        s, _, raw = self.http("POST", f"/v1/jobs/{job_id}/cancel",
+                              {"grace_ms": 60000, "force": False})
+        self.assertEqual(s, 200)
+        self.assertEqual(json.loads(raw)["status"], "CANCELLING")
+        self.bridge.kill9()                      # grace task dies with it
+        TestBridge.bridge = BridgeProc(self.home, self.port)
+        TestBridge.bridge.start()
+        job = self.wait_status(job_id, {"CANCELLING"})
+        self.assertEqual(job["status"], "CANCELLING",
+                         "adopted job must come back as CANCELLING")
+        job = self.wait_status(job_id, {"CANCELLED"}, timeout=25)
+        self.assertEqual(job["cancel_reason"], "user")
+
+    def test_11e_restart_running_rearms_timeout(self):
+        # audit §5-M2 (other half): an adopted RUNNING job lost its
+        # _timeout_watch with the old bridge and would run untimed.
+        # Reconcile re-arms it (remaining time from the original
+        # start): the job must still die by timeout shortly after the
+        # restart instead of running its full 60 s.
+        job_id = self.submit(["sleep", "60"], name="timed orphan",
+                             timeout_s=6)
+        self.wait_status(job_id, {"RUNNING"})
+        self.bridge.kill9()
+        TestBridge.bridge = BridgeProc(self.home, self.port)
+        TestBridge.bridge.start()
+        job = self.wait_status(job_id, {"CANCELLED"}, timeout=25)
+        self.assertEqual(job["cancel_reason"], "timeout")
+
     # ---- 12: ring eviction ------------------------------------------------
 
     def test_12_ring_eviction_is_honest(self):

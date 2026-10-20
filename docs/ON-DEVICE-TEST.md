@@ -1,133 +1,166 @@
-# On-Device Test Guide — Phases 4–7
+# On-Device Test Guide — current flows (bridge 0.6.0)
 
-> **STATUS: VERIFIED ✅ — 2026-09-08, physical device, Android 16.**
-> Wizard → pair → start → handshake → jobs J-1…J-3 (exit 0). Kept as the
-> regression checklist for future rounds; the troubleshooting notes below
-> are the distilled lessons from the three fix rounds.
+> **Current as of 2026-10-20** — post Batch 1 / 1B / 2 reality:
+> bridge **0.6.0** (protocol 1.1, `features.agent_tasks`), proof-of-
+> identity pairing, boot autostart as an opt-in, no committed signing
+> key. The rounds after the "Historical rounds" banner are the
+> original phase-by-phase records — they explain how features landed,
+> but where they disagree with this top section (old org name, an
+> `arena/…` branch, bridge 0.2–0.5 version numbers, update-in-place
+> signing), **this section wins**.
 
-**Applies to:** the debug APK built by CI (Actions → latest green `android` run →
-Artifacts → `trmx-debug-apk`). Phone requirements: Android 8+ (user targets 14).
+**Applies to:** the debug APK built by CI (Actions → latest green run —
+both the `android` and `termux` jobs — → Artifacts → `trmx-debug-apk`).
+Phone requirements: Android 8+ (user targets 14+).
 
-## 0. The one gotcha: install source URL
+## 0. Install source (no editing needed)
 
-The app's default install source points at the **`main`** branch, but the
-backend code currently lives on `arena/01a07bc5-trmx-gui`. Until the branch is
-merged, **edit the base URL in the wizard** (step 4 below), replacing `main`:
+The app's install line already points at `main` of the current repo —
+the one the Connect screen shows:
 
 ```
-https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/arena/01a07bc5-trmx-gui/termux
+curl -fsSL https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/main/termux/install.sh | sh
 ```
 
-(If you already merged to main, keep the default.)
+There is no branch to substitute and no base URL to fix in the wizard.
+The installer verifies SHA256SUMS and **fails closed** if they are
+missing or do not match — a refusal is the system working, not a bug
+to work around.
 
 ## 1. Prepare the phone (5 min, once)
 
-1. **Termux** installed from GitHub Releases (termux.dev) — same source for
-   everything Termux; never mix GitHub/F-Droid builds. Open it once.
+1. **Termux** installed from one consistent source (GitHub Releases or
+   F-Droid — never mix the two for Termux and its add-ons). Open it once.
 2. In Termux:
    ```sh
    mkdir -p ~/.termux
    echo "allow-external-apps=true" >> ~/.termux/termux.properties
    termux-reload-settings
    ```
-3. Install the TRMX app: download `trmx-debug-apk` artifact from the latest
-   green Actions run (GitHub → Actions → run → Artifacts), unzip, install the
-   APK (allow "install unknown apps" for your browser/file manager).
-   > One-time note: artifacts built before 2026-09-08 round 2 were signed
-   > with per-run random keys, so updating over them fails with a signature
-   > mismatch — uninstall the old TRMX once, then install. From the round-2
-   > build on, all artifacts share a stable test key and update in place.
-   > After a reinstall the app has no token: stop the bridge first
-   > (`~/.trmx/trmx stop` in Termux) so the wizard's PAIR + START re-pair
-   > cleanly, then re-run the wizard.
+   (The installer also writes this itself; doing it by hand is the
+   belt-and-braces path the wizard's consent screen checks.)
+3. Install the TRMX app: download `trmx-debug-apk` from the latest
+   green Actions run, unzip, install the APK (allow "install unknown
+   apps" for your browser/file manager).
+   > **Signing — uninstall first, once.** No keystore is committed to
+   > the repo any more (audit §4-H2): debug builds are signed with the
+   > *builder's local* debug key. If the TRMX already on the phone was
+   > signed with a different key (the retired committed keystore, or a
+   > build from another machine), Android refuses the update with a
+   > signature mismatch — **uninstall the old TRMX once, then install**.
+   > Uninstalling clears the app's token, so the phone must re-pair
+   > afterwards (step 2 — it is quick). Builds signed by the same key
+   > update in place from then on.
 4. Grant the permission: Android Settings → Apps → TRMX → Permissions →
-   Additional permissions → **Termux: Run Command** → allow. (The wizard has
-   a button that deep-links to this screen.)
+   Additional permissions → **Termux: Run Command** → allow. (The
+   setup screen has a button that deep-links to this.)
 
 ## 1b. Manual backend setup (alternative — Termux side, no app needed)
 
 ```sh
 pkg install -y python curl git
-git clone -b arena/01a07bc5-trmx-gui https://github.com/aaqib-sq/TRMX-GUI
+git clone https://github.com/aaqib-sq/TRMX-GUI
 cd TRMX-GUI
 sh termux/install.sh --source termux     # → "checksums verified", "installed"
 ~/.trmx/trmx start                       # bridge on 127.0.0.1:27342
 ~/.trmx/trmx status                      # → data-plane: UP
-~/.trmx/trmx stop                        # ⚠️ STOP before pairing with the app
+~/.trmx/trmx version                     # → bridge 0.6.0
 ```
 
-**Why the stop:** the app pairs its *own* token into `~/.trmx/bridge.json`,
-but a *running* bridge keeps the old token in memory until restarted — the
-app's handshake would get 401. Stopping first lets the app's START launch
-the bridge with the app's token. (Safe either way: nothing is lost.)
+Pairing no longer depends on stop/start ordering: the bridge re-reads
+`bridge.json` on every auth check, so a token written while it runs
+takes effect on the next request. The easiest manual pair is
+`~/.trmx/trmx pair-link` (see step 2).
 
-## 2. Run the wizard
+## 2. Connect (the current pairing flow)
 
-Open TRMX → confirm the three consent checkboxes (they confirm you did §1) →
-**fix the base URL (§0)** → "Install backend & connect".
+Open TRMX → confirm the consent checkboxes → **Install backend &
+connect**. What happens now, in order:
 
-Expected: step 1 "installing Python" (can be skipped if `pkg install python`
-was already done) → step 2 downloads + SHA256-verifies the bridge → step 3
-pairs → step 4 starts it → step 5 connects → dashboard shows Bridge v0.2.0
-with system info (memory, uptime, limits).
+1. The installer runs (idempotent; a running bridge is stopped,
+   replaced and restarted by it; pairing in `bridge.json` survives).
+2. **Proof of identity before any token is sent:** the app asks the
+   bridge `GET /v1/proof?nonce=…` and checks the HMAC against its own
+   token copy. Whatever answers on port 27342 must *prove* it holds
+   the pairing token — a stranger app squatting on the port fails
+   here and the app never hands it the token.
+3. Pair → start → handshake: the dashboard shows **Bridge v0.6.0**
+   with system info (memory, uptime, limits) and
+   `features.agent_tasks: true`.
 
-If step 1 hangs: Termux's package update may be slow the first time — wait or
-skip if Python is already installed. If step 5 fails, the failure card lists
-the three likely causes (allow-external-apps / install failed / phantom
-killer).
+**One-command alternative:** with the backend installed, run
+`~/.trmx/trmx pair-link` in Termux — it opens TRMX carrying the
+bridge's own token; the app adopts it and verifies with the proof +
+probe above. No typing, no pasting.
 
-## 3. Test sequence (the actual Phase 4–5 acceptance)
+**Boot autostart is opt-in** (the bridge does not start itself by
+default): `sh termux/install.sh --enable-boot` or
+`~/.trmx/trmx enable-boot`, then open the **Termux:Boot** app once so
+Android lets it run at boot. While the bridge runs it refreshes
+`~/.trmx/heartbeat` every 30 s; the app's status reads **"Bridge is
+down"** when it stops answering — a dead bridge is a visible state,
+not a hang.
+
+## 3. Test sequence (current acceptance)
 
 | # | Action | Expected |
 |---|--------|----------|
-| 1 | "+ New job" → name `count`, argv lines: `python3` / `-c` / `for i in range(5): print(i, flush=True)` (each on its own line) → Run | notice appears ("job J-XX submitted"), job shows RUNNING then COMPLETED (exit 0) after ~1 s |
-| 2 | Tap the `count` job | detail shows argv on three lines, pid, exit code 0, stdout_bytes > 0 |
-| 3 | "+ New job" → argv: `false` → Run | FAILED, exit code 1 |
+| 1 | "+ New job" → name `count`, argv lines: `python3` / `-c` / `for i in range(5): print(i, flush=True)` → Run | the destructive-tier confirmation appears first (raw argv always confirms); job shows RUNNING then COMPLETED (exit 0) after ~1 s, with live output |
+| 2 | Tap the `count` job | detail shows argv, pid, exit code 0, live/replayed output |
+| 3 | "+ New job" → argv: `false` → Run (confirm) | FAILED, exit code 1 |
 | 4 | "+ New job" → argv: `sleep` / `600` → Run, open it, "Cancel job" → confirm | CANCELLING → CANCELLED within ~5 s |
-| 5 | Force-stop TRMX (recents → swipe), reopen | warm-start handshake → dashboard without the wizard |
-| 6 | "Stop bridge" | notice; Refresh shows "bridge unreachable" (it's stopped). Reopen Termux and `~/.trmx/trmx start`, or "Re-run setup" |
-
-Note on job 1: the `-c` program is a single argv element — the line-based
-editor passes it verbatim with no shell quoting. That is the argv-first
-design working.
+| 5 | Force-stop TRMX (recents → swipe), reopen | warm-start handshake → dashboard without setup |
+| 6 | **Stop bridge** (Diagnostics) | a confirm dialog names how many jobs will die; confirming stops it, Refresh shows "Bridge is down". Restart from Termux (`~/.trmx/trmx start`) or Re-run setup |
+| 7 | Start a long job, then in Termux `~/.trmx/trmx stop` and `~/.trmx/trmx start` | the job is **re-adopted** (RUNNING, "reattached" in its stream); a job that was CANCELLING when the bridge died is escalated and lands CANCELLED instead of sitting forever |
+| 8 | Services tab → start a service → restart the bridge (step 6/7) | the service still shows **running** with its job after the restart (bindings persist) and Stop actually stops it |
+| 9 | Agent tab → give a small instruction | the task runs step by step; a confirm-tier step pauses on the confirm card (silence for 10 min = denied). Needs bridge 0.6.0 (`agent_tasks`) |
 
 ## 4. If something breaks
 
-- The wizard/job failure cards name the state — screenshot them.
-- Termux side: `~/.trmx/trmx status`, `~/.trmx/bridge.log` (tail).
-- If the bridge dies randomly later: Android's phantom-process killer —
-  enable Developer options → "Disable child process restrictions" (Android
-  14+; details in the Phase 0 report §B.9).
-- Report: which step, what the card said, and the tail of `~/.trmx/bridge.log`
-  if the bridge was involved. Failure cards include a "Last network error:"
-  line — always include it (it named the cleartext bug instantly once added).
-- **401 at handshake / "did the PAIR intent even run?"** — check:
+- Screenshot the failure card — it names the state and the last
+  network error; include both.
+- Termux side: `~/.trmx/trmx status`, `~/.trmx/trmx doctor`, and the
+  tail of `~/.trmx/bridge.log`.
+- If the bridge dies randomly later: Android's phantom-process
+  killer — enable Developer options → "Disable child process
+  restrictions" (Android 14+), and use the boot opt-in (step 2) so it
+  comes back on reboot.
+- **401 at handshake / proof fails** — check:
   `grep -o '"token_generated": [a-z]*' ~/.trmx/bridge.json`
-  `true` = bridge self-generated → the app's PAIR intent never executed →
-  check `cat ~/.termux/termux.properties` (needs `allow-external-apps=true`),
-  run `termux-reload-settings`, restart Termux, retry. `false` = pair ran;
-  a running bridge just needed the STOP→PAIR→START order (wizard does this
-  since round 3). Manual escape hatch: the failure card shows a copyable
-  token — `~/.trmx/trmx stop` → `~/.trmx/trmx pair <token>` →
-  `~/.trmx/trmx start` → Retry.
-- The token is stored in `~/.trmx/bridge.json` (key `"token"`), not a
-  `token.secret` file — check with `head -c 200 ~/.trmx/bridge.json`.
+  `true` = the bridge self-generated a token, i.e. the app's PAIR
+  never landed → check `allow-external-apps=true` (step 1), run
+  `termux-reload-settings`, restart Termux, retry. `false` = pair
+  landed; re-pair from the app (tokens are re-read live — no
+  stop/start dance needed). Manual escape hatch:
+  `~/.trmx/trmx pair-link`, or the failure card's copyable token with
+  `~/.trmx/trmx pair <token> --force`.
+- **Proof fails but the port answers** — something else is listening
+  on 27342 (`PORT_SQUATTED`): `~/.trmx/trmx status` shows whose pid
+  the pidfile holds; `trmx stop` refuses to signal a pid that is not
+  the bridge, so a stranger process must be closed by hand.
+- The token lives in `~/.trmx/bridge.json` (key `"token"`), mode
+  0600 — never paste it into a bug report; `trmx token` prints it
+  masked.
 
-## Known limits in this build (by design, not bugs)
+## Known limits (by design, not bugs)
 
-- No live output *text* yet — detail shows byte counters; streaming arrives
-  in Phase 6.
-- Manual refresh on the dashboard (no push/auto-refresh yet).
-- Plain HTTP on 127.0.0.1 only, bearer-token auth (V1 transport decision).
-- Debug APK is signed with the debug key — fine for testing; release signing
-  is Phase 10/11.
-
-> Update: the first two limits above (live output text, manual dashboard
-> refresh) were resolved and verified on-device in the Phase 6 round
-> (2026-09-08): live console with stdout/stderr filter + replay, and the
-> dashboard self-updates via `/v1/events`.
+- Plain HTTP on 127.0.0.1 only, bearer-token auth + the §2.3 proof
+  (TRMX-P/1 transport decision). No LAN exposure: `http-server`
+  services bind loopback too.
+- Debug APKs are for testing; distributed builds must use release
+  signing with a key kept outside the repo (docs/RELEASE.md).
+- Jobs adopted after a bridge restart keep their state and timers,
+  but their pre-restart output is all that replays — an adopted
+  process's *new* stdout cannot be re-attached (PROTOCOL §4).
 
 ---
+
+# Historical rounds (Phases 4–9.5, UX audits, AI & Services rounds)
+
+Everything below is the original round-by-round record, kept for the
+regression notes and the lessons in it. Version numbers, signing
+notes and URLs in these sections are as of their round — the current
+truth is the guide above.
 
 # Phase 7 round — file manager acceptance (2026-09-08)
 
