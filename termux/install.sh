@@ -31,7 +31,7 @@ set -eu
 
 REF="main"
 DEFAULT_BASE="https://raw.githubusercontent.com/aaqib-sq/TRMX-GUI/$REF/termux"
-FILES="trmx-bridge.py trmx trmx-ai trmx_ai_lib.py trmx-agent"
+FILES="trmx-bridge.py trmx_bridge_lib.py trmx trmx-ai trmx_ai_lib.py trmx-agent"
 HOME_DIR="${TRMX_HOME:-$HOME/.trmx}"
 
 SOURCE=""
@@ -122,7 +122,7 @@ chmod 755 "$HOME_DIR/trmx" "$HOME_DIR/trmx-bridge.py" "$HOME_DIR/trmx-agent" "$H
 python3 - "$HOME_DIR" <<'PYEOF'
 import hashlib, json, os, sys, time
 home = sys.argv[1]
-files = ["trmx-bridge.py", "trmx", "trmx-agent", "trmx_ai_lib.py", "bin/trmx-ai"]
+files = ["trmx-bridge.py", "trmx_bridge_lib.py", "trmx", "trmx-agent", "trmx_ai_lib.py", "bin/trmx-ai"]
 manifest = {
     "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "files": {

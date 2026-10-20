@@ -4,7 +4,8 @@
 
 ```
 termux/
-  trmx-bridge.py       # the daemon — single file, Python 3, STDLIB ONLY (TRMX-P/1 subset)
+  trmx-bridge.py       # the daemon — Python 3, STDLIB ONLY (TRMX-P/1 subset)
+  trmx_bridge_lib.py   # policy + tool/service registries (split out of the daemon, §7-H2)
   trmx                 # control CLI v0.3.0: init | pair | unpair | token | start | stop |
                        #   status | pid | enable-boot | enable-service | version
   install.sh           # one-command installer (intent-driven; --source DIR for local installs)
