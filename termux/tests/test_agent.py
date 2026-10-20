@@ -843,15 +843,68 @@ class TestDestructivePatterns(unittest.TestCase):
             self.agent.action_hash("AT-1", 4, "submit_tool", args))
 
 
+class TestSayGuard(AgentTestBase):
+    """The say-loop guard (device report, 2026-10-20). A separate
+    class on purpose: AgentStepCapTest re-runs AgentTestBase under
+    a 3-step cap, and the narration case below needs four steps.
+    """
+
+    def test_11d_two_says_end_the_task(self):
+        # Device report (2026-10-20): a greeting made the model answer
+        # with say replies only — "hello, how can I help" then "please
+        # provide a specific instruction" every step — and the loop
+        # marched on because a say never ended anything. Two says in a
+        # row (no tool action between) now end the task: the model's
+        # words ARE its answer.
+        self.queue_responses(
+            json.dumps({"op": "say", "text": "hello! how can I help you?"}),
+            json.dumps({"op": "say",
+                        "text": "please provide a specific instruction"}),
+            json.dumps({"op": "say",
+                        "text": "this third reply must never be read"}))
+        t = self.create_task("hello")
+        got = self.wait_task(t["task_id"], {"done"})
+        self.assertEqual(got["summary"],
+                         "please provide a specific instruction")
+        kinds = [e["t"] for e in self.agent_events(t["job_id"])]
+        self.assertIn("done", kinds)
+        self.assertNotIn("failed", kinds)
+
+    def test_11e_say_do_say_done_still_works(self):
+        # Narration around real work must survive the say guard:
+        # say, act, say, done completes with the done summary.
+        self.queue_responses(
+            json.dumps({"op": "say", "text": "let me check"}),
+            json.dumps({"op": "do", "tool": "submit_tool",
+                        "args": {"tool": "test-noop", "args": {}},
+                        "describe": "run the noop tool"}),
+            json.dumps({"op": "say", "text": "that worked"}),
+            json.dumps({"op": "done", "summary": "checked and done"}))
+        t = self.create_task("check something")
+        got = self.wait_task(t["task_id"], {"done"})
+        self.assertEqual(got["summary"], "checked and done")
+
+
 class AgentStepCapTest(AgentTestBase):
     extra_env = {"TRMX_AGENT_MAX_STEPS": "3",
                  "TRMX_AGENT_TASK_TIMEOUT_S": "120"}
 
     def test_20_step_cap(self):
-        self.queue_responses(*[
-            json.dumps({"op": "say", "text": f"thinking {i}"})
-            for i in range(10)])
-        t = self.create_task("think forever")
+        # The cap still stops a runaway task: one that alternates
+        # narration and actions forever without ever finishing. (A
+        # say-ONLY model no longer reaches the cap — two says in a row
+        # end the task as done, test_11d. The cap guards the patterns
+        # that do not terminate on their own.)
+        responses = []
+        for i in range(10):
+            responses.append(json.dumps(
+                {"op": "say", "text": f"thinking {i}"}))
+            responses.append(json.dumps(
+                {"op": "do", "tool": "submit_tool",
+                 "args": {"tool": "test-noop", "args": {}},
+                 "describe": f"noop {i}"}))
+        self.queue_responses(*responses)
+        t = self.create_task("work forever")
         got = self.wait_task(t["task_id"], {"failed"}, timeout=90)
         self.assertIn("step cap", got["error"])
 

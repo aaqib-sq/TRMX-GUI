@@ -401,7 +401,6 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
     private fun humanAgentError(raw: String): String {
         val e = raw.lowercase()
         return when {
-            "cancelled by user" in e -> "you stopped the task"
             "cannot reach" in e || "connection refused" in e || "connecterror" in e ->
                 if ("127.0.0.1" in e || "localhost" in e)
                     "the local model server is not running. Start it " +

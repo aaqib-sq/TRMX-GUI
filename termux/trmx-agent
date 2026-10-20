@@ -407,6 +407,7 @@ class Agent:
         self.child_job_id: str | None = None
         self.consec_failures = 0
         self.parse_failures = 0
+        self._prev_op = None
 
     # -- task file ------------------------------------------------
 
@@ -730,6 +731,17 @@ class Agent:
             if op == "say":
                 emit({"t": "result", "step": self.step, "ok": True,
                       "excerpt": action["text"]})
+                if self._prev_op == "say":
+                    # Two says in a row (no tool action between): the
+                    # model has nothing to DO — its words ARE the answer.
+                    # End the task with them instead of asking again
+                    # (device report, 2026-10-20: a greeting looped
+                    # "please provide a specific instruction" all the
+                    # way to the step cap; a say never ended anything).
+                    emit({"t": "done", "summary": action["text"]})
+                    self._save_task("done", summary=action["text"])
+                    return 0
+                self._prev_op = "say"
                 self._history_add(f"step {self.step}: said "
                                   f"“{action['text'][:120]}”")
                 continue
@@ -741,6 +753,7 @@ class Agent:
                 return self.fail(f"agent cannot do this: {action['reason']}")
 
             # op == "do"
+            self._prev_op = "do"
             tool, args, describe = (action["tool"], action["args"],
                                     action["describe"])
             emit({"t": "plan", "step": self.step, "thought": describe,
