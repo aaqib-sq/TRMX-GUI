@@ -7,6 +7,8 @@
     <!-- Required even for loopback sockets: without it, socket() fails with
          EPERM on API 34+ (on-device round 2 lesson, 2026-09-08). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- App Killer: runtime app enumeration for user-confirmed force-stop. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <!-- Package visibility (Android 11+): we need to see Termux to check
          it is installed before offering the wizard. -->
@@ -54,5 +56,19 @@
                 <data android:scheme="trmx" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- App Killer: accessibility service for automating Force Stop in Settings. -->
+        <service
+            android:name=".killer.AppKillerAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:label="TRMX App Killer"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
     </application>
 </manifest>

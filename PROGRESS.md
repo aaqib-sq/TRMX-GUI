@@ -177,3 +177,37 @@ Investigation of GitHub Actions CI compile failure during `:app:compileDebugKotl
     - Resolved by typing `suffix = unit?.let { u -> { Text(u) } }`.
 16. **`ui/ToolFormScreen.kt:320:17` (Overload resolution ambiguity: [Text overloads])**:
     - Resolved automatically once `helpText` was typed as `String?` from `a.help` instead of `[Error type]`.
+
+---
+
+## 7. App Killer Feature (Branch `agy/trmx-app-killer`)
+
+Date: 2026-10-23  
+Goal: Built-in automated app force-stop feature designed for ease of use: one Accessibility toggle (one-time setup), then one button force-stops user-confirmed background apps one by one with live progress and a final report.
+
+### Architecture & Components:
+1. **Runtime App Enumeration (`AppKillerEngine.loadInstalledApps`)**:
+   - Queries device `PackageManager` at runtime via `getInstalledPackages` (supporting both API 33+ `PackageInfoFlags` and legacy fallback).
+   - Extracts real label, package name, system app flag, and categorizes into CORE, SAFE, or UNKNOWN.
+   - Manifest permission `android.permission.QUERY_ALL_PACKAGES` declared and justified.
+2. **3 Strict Safety Categories (`AppCategories.kt`)**:
+   - **CORE**: System-critical packages that can NEVER be stopped under any circumstances. Enforced both in UI (unselectable, locked badge) and in the kill engine (`executeKillList` filters out CORE packages and marks them skipped). Contains `dev.trmx.gui`, `com.termux.*`, framework, `com.android.systemui`, settings, telecom/phone, package installers, Play services, keyboards, and home launchers.
+   - **SAFE**: Non-essential vendor apps (Galaxy Store, Theme Store, Game Launcher, Voice Recorder, Samsung Tips, Weather, etc.) suggested as pre-selected hints. User can uncheck any or clear all.
+   - **UNKNOWN**: Third-party and other unclassified apps. Default EXCLUDED from the kill selection; only included if user explicitly checks the box.
+3. **AccessibilityService Automation Engine (`AppKillerAccessibilityService.kt` & `AppKillerEngine.kt`)**:
+   - Declared in `AndroidManifest.xml` with `android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"` and configured via `res/xml/accessibility_service_config.xml`.
+   - Per-app execution loop: opens `Settings.ACTION_APPLICATION_DETAILS_SETTINGS` -> polls active window for "Force Stop" node (handling case variants and container hierarchies) -> checks enabled state (skips already stopped apps without waiting for timeout) -> clicks button -> detects confirmation dialog (checks for positive button `button1`, "OK", or "Force stop" alongside dialog cancel) -> clicks confirmation -> records success/skip -> resumes `MainActivity` at end of run.
+   - Per-app 3.5s timeout: if a button is not found or not clickable, records app as SKIPPED with reason and continues without hanging.
+4. **User Interface (`KillScreen.kt` & Navigation)**:
+   - Navigation: Added 3rd tab "Kill" in bottom navigation bar and a quick entry card in `RunScreen.kt`.
+   - Filter tabs: Safe, Other, and Core (protected). Real-time search by app label or package name.
+   - Session confirmation: Confirms total app count before the first kill run of the session.
+   - Accessibility guidance: Clear warning card and one-tap button to open Accessibility settings when service is off; automatically updates on resume (`Lifecycle.Event.ON_RESUME`).
+   - Live progress: Progress bar, current count, and active app label with instant "Stop" cancellation.
+   - Final report dialog: Displays total targeted, stopped count, and detailed skipped reasons.
+
+### Verification & Conformance:
+- `python3 tests/spec_conformance.py`: **100% PASSED** (op table, routes, fixtures, manifest, comment balance, payload shapes, registry, route table, version story).
+- Kotlin symbol resolution: All symbols verified against real SDK and project definitions.
+- Unit tests: Comprehensive category and protection tests in `AppCategoriesTest.kt`.
+- Working tree clean and properly tracked.

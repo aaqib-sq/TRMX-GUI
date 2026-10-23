@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
@@ -73,6 +74,7 @@ fun RunScreen(
     onRefreshTools: () -> Unit,
     onOpenTool: (String) -> Unit,
     onInstallTool: (ToolStatus) -> Unit,
+    onGoToKill: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var commandInput by remember { mutableStateOf("") }
@@ -192,6 +194,58 @@ fun RunScreen(
                     enabled = commandInput.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 )
+            }
+        }
+
+        // ---- App Killer Entry Card ---------------------------------------
+        if (onGoToKill != null) {
+            TrmxCard(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = 16.dp,
+                onClick = onGoToKill,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = P.SurfaceHigh,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Outlined.PowerSettingsNew,
+                                contentDescription = null,
+                                tint = P.TextPrimary,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "App Killer",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = P.TextPrimary,
+                        )
+                        Text(
+                            "Force-stop background apps with one tap",
+                            fontSize = 12.sp,
+                            color = P.TextSecondary,
+                        )
+                    }
+
+                    Icon(
+                        Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = P.TextMuted,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
         }
 
