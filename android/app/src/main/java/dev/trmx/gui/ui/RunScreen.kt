@@ -271,7 +271,7 @@ fun RunScreen(
             title = { Text("Install ${tool.schema.name}?") },
             text = {
                 Text(
-                    "This will run `pkg install -y ${tool.schema.install?.package_name ?: tool.schema.binary}` in Termux."
+                    "This will run `pkg install -y ${tool.schema.pkg ?: tool.schema.binary}` in Termux."
                 )
             },
             confirmButton = {

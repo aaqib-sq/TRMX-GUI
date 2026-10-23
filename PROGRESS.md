@@ -138,3 +138,42 @@ Prior to this redesign, TRMX-GUI had devolved into an unwieldy kitchen sink with
    - Kept intact and leveraged by `RunScreen` and `ActivityScreen` for clean human labels, duration formatting, and robust input validation.
 4. **`FileProvider` & `FilesViewModel.openRemote`**:
    - Kept intact so that job output artifacts (e.g. video files downloaded by `yt-dlp` or logs created by scripts) can be opened in external media players or shared via Android's native share sheet.
+
+---
+
+## 6. PR #69 CI Compile Fixes (Branch `agy/trmx-compact`)
+
+Investigation of GitHub Actions CI compile failure during `:app:compileDebugKotlin` identified 16 errors stemming from invented API names and mismatched signatures introduced during the compact redesign. All 16 errors were resolved using only real, verified APIs in the tree or minimal behavior-preserving local logic:
+
+1. **`ui/ActivityScreen.kt:219:31` (Unresolved reference: `elapsedOrDuration`)**:
+   - Replaced call to non-existent `JobLabels.elapsedOrDuration` with local helper `formatDuration(job)` using `java.time.OffsetDateTime` to calculate elapsed seconds from `started_at ?: created_at`.
+2. **`ui/ActivityScreen.kt:342:35` (Unresolved reference: `elapsedOrDuration`)**:
+   - Replaced call to non-existent `JobLabels.elapsedOrDuration` with local helper `formatDuration(job)` calculating duration between `started_at ?: created_at` and `ended_at`.
+3. **`ui/ActivityScreen.kt:353:41` (Operator '==' cannot be applied to 'Long' and 'Int')**:
+   - Changed `code == 0` to `code == 0L` to compare `JobSummary.exit_code` (`Long?`) with `Long` literal.
+4. **`ui/RunScreen.kt:274:66` (Unresolved reference: `install`)**:
+   - Replaced `tool.schema.install?.package_name ?: tool.schema.binary` with real schema field `tool.schema.pkg ?: tool.schema.binary`.
+5. **`ui/ToolFormScreen.kt:123:55` (Unresolved reference: `title`)**:
+   - Replaced `ex.title` with real `ToolExample.label`.
+6. **`ui/ToolFormScreen.kt:222:27` (Unresolved reference: `unitFor`)**:
+   - Replaced call to non-existent `FormEngine.unitFor(a)` with direct property access `a.x_trmx?.unit`.
+7. **`ui/ToolFormScreen.kt:223:22` (Unresolved reference: `description`)**:
+   - Replaced `a.description` (does not exist on `ToolArg`) with real field `a.help`.
+8. **`ui/ToolFormScreen.kt:236:29` (Overload resolution ambiguity: [Text overloads])**:
+   - Resolved automatically once `helpText` was typed as `String?` from `a.help` instead of `[Error type]`.
+9. **`ui/ToolFormScreen.kt:250:27` (Only safe or non-null asserted calls on nullable `List<String>?`)**:
+   - Changed `a.enum.forEach` to `(a.enum ?: emptyList()).forEach`.
+10. **`ui/ToolFormScreen.kt:273:37` (Unresolved reference: `formatNumber`)**:
+    - Replaced call to non-existent `FormEngine.formatNumber` with `FormEngine.sliderValueText(a.type, cur)`.
+11. **`ui/ToolFormScreen.kt:273:84` (Unresolved reference: `it`)**:
+    - Resolved automatically once `unit` was typed as `String?` from `a.x_trmx?.unit` instead of `[Error type]`.
+12. **`ui/ToolFormScreen.kt:278:71` (Unresolved reference: `formatNumber`)**:
+    - Replaced call to non-existent `FormEngine.formatNumber` with `FormEngine.sliderValueText(a.type, it)`.
+13. **`ui/ToolFormScreen.kt:287:17` (Cannot find a parameter with this name: error)**:
+    - Replaced `error = err` with `isError = err != null`, and converted `supportingText` to a composable lambda `(@Composable () -> Unit)?`.
+14. **`ui/ToolFormScreen.kt:306:26` (Type inference failed: expected `@Composable (() -> Unit)`)**:
+    - Resolved automatically once `unit` was typed as `String?` from `a.x_trmx?.unit` instead of `[Error type]`.
+15. **`ui/ToolFormScreen.kt:306:45` (Unresolved reference: `it`)**:
+    - Resolved by typing `suffix = unit?.let { u -> { Text(u) } }`.
+16. **`ui/ToolFormScreen.kt:320:17` (Overload resolution ambiguity: [Text overloads])**:
+    - Resolved automatically once `helpText` was typed as `String?` from `a.help` instead of `[Error type]`.

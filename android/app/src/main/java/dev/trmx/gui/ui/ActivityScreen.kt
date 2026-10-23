@@ -48,6 +48,7 @@ import dev.trmx.gui.DashboardState
 import dev.trmx.gui.model.JobSummary
 import dev.trmx.gui.tools.JobLabels
 import dev.trmx.gui.ui.Tokens.Palette as P
+import java.time.OffsetDateTime
 
 private val ACTIVE = setOf("RUNNING", "STARTING", "QUEUED", "CANCELLING")
 private val TERMINAL = setOf("COMPLETED", "FAILED", "CANCELLED", "LOST")
@@ -216,7 +217,7 @@ private fun ActiveJobCard(
                 Spacer(Modifier.width(8.dp))
 
                 Text(
-                    JobLabels.elapsedOrDuration(job),
+                    formatDuration(job),
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace,
                     color = P.TextSecondary,
@@ -339,7 +340,7 @@ private fun RecentJobCard(
                         Text(" · ", fontSize = 11.sp, color = P.TextMuted)
                     }
                     Text(
-                        JobLabels.elapsedOrDuration(job),
+                        formatDuration(job),
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = P.TextMuted,
@@ -350,7 +351,7 @@ private fun RecentJobCard(
                             "exit $code",
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
-                            color = if (code == 0) P.TextMuted else P.Danger,
+                            color = if (code == 0L) P.TextMuted else P.Danger,
                         )
                     }
                 }
@@ -365,5 +366,25 @@ private fun RecentJobCard(
                 modifier = Modifier.size(18.dp),
             )
         }
+    }
+}
+
+private fun formatDuration(job: JobSummary, nowMs: Long = System.currentTimeMillis()): String {
+    val startIso = job.started_at ?: job.created_at ?: return "—"
+    val startMs = runCatching {
+        OffsetDateTime.parse(startIso).toInstant().toEpochMilli()
+    }.getOrNull() ?: return "—"
+    val endMs = if (job.ended_at != null) {
+        runCatching {
+            OffsetDateTime.parse(job.ended_at).toInstant().toEpochMilli()
+        }.getOrNull() ?: nowMs
+    } else {
+        nowMs
+    }
+    val s = ((endMs - startMs) / 1000).coerceAtLeast(0L)
+    return when {
+        s < 60L -> "${s}s"
+        s < 3600L -> "${s / 60L}m ${s % 60L}s"
+        else -> "${s / 3600L}h ${(s % 3600L) / 60L}m"
     }
 }

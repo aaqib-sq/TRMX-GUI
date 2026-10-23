@@ -120,7 +120,7 @@ fun ToolFormScreen(
                                 FilterChip(
                                     selected = false,
                                     onClick = { onExample(ex) },
-                                    label = { Text(ex.title, style = MaterialTheme.typography.bodySmall) },
+                                    label = { Text(ex.label, style = MaterialTheme.typography.bodySmall) },
                                     colors = TrmxChipColors(),
                                     border = FilterChipDefaults.filterChipBorder(
                                         enabled = true,
@@ -219,8 +219,8 @@ private fun FormField(
 ) {
     val err = FormEngine.visibleError(a, v, touched)
     val widget = FormEngine.widgetFor(a)
-    val unit = FormEngine.unitFor(a)
-    val helpText = a.description
+    val unit = a.x_trmx?.unit
+    val helpText = a.help
     var secretRevealed by rememberSaveable { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
@@ -247,7 +247,7 @@ private fun FormField(
             "chips", "segmented" -> {
                 Text(a.name, style = MaterialTheme.typography.titleSmall)
                 ActionFlowRow(horizontalGap = Sp.xs, verticalGap = Sp.xs) {
-                    a.enum.forEach { opt ->
+                    (a.enum ?: emptyList()).forEach { opt ->
                         FilterChip(
                             selected = v.text == opt,
                             onClick = { onEdit(v.copy(text = opt)) },
@@ -270,12 +270,12 @@ private fun FormField(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(a.name, style = MaterialTheme.typography.titleSmall,
                          modifier = Modifier.weight(1f))
-                    Text(FormEngine.formatNumber(cur.toDouble()) + (unit?.let { " $it" } ?: ""),
+                    Text(FormEngine.sliderValueText(a.type, cur) + (unit?.let { " $it" } ?: ""),
                          style = MaterialTheme.typography.labelMedium)
                 }
                 Slider(
                     value = cur.coerceIn(min, max),
-                    onValueChange = { onEdit(v.copy(text = FormEngine.formatNumber(it.toDouble()))) },
+                    onValueChange = { onEdit(v.copy(text = FormEngine.sliderValueText(a.type, it))) },
                     valueRange = min..max,
                 )
             }
@@ -284,8 +284,16 @@ private fun FormField(
                 value = v.text,
                 onValueChange = { onEdit(v.copy(text = it)) },
                 label = a.name + if (a.required) " *" else "",
-                error = err,
-                supportingText = if (err == null && helpText != null) helpText else null,
+                isError = err != null,
+                supportingText = if (err != null || helpText != null) {
+                    {
+                        if (err != null) {
+                            Text(err, color = MaterialTheme.colorScheme.error)
+                        } else if (helpText != null) {
+                            Text(helpText)
+                        }
+                    }
+                } else null,
                 trailingIcon = when {
                     a.x_trmx?.secret == true -> {
                         {
@@ -303,7 +311,7 @@ private fun FormField(
                 visualTransformation =
                     if (a.x_trmx?.secret == true && !secretRevealed) PasswordVisualTransformation()
                     else VisualTransformation.None,
-                suffix = unit?.let { { Text(it) } },
+                suffix = unit?.let { u -> { Text(u) } },
                 keyboardOptions = when (a.type) {
                     "int", "float" -> KeyboardOptions(keyboardType = KeyboardType.Number)
                     "url" -> KeyboardOptions(keyboardType = KeyboardType.Uri)
