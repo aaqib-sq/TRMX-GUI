@@ -1,6 +1,7 @@
 package dev.trmx.gui.killer
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -93,6 +94,24 @@ object AppKillerEngine {
         }
     }
 
+    fun getRunningPackages(context: Context, installedPackages: Set<String>? = null): Set<String> {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return emptySet()
+        val runningProcesses = am.runningAppProcesses ?: return emptySet()
+        val running = mutableSetOf<String>()
+        for (proc in runningProcesses) {
+            val pkgList = proc.pkgList ?: continue
+            for (pkg in pkgList) {
+                val trimmed = pkg?.trim() ?: continue
+                if (trimmed.isEmpty()) continue
+                // Exclude core packages (includes this app itself dev.trmx.gui, com.termux*, and core blocklist)
+                if (AppCategories.isCore(trimmed)) continue
+                if (installedPackages != null && !installedPackages.contains(trimmed)) continue
+                running.add(trimmed)
+            }
+        }
+        return running
+    }
+
     fun loadInstalledApps(context: Context): List<AppInfo> {
         val pm = context.packageManager
         val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -101,6 +120,9 @@ object AppKillerEngine {
             @Suppress("DEPRECATION")
             pm.getInstalledPackages(0)
         }
+
+        val installedSet = packages.mapNotNull { it.packageName }.toSet()
+        val runningPackages = getRunningPackages(context, installedSet)
 
         val result = ArrayList<AppInfo>(packages.size)
         for (pkgInfo in packages) {
@@ -120,12 +142,15 @@ object AppKillerEngine {
                 (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
             )
 
+            val isRunning = runningPackages.contains(pkg)
+
             result.add(
                 AppInfo(
                     packageName = pkg,
                     label = label,
                     category = category,
                     isSystem = isSystem,
+                    isRunning = isRunning,
                 ),
             )
         }

@@ -128,4 +128,79 @@ class AppCategoriesTest {
         assertTrue(AppCategories.isCore("   "))
         assertFalse(AppCategories.isKillable(""))
     }
+
+    @Test
+    fun testIsKillableRunningRules() {
+        // 1. User-installed apps (isSystem = false)
+        val userApp = "com.spotify.music"
+        assertTrue(
+            "Running user-installed app must be killable running",
+            AppCategories.isKillableRunning(packageName = userApp, isSystem = false, isRunning = true),
+        )
+        assertFalse(
+            "Non-running user-installed app must NOT be in running tab",
+            AppCategories.isKillableRunning(packageName = userApp, isSystem = false, isRunning = false),
+        )
+
+        // 2. Suggested vendor apps (isSystem = true, in suggestion list)
+        val suggestedVendor = "com.sec.android.app.popupcalculator"
+        assertTrue(
+            "Running suggested vendor app must be killable running",
+            AppCategories.isKillableRunning(packageName = suggestedVendor, isSystem = true, isRunning = true),
+        )
+        assertFalse(
+            "Non-running suggested vendor app must NOT be in running tab",
+            AppCategories.isKillableRunning(packageName = suggestedVendor, isSystem = true, isRunning = false),
+        )
+
+        // 3. Unknown system apps (isSystem = true, not in suggestion list)
+        val unknownSystem = "com.samsung.android.knox.containercore"
+        assertFalse(
+            "Running unknown system app must NOT be in running tab (must go to Other)",
+            AppCategories.isKillableRunning(packageName = unknownSystem, isSystem = true, isRunning = true),
+        )
+        assertFalse(
+            "Non-running unknown system app must NOT be in running tab",
+            AppCategories.isKillableRunning(packageName = unknownSystem, isSystem = true, isRunning = false),
+        )
+
+        // 4. Core system apps can NEVER be in running tab, even if running
+        val coreList = listOf(
+            "dev.trmx.gui",
+            "com.termux",
+            "com.termux.api",
+            "android",
+            "com.android.systemui",
+            "com.android.settings",
+            "com.google.android.gms",
+            "com.android.phone",
+            "com.sec.android.app.launcher",
+            "com.custom.rom.systemui",
+        )
+        for (corePkg in coreList) {
+            assertFalse(
+                "Core package $corePkg can NEVER be in running tab even if running",
+                AppCategories.isKillableRunning(packageName = corePkg, isSystem = true, isRunning = true),
+            )
+            assertFalse(
+                "Core package $corePkg can NEVER be in running tab when not running",
+                AppCategories.isKillableRunning(packageName = corePkg, isSystem = true, isRunning = false),
+            )
+        }
+    }
+
+    @Test
+    fun testRunningTabExcludesAllCoreBlocklistPackages() {
+        // Enforce code guarantee: every single package in CORE_PACKAGES must return false for isKillableRunning
+        for (pkg in AppCategories.CORE_PACKAGES) {
+            assertFalse(
+                "Package $pkg in CORE_PACKAGES must never be in running tab",
+                AppCategories.isKillableRunning(packageName = pkg, isSystem = true, isRunning = true),
+            )
+            assertFalse(
+                "Package $pkg in CORE_PACKAGES must never be in running tab even if flagged user-installed",
+                AppCategories.isKillableRunning(packageName = pkg, isSystem = false, isRunning = true),
+            )
+        }
+    }
 }

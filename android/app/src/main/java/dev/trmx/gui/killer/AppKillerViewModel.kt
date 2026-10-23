@@ -14,10 +14,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class KillerFilterTab {
-    ALL,
-    SAFE,
+    RUNNING,
     OTHER,
-    PROTECTED,
+    CORE,
 }
 
 class AppKillerViewModel(application: Application) : AndroidViewModel(application) {
@@ -31,7 +30,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _filterTab = MutableStateFlow(KillerFilterTab.SAFE)
+    private val _filterTab = MutableStateFlow(KillerFilterTab.RUNNING)
     val filterTab: StateFlow<KillerFilterTab> = _filterTab.asStateFlow()
 
     private val _isAccessibilityEnabled = MutableStateFlow(false)
@@ -71,19 +70,36 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
             val list = AppKillerEngine.loadInstalledApps(getApplication())
             _apps.value = list
 
-            // If selection hasn't been initialized yet, initialize suggested SAFE apps
+            val runningKillable = list.filter { AppCategories.isKillableRunning(it) }
+                .map { it.packageName }
+                .toSet()
+
             _selectedPackages.update { current ->
                 if (!hasInitializedSelection) {
                     hasInitializedSelection = true
-                    list.filter { it.category == AppCategory.SAFE }
-                        .map { it.packageName }
-                        .toSet()
+                    runningKillable
                 } else {
-                    // Retain existing selections, excluding any core or uninstalled packages
+                    // Retain existing selections that are still installed and not core, plus all running killable
                     val validSet = list.map { it.packageName }.toSet()
-                    current.filter { !AppCategories.isCore(it) && validSet.contains(it) }.toSet()
+                    val retainedOther = current.filter { pkg ->
+                        !AppCategories.isCore(pkg) && validSet.contains(pkg) && !runningKillable.contains(pkg)
+                    }.toSet()
+                    runningKillable + retainedOther
                 }
             }
+        }
+    }
+
+    fun refreshApps() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = AppKillerEngine.loadInstalledApps(getApplication())
+            _apps.value = list
+
+            // Re-scanning running apps pre-selects all currently running killable apps
+            val runningKillable = list.filter { AppCategories.isKillableRunning(it) }
+                .map { it.packageName }
+                .toSet()
+            _selectedPackages.value = runningKillable
         }
     }
 
@@ -98,12 +114,28 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun selectAllSafe() {
-        val safePackages = _apps.value
-            .filter { it.category == AppCategory.SAFE }
+    fun selectAllForCurrentTab() {
+        when (_filterTab.value) {
+            KillerFilterTab.RUNNING -> selectAllRunning()
+            KillerFilterTab.OTHER -> selectAllOther()
+            KillerFilterTab.CORE -> { /* Core cannot be selected */ }
+        }
+    }
+
+    fun selectAllRunning() {
+        val runningPackages = _apps.value
+            .filter { AppCategories.isKillableRunning(it) }
             .map { it.packageName }
             .toSet()
-        _selectedPackages.update { it + safePackages }
+        _selectedPackages.update { it + runningPackages }
+    }
+
+    fun selectAllOther() {
+        val otherPackages = _apps.value
+            .filter { !AppCategories.isCore(it.packageName) && !AppCategories.isKillableRunning(it) }
+            .map { it.packageName }
+            .toSet()
+        _selectedPackages.update { it + otherPackages }
     }
 
     fun deselectAll() {
@@ -148,6 +180,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
                 _isKilling.value = false
                 _progress.value = null
                 checkAccessibility()
+                loadApps()
             }
         }
     }

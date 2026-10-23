@@ -56,7 +56,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.trmx.gui.killer.AppCategory
+import dev.trmx.gui.killer.AppCategories
 import dev.trmx.gui.killer.AppInfo
 import dev.trmx.gui.killer.AppKillerViewModel
 import dev.trmx.gui.killer.KillerFilterTab
@@ -93,13 +93,19 @@ fun KillScreen(
                 app.packageName.contains(searchQuery, ignoreCase = true)
 
             val matchesTab = when (filterTab) {
-                KillerFilterTab.ALL -> true
-                KillerFilterTab.SAFE -> app.category == AppCategory.SAFE
-                KillerFilterTab.OTHER -> app.category == AppCategory.UNKNOWN
-                KillerFilterTab.PROTECTED -> app.category == AppCategory.CORE
+                KillerFilterTab.RUNNING -> AppCategories.isKillableRunning(app)
+                KillerFilterTab.OTHER -> !AppCategories.isCore(app.packageName) && !AppCategories.isKillableRunning(app)
+                KillerFilterTab.CORE -> AppCategories.isCore(app.packageName)
             }
             matchesQuery && matchesTab
         }
+    }
+
+    val runningCount = remember(apps) {
+        apps.count { AppCategories.isKillableRunning(it) }
+    }
+    val otherCount = remember(apps) {
+        apps.count { !AppCategories.isCore(it.packageName) && !AppCategories.isKillableRunning(it) }
     }
 
     Column(
@@ -234,33 +240,35 @@ fun KillScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     FilterChip(
-                        selected = filterTab == KillerFilterTab.SAFE,
-                        onClick = { viewModel.setFilterTab(KillerFilterTab.SAFE) },
-                        label = { Text("Safe (${apps.count { it.category == AppCategory.SAFE }})", style = MaterialTheme.typography.labelSmall) },
+                        selected = filterTab == KillerFilterTab.RUNNING,
+                        onClick = { viewModel.setFilterTab(KillerFilterTab.RUNNING) },
+                        label = { Text("Running ($runningCount)", style = MaterialTheme.typography.labelSmall) },
                         colors = TrmxChipColors(),
                     )
                     FilterChip(
                         selected = filterTab == KillerFilterTab.OTHER,
                         onClick = { viewModel.setFilterTab(KillerFilterTab.OTHER) },
-                        label = { Text("Other (${apps.count { it.category == AppCategory.UNKNOWN }})", style = MaterialTheme.typography.labelSmall) },
+                        label = { Text("Other ($otherCount)", style = MaterialTheme.typography.labelSmall) },
                         colors = TrmxChipColors(),
                     )
                     FilterChip(
-                        selected = filterTab == KillerFilterTab.PROTECTED,
-                        onClick = { viewModel.setFilterTab(KillerFilterTab.PROTECTED) },
+                        selected = filterTab == KillerFilterTab.CORE,
+                        onClick = { viewModel.setFilterTab(KillerFilterTab.CORE) },
                         label = { Text("Core", style = MaterialTheme.typography.labelSmall) },
                         colors = TrmxChipColors(),
                     )
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = viewModel::selectAllSafe) {
-                        Text("Select Safe", style = MaterialTheme.typography.labelSmall, color = P.TextPrimary)
+                    if (filterTab != KillerFilterTab.CORE) {
+                        TextButton(onClick = viewModel::selectAllForCurrentTab) {
+                            Text("Select All", style = MaterialTheme.typography.labelSmall, color = P.TextPrimary)
+                        }
                     }
                     TextButton(onClick = viewModel::deselectAll) {
                         Text("Clear", style = MaterialTheme.typography.labelSmall, color = P.TextSecondary)
                     }
-                    IconButton(onClick = viewModel::loadApps, modifier = Modifier.size(32.dp)) {
+                    IconButton(onClick = viewModel::refreshApps, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = P.TextSecondary, modifier = Modifier.size(16.dp))
                     }
                 }
@@ -268,19 +276,35 @@ fun KillScreen(
         }
 
         // ---- Installed Apps List -----------------------------------------
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            items(filteredApps, key = { it.packageName }) { app ->
-                AppRow(
-                    app = app,
-                    isSelected = selectedPackages.contains(app.packageName),
-                    onToggle = { viewModel.toggleSelection(app.packageName) },
+        if (filteredApps.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (filterTab == KillerFilterTab.RUNNING) "No running apps detected" else "No apps found",
+                    color = P.TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium,
                 )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(filteredApps, key = { it.packageName }) { app ->
+                    AppRow(
+                        app = app,
+                        isSelected = selectedPackages.contains(app.packageName),
+                        onToggle = { viewModel.toggleSelection(app.packageName) },
+                    )
+                }
             }
         }
 
@@ -404,7 +428,7 @@ private fun AppRow(
     isSelected: Boolean,
     onToggle: () -> Unit,
 ) {
-    val isCore = app.category == AppCategory.CORE
+    val isCore = AppCategories.isCore(app.packageName)
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -455,18 +479,10 @@ private fun AppRow(
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     Spacer(Modifier.width(6.dp))
-                    when (app.category) {
-                        AppCategory.CORE -> {
-                            CategoryBadge(label = "CORE", color = P.TextMuted, bg = P.SurfaceHigh)
-                        }
-                        AppCategory.SAFE -> {
-                            CategoryBadge(label = "SAFE", color = Color(0xFF66BB6A), bg = Color(0xFF142417))
-                        }
-                        AppCategory.UNKNOWN -> {
-                            if (app.isSystem) {
-                                CategoryBadge(label = "SYSTEM", color = P.SteelDim, bg = P.SurfaceHigh)
-                            }
-                        }
+                    if (isCore) {
+                        CategoryBadge(label = "CORE", color = P.TextMuted, bg = P.SurfaceHigh)
+                    } else if (app.isSystem) {
+                        CategoryBadge(label = "SYSTEM", color = P.SteelDim, bg = P.SurfaceHigh)
                     }
                 }
 

@@ -72,7 +72,7 @@ object AppCategories {
     )
 
     // Vendor apps safe to stop (pre-selected hints; user can uncheck).
-    val SAFE_PACKAGES: Set<String> = setOf(
+    val SUGGESTED_PACKAGES: Set<String> = setOf(
         // Samsung vendor apps
         "com.sec.android.app.samsungapps",        // Galaxy Store
         "com.samsung.android.themestore",          // Theme Store
@@ -103,6 +103,36 @@ object AppCategories {
         "com.google.android.apps.tachyon",         // Google Meet / Duo
         "com.google.android.youtube",              // YouTube
     )
+
+    val SAFE_PACKAGES: Set<String> = SUGGESTED_PACKAGES
+
+    fun isSuggested(packageName: String): Boolean {
+        val pkg = packageName.trim()
+        return SUGGESTED_PACKAGES.contains(pkg)
+    }
+
+    /**
+     * Determines if an app belongs to the Running tab (currently running and safe to kill):
+     * running AND NOT core AND (user-installed OR in the existing safe suggestion list).
+     *
+     * Core packages can NEVER be killable running under any circumstances.
+     */
+    fun isKillableRunning(app: AppInfo): Boolean {
+        return isKillableRunning(
+            packageName = app.packageName,
+            isSystem = app.isSystem,
+            isRunning = app.isRunning,
+        )
+    }
+
+    fun isKillableRunning(packageName: String, isSystem: Boolean, isRunning: Boolean): Boolean {
+        val pkg = packageName.trim()
+        if (isCore(pkg)) return false
+        if (!isRunning) return false
+        val userInstalled = !isSystem
+        val inSuggestionList = isSuggested(pkg)
+        return userInstalled || inSuggestionList
+    }
 
     fun isCore(packageName: String): Boolean {
         val pkg = packageName.trim()

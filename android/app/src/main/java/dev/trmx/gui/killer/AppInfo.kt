@@ -5,4 +5,5 @@ data class AppInfo(
     val label: String,
     val category: AppCategory,
     val isSystem: Boolean,
+    val isRunning: Boolean = false,
 )
