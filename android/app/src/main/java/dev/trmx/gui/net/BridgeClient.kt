@@ -246,26 +246,37 @@ class BridgeClient(
                                                 err?.message ?: text.take(200))
                     } else {
                         dest.parentFile?.mkdirs()
+                        val tmp = File(dest.parentFile ?: File("."), "${dest.name}.tmp-${System.currentTimeMillis()}")
                         val expected = resp.headers["Content-Length"]?.toLongOrNull()
                         var copied = 0L
-                        FileOutputStream(dest).use { out ->
-                            body.byteStream().use { input ->
-                                val buf = ByteArray(64 * 1024)
-                                while (true) {
-                                    val n = input.read(buf)
-                                    if (n <= 0) break
-                                    out.write(buf, 0, n)
-                                    copied += n
-                                    onProgress?.invoke(copied, expected)
+                        try {
+                            FileOutputStream(tmp).use { out ->
+                                body.byteStream().use { input ->
+                                    val buf = ByteArray(64 * 1024)
+                                    while (true) {
+                                        val n = input.read(buf)
+                                        if (n <= 0) break
+                                        out.write(buf, 0, n)
+                                        copied += n
+                                        onProgress?.invoke(copied, expected)
+                                    }
                                 }
                             }
-                        }
-                        if (expected != null && copied != expected) {
-                            dest.delete()
-                            BridgeResult.NetworkError(
-                                IOException("truncated download: $copied of $expected bytes"))
-                        } else {
-                            BridgeResult.Success(copied)
+                            if (expected != null && copied != expected) {
+                                tmp.delete()
+                                BridgeResult.NetworkError(
+                                    IOException("truncated download: $copied of $expected bytes"))
+                            } else {
+                                if (dest.exists()) dest.delete()
+                                if (!tmp.renameTo(dest)) {
+                                    tmp.copyTo(dest, overwrite = true)
+                                    tmp.delete()
+                                }
+                                BridgeResult.Success(copied)
+                            }
+                        } catch (e: Exception) {
+                            tmp.delete()
+                            throw e
                         }
                     }
                 }

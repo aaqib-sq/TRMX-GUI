@@ -94,6 +94,16 @@ class UxAuditTest {
         assertEquals("12.50", FormEngine.sliderValueText("float", 12.499999f))
     }
 
+    @Test
+    fun `range errors format fractional float bounds without integer truncation`() {
+        val floatArg = ToolArg(name = "rate", type = "float", min = 0.5, max = 2.5)
+        assertEquals("must be ≥ 0.5", FormEngine.validate(floatArg, FieldValue(text = "0.2")))
+        assertEquals("must be ≤ 2.5", FormEngine.validate(floatArg, FieldValue(text = "3.0")))
+        val intArg = ToolArg(name = "count", type = "int", min = 1.0, max = 10.0)
+        assertEquals("must be ≥ 1", FormEngine.validate(intArg, FieldValue(text = "0")))
+        assertEquals("must be ≤ 10", FormEngine.validate(intArg, FieldValue(text = "15")))
+    }
+
     // ---- P0: dotfiles default-hidden --------------------------------------
 
     private fun entry(name: String, type: String = "file") =

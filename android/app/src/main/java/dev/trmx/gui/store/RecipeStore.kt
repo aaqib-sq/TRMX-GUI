@@ -46,8 +46,11 @@ class RecipeStore(private val dir: File) {
         val tmp = File(dir, "recipes.json.tmp")
         tmp.writeText(json.encodeToString(ListSerializer(Recipe.serializer()), all.sortedBy { it.title }))
         if (!tmp.renameTo(file)) {
-            file.delete()
-            check(tmp.renameTo(file)) { "could not persist recipes.json" }
+            if (file.exists()) file.delete()
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
         }
     }
 

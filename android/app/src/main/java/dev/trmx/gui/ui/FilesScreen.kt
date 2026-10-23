@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -95,6 +96,7 @@ fun FilesScreen(
     pickFile: Boolean? = null,
     onPicked: (String) -> Unit = {},
     onCancelPick: () -> Unit = {},
+    onClose: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var newDirDialog by remember { mutableStateOf(false) }
@@ -129,6 +131,13 @@ fun FilesScreen(
                 TrmxButton(label = "Cancel", onClick = onCancelPick,
                            kind = TrmxButtonKind.Secondary)
                 Spacer(Modifier.width(Sp.s))
+            } else if (onClose != null) {
+                TrmxIconButton(
+                    icon = Icons.Default.ArrowBack,
+                    contentDescription = "close",
+                    onClick = onClose,
+                )
+                Spacer(Modifier.width(Sp.xs))
             }
             Text(
                 when (pickFile) {
@@ -149,7 +158,7 @@ fun FilesScreen(
                     ActionFlowRow {
                         TrmxIconButton(icon = Icons.Outlined.ArrowUpward,
                                        contentDescription = "up",
-                                       onClick = onUp, enabled = state.path != "~")
+                                       onClick = onUp, enabled = state.path != "~" && state.path != "/")
                         TrmxIconButton(icon = Icons.Outlined.Refresh,
                                        contentDescription = "refresh",
                                        onClick = onRefresh)
@@ -172,10 +181,20 @@ fun FilesScreen(
                             onClick = { showHidden = !showHidden },
                             kind = TrmxButtonKind.Secondary)
                     }
-                } else if (pickFile == false) {
-                    TrmxButton(label = "use this folder",
-                               leading = { Icon(Icons.Filled.Check, contentDescription = null) },
-                               onClick = { onPicked(state.path) })
+                } else {
+                    ActionFlowRow {
+                        TrmxIconButton(icon = Icons.Outlined.ArrowUpward,
+                                       contentDescription = "up",
+                                       onClick = onUp, enabled = state.path != "~" && state.path != "/")
+                        TrmxIconButton(icon = Icons.Outlined.Refresh,
+                                       contentDescription = "refresh",
+                                       onClick = onRefresh)
+                        if (pickFile == false) {
+                            TrmxButton(label = "use this folder",
+                                       leading = { Icon(Icons.Filled.Check, contentDescription = null) },
+                                       onClick = { onPicked(state.path) })
+                        }
+                    }
                 }
                 Text(
                     when (pickFile) {

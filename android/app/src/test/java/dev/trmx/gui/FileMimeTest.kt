@@ -20,7 +20,11 @@ class FileMimeTest {
         assertEquals("image/jpeg", FileMime.of("photo.jpg"))
         assertEquals("image/png", FileMime.of("shot.png"))
         assertEquals("application/pdf", FileMime.of("paper.pdf"))
+        assertEquals("application/epub+zip", FileMime.of("book.epub"))
         assertEquals("text/plain", FileMime.of("notes.txt"))
+        assertEquals("text/plain", FileMime.of("README.markdown"))
+        assertEquals("text/html", FileMime.of("index.html"))
+        assertEquals("text/html", FileMime.of("about.htm"))
         assertEquals("application/json", FileMime.of("data.json"))
     }
 

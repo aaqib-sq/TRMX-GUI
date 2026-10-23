@@ -312,11 +312,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _detail.update { it?.copy(cancelling = true) }
         viewModelScope.launch {
             when (val r = client().cancelJob(jobId)) {
-                is BridgeResult.Success -> _detail.update { it?.copy(job = r.data, cancelling = false) }
-                is BridgeResult.HttpError ->
+                is BridgeResult.Success -> {
+                    _detail.update { it?.copy(job = r.data, cancelling = false) }
+                    _dashboard.update { d ->
+                        val idx = d.jobs.indexOfFirst { it.job_id == r.data.job_id }
+                        val jobs = if (idx >= 0) {
+                            d.jobs.toMutableList().also { it[idx] = r.data }
+                        } else d.jobs
+                        d.copy(jobs = jobs)
+                    }
+                }
+                is BridgeResult.HttpError -> {
                     _detail.update { it?.copy(cancelling = false, error = "HTTP ${r.status}: ${r.code} — ${r.message}") }
-                is BridgeResult.NetworkError ->
+                    _dashboard.update { it.copy(error = "cancel failed: HTTP ${r.status}: ${r.code}") }
+                }
+                is BridgeResult.NetworkError -> {
                     _detail.update { it?.copy(cancelling = false, error = "bridge unreachable: ${r.cause.message}") }
+                    _dashboard.update { it.copy(error = "cancel failed: bridge unreachable") }
+                }
             }
         }
     }
@@ -473,7 +486,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // (device lesson, 2026-10-19: a pile of llama-server jobs racing
         // :8080 while the owner thought nothing had started).
         val running = _dashboard.value.jobs.firstOrNull {
-            it.tool == schema.id && (it.status == "RUNNING" || it.status == "QUEUED")
+            it.tool == schema.id && (it.status == "RUNNING" || it.status == "STARTING" || it.status == "QUEUED")
         }
         if (running != null) {
             _toolForm.update {
@@ -577,8 +590,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 is BridgeResult.HttpError ->
-                    _services.update { it.copy(loading = false,
-                                               error = "HTTP ${r.status} ${r.code} — ${r.message}") }
+                    _services.update {
+                        if (r.status == 404) {
+                            it.copy(loading = false, supported = false, error = null)
+                        } else {
+                            it.copy(loading = false, error = "HTTP ${r.status} ${r.code} — ${r.message}")
+                        }
+                    }
                 is BridgeResult.NetworkError ->
                     _services.update { it.copy(loading = false,
                                                error = "bridge unreachable: ${r.cause.message}") }
@@ -818,6 +836,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     sseClient()
                         .stream("/v1/jobs/$jobId/output?from_seq=$fromSeq&follow=1&stream=both")
                         .collect { frame ->
+                            attempts = 0
                             _output.value = OutputReducer.apply(
                                 _output.value ?: OutputReducer.initial(), frame)
                             if (frame.event == "status") mergeStatusIntoDetail(frame.data)
@@ -918,6 +937,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     d.copy(jobs = jobs)
                 }
+                if (_detail.value?.jobId == job.job_id) {
+                    _detail.update { it?.copy(job = job, error = null) }
+                }
                 // self-healing toolbox: a finished pkg install triggers a rescan
                 if (installWatch == job.job_id && job.status in TERMINAL) {
                     installWatch = null
@@ -997,11 +1019,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     noteServiceSupport(info.data.features?.service_registry)
                 }
                 is BridgeResult.HttpError -> {
-                    _dashboard.update { it.copy(error = "HTTP ${info.status}: ${info.code}") }
+                    _dashboard.update { it.copy(error = "HTTP ${info.status}: ${info.code}", refreshing = false) }
                     return@launch
                 }
                 is BridgeResult.NetworkError -> {
-                    _dashboard.update { it.copy(error = "bridge unreachable: ${info.cause.message}") }
+                    _dashboard.update { it.copy(error = "bridge unreachable: ${info.cause.message}", refreshing = false) }
                     return@launch
                 }
             }

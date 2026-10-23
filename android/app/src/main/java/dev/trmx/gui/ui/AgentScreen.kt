@@ -58,6 +58,7 @@ fun AgentScreen(
     onStop: () -> Unit,
     onDismissSendError: () -> Unit,
     onDismissStreamError: () -> Unit,
+    onClear: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -66,6 +67,8 @@ fun AgentScreen(
             free = state.backendFree,
             configured = state.backendConfigured,
             loading = state.backendLoading,
+            canClear = state.rows.isNotEmpty() && !state.active,
+            onClear = onClear,
         )
 
         val listState = rememberLazyListState()
@@ -159,6 +162,8 @@ private fun BackendBar(
     free: Boolean?,
     configured: Boolean,
     loading: Boolean,
+    canClear: Boolean = false,
+    onClear: () -> Unit = {},
 ) {
     val (text, color) = when {
         loading -> "Checking the AI…" to P.TextMuted
@@ -168,14 +173,32 @@ private fun BackendBar(
         free == false -> "$label · API — costs money" to P.Danger
         else -> label to P.TextSecondary
     }
-    Text(
-        text,
-        style = MaterialTheme.typography.labelSmall,
-        color = color,
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = Sp.m, vertical = Sp.xs),
-    )
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (canClear) {
+            TextButton(
+                onClick = onClear,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = Sp.xs, vertical = 0.dp),
+            ) {
+                Text(
+                    "New chat",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = P.Accent,
+                )
+            }
+        }
+    }
 }
 
 @Composable
