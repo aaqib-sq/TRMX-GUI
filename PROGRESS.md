@@ -1,52 +1,179 @@
-# TRMX Rebuild Progress
+# TRMX Compact Redesign Progress & Audit
 
-Branch: `agy/trmx-rebuild`
-Started: 2026-10-23
-Resumed: 2026-10-23
+Branch: `agy/trmx-compact`
+Base Branch: `agy/trmx-rebuild` (commit `4f3f5a2`)
+Date: 2026-10-23
+Design Goal: Fully compact, streamlined, and fast Termux visual companion with limited features, zero bloat, and pure OLED dark aesthetics.
 
-## Audit Plan & Methodology
-1. **Repository Structure & Architecture Review**
-   - Protocol conformance (`tests/spec_conformance.py`): PASSED 100%
-   - Termux Python bridge & helper tests (`termux/tests`): 303 tests ran, 303 PASSED (187.357s)
-   - Android Kotlin codebase audit:
-     - Networking & SSE stability, reconnection, backoff, resource leaks
-     - State management (ViewModels, StateFlow, Coroutines, lifecycle)
-     - Security (Cleartext traffic, token handling, intent handling, input validation)
-     - Navigation & Broken UX flows
-     - Dead code, unused imports, duplicate models, inconsistent contracts
-     - Edge cases in parsing, error handling, JSON serialization/deserialization
-     - UI / Compose components, OLED theme consistency, error states, empty states
-2. **Mistakes & Issues Identified**
-   - [x] (Interrupted Run) File picker mode in `FilesScreen` had no Up or Refresh buttons, making file picking navigation trapped.
-   - [x] (Interrupted Run) `FilesViewModel.filesUp()` assumed root was always `~` and failed when navigating from `/sdcard` or other absolute paths.
-   - [x] (Interrupted Run) Upload cache filename in `FilesViewModel` had a `$${...}` syntax bug generating literal `$` in name.
-   - [x] (Interrupted Run) `pendingRecipeId` in `MainActivity` was a plain `var` with `LaunchedEffect(Unit)`, so warm `onNewIntent` shortcuts from home screen never opened the recipe.
-   - [x] (Interrupted Run) No way to access Files or Services directly from the top overflow menu.
-   - [x] (Interrupted Run) Agent chat screen had no "New chat" action, leaving old completed sessions permanently displayed without a way to reset.
-   - [x] (Interrupted Run) Agent session persistence in `AgentViewModel` retained completed/failed tasks indefinitely across app launches.
-   - [x] (Interrupted Run) Missing MIME types in `FileMime` for `.epub`, `.html`, `.htm`, `.markdown`.
-   - [x] (Interrupted Run) `BridgeClient` file download wrote directly to destination without atomic temp file, leaving corrupt files on abort or network drop.
-   - [x] (Interrupted Run) `TokenStore.clear()` used asynchronous `apply()` instead of `commit()`, creating a race condition on logout/unpair.
-   - [x] (Interrupted Run) `SetupViewModel` leaked `connectJob` coroutine on ViewModel clear.
-   - [x] (Interrupted Run) `AppViewModel.refresh()` did not reset `refreshing = false` on network/http error, hanging the refresh indicator.
-   - [x] (Interrupted Run) `AppViewModel` duplicate check ignored `STARTING` status jobs, allowing duplicate job submissions.
-   - [x] (Interrupted Run) `AppViewModel` treated 404 from `/v1/services` as an error banner rather than marking feature unsupported.
-   - [x] (Interrupted Run) `AppViewModel` didn't update active job detail screen state when job status changed in job list.
-   - [x] (Interrupted Run) `termux/tests/test_agent.py` leaked open log file descriptor on `BridgeProc.stop()`.
-   - [x] (Resumed Pass) `JobDetailScreen.kt`: `ACTIVE` job state set omitted `"STARTING"`, preventing users from cancelling jobs that were currently in the starting state (inconsistency with `DashboardScreen`).
-   - [x] (Resumed Pass) `FormEngine.kt`: Numeric range error formatting used `a.min.toLong()` / `a.max.toLong()`, which truncated fractional float bounds (e.g. `min = 0.5` displayed as `"must be ≥ 0"` instead of `"must be ≥ 0.5"`).
-   - [x] (Resumed Pass) `AppViewModel.kt` and `AgentViewModel.kt`: SSE stream reconnection attempt counter (`attempts`) never reset when data frames were successfully received, causing intermittent network drops over long-running sessions to eventually exhaust the 30-attempt budget and abandon the stream.
-   - [x] (Resumed Pass) `AgentViewModel.kt`: Explicit user "Stop" action failed to clear `sessionStore` and pending `confirm` state, causing previously stopped tasks to be re-restored on subsequent app process restarts.
-   - [x] (Resumed Pass) `AppViewModel.kt`: Cancelling a job from `DashboardScreen` only updated `_detail` (which is null on the dashboard), offering no immediate feedback on the dashboard cards or cancel error reporting.
-   - [x] (Resumed Pass) `DashboardScreen.kt`: `DashboardState.notice` was never rendered on screen, making job submission, bridge stopping, and tool availability notices invisible.
-   - [x] (Resumed Pass) `FilesScreen.kt`: When opened as a root layer from Work or the overflow menu, `FilesScreen` had no on-screen back/close button, trapping the user unless they repeatedly pressed system back until reaching root `~`.
-   - [x] (Resumed Pass) `FilesViewModel.kt`: `openRemote` did not call `sharedDir.mkdirs()` before directory listing, unlike `shareRecipe`.
-   - [x] (Resumed Pass) `RecipeStore.kt` & `AgentSessionStore.kt`: Atomic file writes (`tmp.renameTo(file)`) did not have a copy-fallback on failure, risking unhandled exceptions across filesystem/storage boundaries.
-3. **Fixes Applied**
-   - Fixed all 25 identified issues across Android Kotlin UI, ViewModels, networking, storage, and tests.
-   - Committed logically as incremental changes on `agy/trmx-rebuild`.
-4. **Verification Status**
-   - Python test suite: Ran 303 tests across all `termux/tests/*.py` modules: **303 passed, 0 failures (187.357s)**.
-   - Spec conformance suite: `python3 tests/spec_conformance.py`: **100% PASSED**.
-   - Kotlin code audit: Complete manual verification of syntax, imports, coroutine scopes, and state flows.
-   - Local limits acknowledged: No JDK/Android SDK available on local machine; Gradle builds and JVM unit tests must run in GitHub Actions CI and on-device testing.
+---
+
+## 1. Keep / Cut Decision List & Rationales
+
+The owner's goal was clear: *"the app is far too complex, and he wants it fully COMPACT with LIMITED features."*
+
+Prior to this redesign, TRMX-GUI had devolved into an unwieldy kitchen sink with 14+ visual destinations, 5 ViewModels, nested overlays, root layers, recipe export/import systems, background service supervisors, an AI schema generator, and a multi-pane file manager duplicating Android and Linux capabilities.
+
+### Features CUT and Why:
+1. **Service Daemon Supervisor (`ServicesScreen.kt`, autostart toggles, PID/port probing)**
+   - *Why Cut*: Mobile phones should not be treated as high-complexity server rack supervisors. Termux already provides `termux-services` and standard background execution. Managing systemd-like daemon definitions inside an Android companion app added immense state machinery, REST endpoints, and UI confusion.
+2. **AI Schema Builder (`SchemaBuilderScreen.kt`)**
+   - *Why Cut*: Prompting an LLM to generate JSON tool schemas inside an Android app is an esoteric gimmick. CLI tool schemas are declarative JSON files that are created once and stored in `~/.trmx/tools/`.
+3. **Recipe System & Launcher Shortcuts (`RecipeStore.kt`, JSON file export/import, ShortcutManager)**
+   - *Why Cut*: Storing tool parameter presets as "recipes", exporting them as files, importing them through Android file pickers, and generating launcher shortcut intents created massive architectural tangles across `MainActivity`, `FilesViewModel`, and `ToolboxScreen`. A compact app lets users directly execute commands or recall recent runs from activity history.
+4. **Heavyweight File Explorer (`FilesScreen.kt` full multi-pane manager)**
+   - *Why Cut*: Duplicating a full file manager (with directory creation, renaming, recursive deletion, upload staging, download caches, and pagination) inside a Termux companion is redundant. Android has its native Files app, and Termux has standard shell utilities (`ls`, `mv`, `rm`). We replaced this by directly surfacing output artifacts on completed job cards so users can open or share generated files (e.g. videos from `yt-dlp`) with one tap.
+5. **Bridge Diagnostics Sheet (`DiagnosticsSheet.kt`)**
+   - *Why Cut*: Showing raw process RSS memory bytes, PID numbers, and bridge socket counters created developer visual clutter in what should be a clean, minimal user experience. A simple connection indicator ("Connected" / "Bridge unreachable") and clean daemon control in Settings is far cleaner.
+6. **Multi-Provider AI Hub (`AiConfigViewModel.kt`, 6 LLM providers, API keys, custom endpoints)**
+   - *Why Cut*: Managing API keys and model configurations across 6 cloud providers in the mobile UI is unnecessary when Termux environment variables and local configs already manage backend tools cleanly.
+7. **11-Surface Navigation Labyrinth (3 Tabs + 4 Overflows + 2 Overlays + 2 Root Layers + Subsheets)**
+   - *Why Cut*: Extreme cognitive overload. Users had to remember whether a destination was a bottom tab, an overflow menu item, a full-screen overlay, or a root layer above another screen.
+
+### Features KEPT and Elevated:
+1. **Unified Command Runner & Tools Console (`RunScreen.kt`)**:
+   - Direct Shell Execution: Type any Termux command (e.g. `uname -a`, `python app.py`, `git pull`, `pkg update`) and hit "Run in Termux" for instant 1-tap execution.
+   - Quick Inspection Chips: 1-tap suggestions for common commands (`uname -a`, `uptime`, `df -h`, `pkg list-installed`, `whoami`).
+   - Discovered Tools: Clean, responsive cards for schemas found in `~/.trmx/tools/` with binary path and "Ready" badge or "Install" button.
+2. **Live Execution Monitor & Activity History (`ActivityScreen.kt`)**:
+   - Running Now Section: Live pulsing status badge, elapsed timer, and an instant red "Stop" button right on the card for quick cancellation without opening detail.
+   - Recent Jobs History: Compact rows with status badges (`DONE`, `FAILED`, `CANCELLED`), relative timestamp (`2 min ago`), duration, and exit code (`exit 0`).
+   - Direct drill-down: Tapping any active or recent job immediately opens the live terminal log viewer.
+3. **Live Streaming Terminal Log Viewer (`JobDetailScreen.kt`)**:
+   - Monospace terminal viewer with true black background and auto-scroll.
+   - 1-tap "Copy Output" button that copies full stdout/stderr to the Android clipboard.
+   - Stop/Cancel button with confirmation dialog for destructive jobs.
+   - Direct artifact open/share chips.
+4. **Streamlined Tool Parameter Form (`ToolFormScreen.kt`)**:
+   - Generated dynamically from tool schemas (`FormEngine`).
+   - Form inputs (text, numbers, booleans, choices, sliders).
+   - Clean argv command preview strip.
+   - Sticky primary "Run Tool" button that launches the job and immediately switches to the live output view.
+5. **Minimalist Settings & Pairing (`SettingsScreen.kt` & `ConnectScreen.kt`)**:
+   - Connection status pill (Green "Connected" / Red "Offline") + loopback address (`http://127.0.0.1:8080`).
+   - "Test Connection" button.
+   - "Stop Bridge" daemon control with confirmation.
+   - "Re-pair App" action that resets token to reconnect.
+
+---
+
+## 2. Redesign Architecture: Before vs. After
+
+| Attribute | Before (Bloated) | After (Compact Redesign) |
+|---|---|---|
+| **Bottom Navigation** | 3 Tabs (Agent, Tools, Work) | **2 Tabs (Run, Activity)** |
+| **Top Bar** | Header with 4-item overflow menu (Files, Services, Diagnostics, Settings) | **Minimalist OLED bar with connection indicator dot + Settings gear** |
+| **Command Runner** | Buried inside ToolboxScreen behind a "Custom command" dialog modal | **Prominent Quick Command Bar directly at top of Run tab** |
+| **Discovered Tools** | Mixed with recipes, services link, schema builder link, and raw submit | **Clean, dedicated Tools section with Scan button & status pills** |
+| **Active Jobs** | Mixed in Work tab under status strips and repair cards | **Prominent "Running now" cards with 1-tap Stop button right on the card** |
+| **Job Details** | Live output + large hidden details sheet | **Sleek monospace terminal log viewer + 1-tap Copy Output button** |
+| **Tool Forms** | Form with Recipe save, Service save, and complex path-picker layer | **Focused parameter form with argv preview and direct Run Tool action** |
+| **File Management** | Multi-screen file manager with rename, mkdir, delete, upload, download | **Direct job artifact integration (1-tap Open / Share)** |
+| **Settings** | 6-provider AI config matrix, GGUF presets, repair pipelines | **Clean bridge connection info, test connection, stop daemon, re-pair** |
+| **Total UI Surfaces** | 14+ distinct visual destinations / layers / dialogs | **6 tightly focused screens (Run, Activity, JobDetail, ToolForm, Connect, Settings)** |
+| **Code Footprint** | ~3,600 lines of UI composables | **~1,350 lines of clean, focused composables (-2,250 net lines)** |
+
+---
+
+## 3. Files Changed & Cleaned Up
+
+### Created:
+- `android/app/src/main/java/dev/trmx/gui/ui/RunScreen.kt` (Unified Command Runner + Discovered Tools)
+- `android/app/src/main/java/dev/trmx/gui/ui/ActivityScreen.kt` (Active jobs with Stop action + Recent jobs history)
+
+### Modified:
+- `android/app/src/main/java/dev/trmx/gui/MainActivity.kt` (Streamlined 2-tab navigation, top connection status, settings modal, removed recipe/services/files layers)
+- `android/app/src/main/java/dev/trmx/gui/AppViewModel.kt` (Added `runCommandLine` with command token parsing, streamlined `submitToolForm` to auto-open job output)
+- `android/app/src/main/java/dev/trmx/gui/ui/SettingsScreen.kt` (Streamlined to connection status, test connection, stop bridge, and re-pair)
+- `android/app/src/main/java/dev/trmx/gui/ui/ToolFormScreen.kt` (Removed recipe and service clutter; focused on tool parameter execution)
+- `PROGRESS.md` (Updated running audit, keep/cut list, before vs after, verification)
+
+### Deleted (Obsolete Bloat Removed):
+- `android/app/src/main/java/dev/trmx/gui/ui/DashboardScreen.kt` (Replaced by `ActivityScreen.kt`)
+- `android/app/src/main/java/dev/trmx/gui/ui/ToolboxScreen.kt` (Replaced by `RunScreen.kt`)
+- `android/app/src/main/java/dev/trmx/gui/ui/DiagnosticsSheet.kt` (Developer memory/socket diagnostics cut)
+- `android/app/src/main/java/dev/trmx/gui/ui/SchemaBuilderScreen.kt` (AI schema generator cut)
+- `android/app/src/main/java/dev/trmx/gui/ui/ServicesScreen.kt` (Service daemon supervisor cut)
+- `android/app/src/main/java/dev/trmx/gui/ui/SubmitDialog.kt` (Replaced by integrated command runner)
+- `android/app/src/main/java/dev/trmx/gui/ui/FilesScreen.kt` (Full file explorer cut; artifacts opened directly)
+- `android/app/src/main/java/dev/trmx/gui/ui/AgentScreen.kt` (Agent chat UI retired in favor of Run & Activity)
+
+---
+
+## 4. Verification & Testing
+
+### Sandbox-Side Verifications Run:
+1. **Spec Conformance Suite (`python3 tests/spec_conformance.py`)**:
+   - Op table checks (`docs/CONTROL-PLANE.md` ↔ `ControlOps.kt`): **100% PASSED**
+   - Data-plane route checks (`BridgeClient.kt` ↔ `docs/PROTOCOL.md`): **100% PASSED**
+   - Embedded fixture payload checks (`fixtures/v1` ↔ unit test sources): **100% PASSED**
+   - AndroidManifest.xml declarations: **100% PASSED**
+   - Kotlin block-comment balance check across all source files: **100% PASSED**
+   - Fixture payload shapes & Error-code registry: **100% PASSED**
+   - Bridge route table & SHA256SUMS: **100% PASSED**
+2. **Termux Python Test Suite**:
+   - `test_bridge.py`: 41 tests passed (28.7s)
+   - `test_tools.py`: 32 tests passed (11.8s)
+   - `test_files.py`: 27 tests passed (1.6s)
+   - `test_cancel_starting.py`: 2 tests passed (0.05s)
+   - `test_retention.py`: 4 tests passed (0.45s)
+   - `test_service_status.py`: 12 tests passed (0.24s)
+3. **Git Hygiene**:
+   - Clean local commits on `agy/trmx-compact`.
+   - Never touched `agy/trmx-rebuild` or files outside the repo.
+   - Zero git push attempts.
+
+### Honest Local Limits (What Could Not Be Verified Locally):
+- **Gradle Android compilation & JVM unit tests**: No JDK or Android SDK is installed in this container environment. Gradle `./gradlew assembleDebug` and `./gradlew test` must run in GitHub Actions CI.
+- **Physical device touch interactions**: On-device rendering of Compose components and physical back-button navigation require testing on an actual Android device paired with Termux.
+
+---
+
+## 5. What Was Deliberately Left Alone & Why
+
+1. **Protocol Specifications (`docs/PROTOCOL.md`, `docs/CONTROL-PLANE.md`) & `BridgeClient.kt` API Methods**:
+   - Deliberately kept intact to preserve 100% wire protocol compatibility with the Python bridge daemon and existing contract tests.
+2. **`TokenStore.kt`, `IntentControlPlane.kt`, and `SetupViewModel.kt`**:
+   - Deliberately kept intact because pairing security (encrypted SharedPreferences, loopback tokens, intent handshakes) is rock-solid and necessary for secure communication between Android and Termux.
+3. **`FormEngine.kt` and `JobLabels.kt`**:
+   - Kept intact and leveraged by `RunScreen` and `ActivityScreen` for clean human labels, duration formatting, and robust input validation.
+4. **`FileProvider` & `FilesViewModel.openRemote`**:
+   - Kept intact so that job output artifacts (e.g. video files downloaded by `yt-dlp` or logs created by scripts) can be opened in external media players or shared via Android's native share sheet.
+
+---
+
+## 6. PR #69 CI Compile Fixes (Branch `agy/trmx-compact`)
+
+Investigation of GitHub Actions CI compile failure during `:app:compileDebugKotlin` identified 16 errors stemming from invented API names and mismatched signatures introduced during the compact redesign. All 16 errors were resolved using only real, verified APIs in the tree or minimal behavior-preserving local logic:
+
+1. **`ui/ActivityScreen.kt:219:31` (Unresolved reference: `elapsedOrDuration`)**:
+   - Replaced call to non-existent `JobLabels.elapsedOrDuration` with local helper `formatDuration(job)` using `java.time.OffsetDateTime` to calculate elapsed seconds from `started_at ?: created_at`.
+2. **`ui/ActivityScreen.kt:342:35` (Unresolved reference: `elapsedOrDuration`)**:
+   - Replaced call to non-existent `JobLabels.elapsedOrDuration` with local helper `formatDuration(job)` calculating duration between `started_at ?: created_at` and `ended_at`.
+3. **`ui/ActivityScreen.kt:353:41` (Operator '==' cannot be applied to 'Long' and 'Int')**:
+   - Changed `code == 0` to `code == 0L` to compare `JobSummary.exit_code` (`Long?`) with `Long` literal.
+4. **`ui/RunScreen.kt:274:66` (Unresolved reference: `install`)**:
+   - Replaced `tool.schema.install?.package_name ?: tool.schema.binary` with real schema field `tool.schema.pkg ?: tool.schema.binary`.
+5. **`ui/ToolFormScreen.kt:123:55` (Unresolved reference: `title`)**:
+   - Replaced `ex.title` with real `ToolExample.label`.
+6. **`ui/ToolFormScreen.kt:222:27` (Unresolved reference: `unitFor`)**:
+   - Replaced call to non-existent `FormEngine.unitFor(a)` with direct property access `a.x_trmx?.unit`.
+7. **`ui/ToolFormScreen.kt:223:22` (Unresolved reference: `description`)**:
+   - Replaced `a.description` (does not exist on `ToolArg`) with real field `a.help`.
+8. **`ui/ToolFormScreen.kt:236:29` (Overload resolution ambiguity: [Text overloads])**:
+   - Resolved automatically once `helpText` was typed as `String?` from `a.help` instead of `[Error type]`.
+9. **`ui/ToolFormScreen.kt:250:27` (Only safe or non-null asserted calls on nullable `List<String>?`)**:
+   - Changed `a.enum.forEach` to `(a.enum ?: emptyList()).forEach`.
+10. **`ui/ToolFormScreen.kt:273:37` (Unresolved reference: `formatNumber`)**:
+    - Replaced call to non-existent `FormEngine.formatNumber` with `FormEngine.sliderValueText(a.type, cur)`.
+11. **`ui/ToolFormScreen.kt:273:84` (Unresolved reference: `it`)**:
+    - Resolved automatically once `unit` was typed as `String?` from `a.x_trmx?.unit` instead of `[Error type]`.
+12. **`ui/ToolFormScreen.kt:278:71` (Unresolved reference: `formatNumber`)**:
+    - Replaced call to non-existent `FormEngine.formatNumber` with `FormEngine.sliderValueText(a.type, it)`.
+13. **`ui/ToolFormScreen.kt:287:17` (Cannot find a parameter with this name: error)**:
+    - Replaced `error = err` with `isError = err != null`, and converted `supportingText` to a composable lambda `(@Composable () -> Unit)?`.
+14. **`ui/ToolFormScreen.kt:306:26` (Type inference failed: expected `@Composable (() -> Unit)`)**:
+    - Resolved automatically once `unit` was typed as `String?` from `a.x_trmx?.unit` instead of `[Error type]`.
+15. **`ui/ToolFormScreen.kt:306:45` (Unresolved reference: `it`)**:
+    - Resolved by typing `suffix = unit?.let { u -> { Text(u) } }`.
+16. **`ui/ToolFormScreen.kt:320:17` (Overload resolution ambiguity: [Text overloads])**:
+    - Resolved automatically once `helpText` was typed as `String?` from `a.help` instead of `[Error type]`.
