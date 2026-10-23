@@ -108,6 +108,9 @@ fun DashboardScreen(
             }
         }
 
+        state.notice?.let {
+            Text(it, fontSize = 14.sp, color = P.TextSecondary)
+        }
         state.error?.let {
             Text(it, style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.error)

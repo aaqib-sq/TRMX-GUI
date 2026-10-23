@@ -45,7 +45,7 @@ import dev.trmx.gui.tools.Artifact
 import dev.trmx.gui.tools.JobLabels
 import dev.trmx.gui.ui.Tokens.Palette as P
 
-private val ACTIVE = setOf("QUEUED", "RUNNING", "CANCELLING")
+private val ACTIVE = setOf("RUNNING", "STARTING", "QUEUED", "CANCELLING")
 
 @Composable
 fun JobDetailScreen(

@@ -63,15 +63,16 @@ class BridgeProc:
         self.home, self.port = home, port
         self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
+        self.logf = None
 
     def start(self) -> None:
-        logf = open(Path(self.home) / "test-agent-bridge.log", "ab")
+        self.logf = open(Path(self.home) / "test-agent-bridge.log", "ab")
         env = dict(os.environ)
         env.update(self.extra_env)
         self.proc = subprocess.Popen(
             [sys.executable, str(BRIDGE), "--home", self.home,
              "--port", str(self.port)],
-            stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, env=env)
+            stdout=self.logf, stderr=self.logf, stdin=subprocess.DEVNULL, env=env)
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
@@ -92,6 +93,12 @@ class BridgeProc:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        if self.logf:
+            try:
+                self.logf.close()
+            except Exception:
+                pass
+            self.logf = None
 
 
 class AgentTestBase(unittest.TestCase):

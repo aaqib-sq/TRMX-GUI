@@ -91,8 +91,9 @@ private enum class Overlay { AI_BUILDER, SETTINGS }
 
 private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 
-/** Recipe shortcut id waiting for the wizard-safe moment (set by the activity). */
-private var pendingRecipeId: String? = null
+/** Recipe shortcut id waiting for the wizard-safe moment (set by the activity).
+ *  Snapshot state so warm onNewIntent recomposes AppRoot and triggers LaunchedEffect. */
+private var pendingRecipeId by mutableStateOf<String?>(null)
 
 /** Pair-link token waiting for AppRoot (set by the activity). Snapshot
  *  state, NOT a plain var: a warm onNewIntent must recompose AppRoot so
@@ -164,8 +165,9 @@ fun AppRoot(
     var filesLayer by remember { mutableStateOf(false) }
     var servicesLayer by remember { mutableStateOf(false) }
 
-    // Cold-start recipe shortcut (set by MainActivity before composition).
-    LaunchedEffect(Unit) {
+    // Recipe shortcut (set by MainActivity from a home screen shortcut,
+    // cold start or warm onNewIntent — snapshot state re-triggers this effect).
+    LaunchedEffect(pendingRecipeId) {
         pendingRecipeId?.let { id ->
             pendingRecipeId = null
             screen = Screen.TOOLS
@@ -293,6 +295,7 @@ fun AppRoot(
                         vm.cancelPathPick()
                         filesLayer = false
                     },
+                    onClose = { filesLayer = false },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else if (toolForm.schema != null) {
@@ -427,6 +430,18 @@ fun AppRoot(
                                     expanded = menuOpen,
                                     onDismissRequest = { menuOpen = false }) {
                                     DropdownMenuItem(
+                                        text = { Text("Files") },
+                                        onClick = {
+                                            menuOpen = false
+                                            filesLayer = true
+                                        })
+                                    DropdownMenuItem(
+                                        text = { Text("Services") },
+                                        onClick = {
+                                            menuOpen = false
+                                            servicesLayer = true
+                                        })
+                                    DropdownMenuItem(
                                         text = { Text("Diagnostics") },
                                         onClick = {
                                             menuOpen = false
@@ -515,6 +530,7 @@ fun AppRoot(
                                 onStop = agentVm::stop,
                                 onDismissSendError = agentVm::clearSendError,
                                 onDismissStreamError = agentVm::clearStreamError,
+                                onClear = agentVm::clearChat,
                                 modifier = Modifier.padding(padding),
                             )
                         }

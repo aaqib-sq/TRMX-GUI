@@ -68,9 +68,13 @@ object FormEngine {
         }
     }
 
+    private fun formatBound(bound: Double, type: String): String =
+        if (type == "int" || bound == bound.toLong().toDouble()) bound.toLong().toString()
+        else bound.toString()
+
     private fun rangeError(n: Double, a: ToolArg): String? = when {
-        a.min != null && n < a.min -> "must be ≥ ${a.min.toLong()}"
-        a.max != null && n > a.max -> "must be ≤ ${a.max.toLong()}"
+        a.min != null && n < a.min -> "must be ≥ ${formatBound(a.min, a.type)}"
+        a.max != null && n > a.max -> "must be ≤ ${formatBound(a.max, a.type)}"
         else -> null
     }
 

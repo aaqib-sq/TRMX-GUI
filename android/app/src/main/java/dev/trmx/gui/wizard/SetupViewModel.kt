@@ -833,6 +833,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         sequenceJob?.cancel()
+        connectJob?.cancel()
         super.onCleared()
     }
 

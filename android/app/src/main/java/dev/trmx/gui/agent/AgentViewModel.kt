@@ -223,22 +223,28 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
             title = "Restored — the app had closed; this is the task " +
                 "you started earlier.")
         when (st.status) {
-            "done" -> _state.update {
-                it.copy(taskId = st.task_id, jobId = st.job_id,
-                        rows = listOf(note, AgentRow(
-                            AgentRowKind.DONE,
-                            title = "Done" +
-                                (st.summary?.takeIf { s -> s.isNotEmpty() }
-                                    ?.let { s -> ": $s" } ?: ""))))
+            "done" -> {
+                sessionStore.clear()
+                _state.update {
+                    it.copy(taskId = st.task_id, jobId = st.job_id,
+                            rows = listOf(note, AgentRow(
+                                AgentRowKind.DONE,
+                                title = "Done" +
+                                    (st.summary?.takeIf { s -> s.isNotEmpty() }
+                                        ?.let { s -> ": $s" } ?: ""))))
+                }
             }
-            "failed" -> _state.update {
-                it.copy(taskId = st.task_id, jobId = st.job_id,
-                        rows = listOf(note, AgentRow(
-                            AgentRowKind.FAILED,
-                            title = "Stopped" +
-                                (st.error?.takeIf { s -> s.isNotEmpty() }
-                                    ?.let { s -> ": ${humanAgentError(s)}" }
-                                    ?: ""))))
+            "failed" -> {
+                sessionStore.clear()
+                _state.update {
+                    it.copy(taskId = st.task_id, jobId = st.job_id,
+                            rows = listOf(note, AgentRow(
+                                AgentRowKind.FAILED,
+                                title = "Stopped" +
+                                    (st.error?.takeIf { s -> s.isNotEmpty() }
+                                        ?.let { s -> ": ${humanAgentError(s)}" }
+                                        ?: ""))))
+                }
             }
             else -> {
                 // running / awaiting_confirm: re-attach the stream — the
@@ -272,6 +278,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                     SseClient(store.bridgeBaseUrl, store.token, http)
                         .stream("/v1/jobs/$jobId/output?from_seq=$fromSeq&follow=1")
                         .collect { frame ->
+                            attempts = 0
                             when (frame.event) {
                                 "stdout" -> {
                                     val text = runCatching<String?> {
@@ -380,6 +387,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                         "Timed out waiting — nothing was done."))
             }
             is AgentEvent.Done -> {
+                sessionStore.clear()
                 _state.update { it.copy(active = false, confirm = null) }
                 addRow(AgentRow(
                     AgentRowKind.DONE,
@@ -387,6 +395,7 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                         (if (e.summary.isNotEmpty()) ": ${e.summary}" else "")))
             }
             is AgentEvent.Failed -> {
+                sessionStore.clear()
                 _state.update { it.copy(active = false, confirm = null) }
                 addRow(AgentRow(
                     AgentRowKind.FAILED,
@@ -471,7 +480,8 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val r = client().cancelJob(jobId)) {
                 is BridgeResult.Success -> {
-                    _state.update { it.copy(active = false) }
+                    sessionStore.clear()
+                    _state.update { it.copy(active = false, confirm = null) }
                     addRow(AgentRow(AgentRowKind.FAILED, title = "Stopped"))
                 }
                 is BridgeResult.HttpError ->
@@ -480,6 +490,15 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
                     _state.update { it.copy(streamError = "Stop failed: bridge unreachable") }
             }
         }
+    }
+
+    fun clearChat() {
+        if (_state.value.active) return
+        streamJob?.cancel()
+        streamJob = null
+        sessionStore.clear()
+        _state.value = AgentState()
+        loadBackend()
     }
 
     fun clearStreamError() = _state.update { it.copy(streamError = null) }

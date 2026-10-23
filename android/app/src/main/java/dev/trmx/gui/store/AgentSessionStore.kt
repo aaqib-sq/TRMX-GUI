@@ -40,12 +40,18 @@ class AgentSessionStore(private val dir: File) {
         val tmp = File(dir, "agent-session.json.tmp")
         tmp.writeText(json.encodeToString(AgentSession.serializer(), session))
         if (!tmp.renameTo(file)) {
-            file.delete()
-            check(tmp.renameTo(file)) { "could not persist agent-session.json" }
+            if (file.exists()) file.delete()
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
         }
     }
 
     fun clear() {
-        runCatching { file.delete() }
+        runCatching {
+            file.delete()
+            File(dir, "agent-session.json.tmp").delete()
+        }
     }
 }

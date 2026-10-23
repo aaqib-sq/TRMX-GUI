@@ -58,8 +58,8 @@ class TokenStore(context: Context) {
     val isPaired: Boolean get() = token.length >= 20
 
     fun clear() {
-        securePrefs.edit().clear().apply()
-        legacyPrefs.edit().clear().apply()
+        securePrefs.edit().clear().commit()
+        legacyPrefs.edit().clear().commit()
     }
 
     /**

@@ -139,7 +139,12 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     /** @return true when we moved up, false at the root (caller may pop). */
     fun filesUp(): Boolean {
         val cur = _files.value.path
-        if (cur == "~") return false
+        if (cur == "~" || cur == "/" || cur.isBlank()) return false
+        if (cur.startsWith("/")) {
+            val parent = cur.removeSuffix("/").substringBeforeLast('/')
+            openPath(if (parent.isEmpty()) "/" else parent)
+            return true
+        }
         val parent = cur.removeSuffix("/").substringBeforeLast('/')
         openPath(if (parent.isEmpty() || parent == "~") "~" else parent)
         return true
@@ -232,6 +237,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             val sharedDir = File(getApplication<Application>().cacheDir, "shared")
+            sharedDir.mkdirs()
             sharedDir.listFiles()?.forEach { it.delete() }   // single slot
             val dest = File(sharedDir, remote.substringAfterLast('/'))
             when (val r = client().downloadFile(remote, dest, progress::onBytes)) {
@@ -267,7 +273,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
                     transfer = Transfer("Uploading", displayName, 0, null))
         }
         viewModelScope.launch {
-            val tmp = File(getApplication<Application>().cacheDir, "upload-$${System.currentTimeMillis()}")
+            val tmp = File(getApplication<Application>().cacheDir, "upload-${System.currentTimeMillis()}")
             try {
                 val resolver = getApplication<Application>().contentResolver
                 resolver.openInputStream(uri)?.use { input ->

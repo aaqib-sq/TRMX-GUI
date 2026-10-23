@@ -27,8 +27,9 @@ object FileMime {
         "gif" to "image/gif", "webp" to "image/webp", "bmp" to "image/bmp",
         "svg" to "image/svg+xml",
         // documents
-        "pdf" to "application/pdf",
-        "txt" to "text/plain", "md" to "text/plain", "log" to "text/plain",
+        "pdf" to "application/pdf", "epub" to "application/epub+zip",
+        "html" to "text/html", "htm" to "text/html",
+        "txt" to "text/plain", "md" to "text/plain", "markdown" to "text/plain", "log" to "text/plain",
         "csv" to "text/csv", "srt" to "text/plain", "vtt" to "text/vtt",
         "json" to "application/json", "xml" to "text/xml", "yaml" to "text/yaml",
         "yml" to "text/yaml", "toml" to "text/plain", "ini" to "text/plain",
