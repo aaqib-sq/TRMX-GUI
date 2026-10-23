@@ -472,6 +472,67 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun cancelPathPick() { _toolForm.update { it.copy(pathArg = null) } }
 
+    fun runCommandLine(commandLine: String) {
+        val trimmed = commandLine.trim()
+        if (trimmed.isEmpty()) return
+        val argv = parseCommandLineTokens(trimmed)
+        if (argv.isEmpty()) return
+        viewModelScope.launch {
+            val req = SubmitRequest(
+                name = argv.firstOrNull()?.substringAfterLast('/') ?: "command",
+                type = "argv",
+                argv = argv,
+                cwd = "~",
+                env = null,
+                timeout_s = null,
+                idempotency_key = UUID.randomUUID().toString(),
+                confirm = true,
+            )
+            when (val r = client().submitJob(req)) {
+                is BridgeResult.Success -> {
+                    val id = r.data.response.job_id
+                    _dashboard.update {
+                        it.copy(notice = "job $id started")
+                    }
+                    refresh()
+                    selectJob(id)
+                }
+                is BridgeResult.HttpError -> {
+                    _dashboard.update {
+                        it.copy(error = "HTTP ${r.status}: ${r.message}")
+                    }
+                }
+                is BridgeResult.NetworkError -> {
+                    _dashboard.update {
+                        it.copy(error = "bridge unreachable: ${r.cause.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun parseCommandLineTokens(cmd: String): List<String> {
+        val tokens = mutableListOf<String>()
+        var sb = StringBuilder()
+        var inSingle = false
+        var inDouble = false
+        for (c in cmd) {
+            when {
+                c == '\'' && !inDouble -> inSingle = !inSingle
+                c == '"' && !inSingle -> inDouble = !inDouble
+                c.isWhitespace() && !inSingle && !inDouble -> {
+                    if (sb.isNotEmpty()) {
+                        tokens.add(sb.toString())
+                        sb = StringBuilder()
+                    }
+                }
+                else -> sb.append(c)
+            }
+        }
+        if (sb.isNotEmpty()) tokens.add(sb.toString())
+        return tokens
+    }
+
     fun submitToolForm() {
         val f = _toolForm.value
         val schema = f.schema ?: return
@@ -503,12 +564,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 tool = schema.id, args = args, cwd = "~")
             when (val r = client().submitToolJob(req)) {
                 is BridgeResult.Success -> {
-                    toolJobMeta[r.data.response.job_id] = Artifacts.metaFor(schema, args)
-                    _toolForm.update { it.copy(submitting = false,
-                                               notice = "job ${r.data.response.job_id} submitted") }
+                    val id = r.data.response.job_id
+                    toolJobMeta[id] = Artifacts.metaFor(schema, args)
+                    _toolForm.value = ToolFormState()
                     _dashboard.update {
-                        it.copy(notice = "job ${r.data.response.job_id} submitted (${schema.id})")
+                        it.copy(notice = "job $id submitted (${schema.id})")
                     }
+                    refresh()
+                    selectJob(id)
                 }
                 is BridgeResult.HttpError ->
                     _toolForm.update { it.copy(submitting = false,
