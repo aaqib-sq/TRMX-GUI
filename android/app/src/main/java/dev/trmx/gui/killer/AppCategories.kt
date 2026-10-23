@@ -112,8 +112,8 @@ object AppCategories {
     }
 
     /**
-     * Determines if an app belongs to the Running tab (currently running and safe to kill):
-     * running AND NOT core AND (user-installed OR in the existing safe suggestion list).
+     * Determines if an app belongs to the Running tab (currently/recently active AND killable):
+     * (installed AND active) OR (system AND in the safe suggestion list AND active).
      *
      * Core packages can NEVER be killable running under any circumstances.
      */
@@ -132,6 +132,28 @@ object AppCategories {
         val userInstalled = !isSystem
         val inSuggestionList = isSuggested(pkg)
         return userInstalled || inSuggestionList
+    }
+
+    /**
+     * Determines if an app belongs to the Other tab:
+     * Non-core SYSTEM apps only. Contains non-running system apps, plus running system apps
+     * that are NOT in the safe suggestion list (unknown system components).
+     *
+     * Installed third-party packages NEVER appear here, running or not.
+     */
+    fun belongsToOtherTab(app: AppInfo): Boolean {
+        return belongsToOtherTab(
+            packageName = app.packageName,
+            isSystem = app.isSystem,
+            isRunning = app.isRunning,
+        )
+    }
+
+    fun belongsToOtherTab(packageName: String, isSystem: Boolean, isRunning: Boolean): Boolean {
+        val pkg = packageName.trim()
+        if (isCore(pkg)) return false
+        if (!isSystem) return false
+        return !isKillableRunning(pkg, isSystem = true, isRunning = isRunning)
     }
 
     fun isCore(packageName: String): Boolean {

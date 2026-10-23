@@ -211,3 +211,36 @@ Goal: Built-in automated app force-stop feature designed for ease of use: one Ac
 - Kotlin symbol resolution: All symbols verified against real SDK and project definitions.
 - Unit tests: Comprehensive category and protection tests in `AppCategoriesTest.kt`.
 - Working tree clean and properly tracked.
+
+---
+
+## 8. App Killer v3 (Active Detection & Partitioning Fix)
+
+Date: 2026-10-23
+Spec: User-corrected v3 specification (locked)
+
+### 1. Dual-Signal Active Detection
+- **Modern Android Detection Fix**: `ActivityManager.getRunningAppProcesses()` is restricted on modern Android and returned 0 processes on user devices. v3 introduces a robust dual-signal detection architecture:
+  1. **Accessibility Window Events**: `AppKillerAccessibilityService` tracks foreground package transitions (`TYPE_WINDOW_STATE_CHANGED` and `TYPE_WINDOWS_CHANGED`) and active interactive windows (`rootInActiveWindow`, `windows`). Observed packages are stored in-memory and persisted to private `SharedPreferences` to survive screen-off and process recreation.
+  2. **UsageStats Recent Activity**: `UsageStatsManager.queryUsageStats(INTERVAL_BEST, startTime, now)` queries recent app activity within a documented **30-minute window** (`USAGE_STATS_WINDOW_MS = 30 * 60 * 1000L`).
+  - Active packages are the union of both signals.
+  - **On-Device Guarantee**: UsageStats is used strictly on-device to assemble the running list; no data ever leaves the device.
+  - **Post-Kill State Tracking**: When an app is force-stopped or confirmed already stopped by TRMX, it is marked with a kill timestamp and pruned from the Accessibility observed cache. A package will only be considered active via UsageStats if used *after* the kill timestamp, preventing killed apps from immediately reappearing in Running on refresh.
+
+### 2. Tab Partitioning & Installed vs System Rules
+- **Other Tab**: Retained and populated exclusively with non-core SYSTEM apps (non-running system apps, plus running system apps that are NOT in the safe suggestion list).
+- **User-Installed (Third-Party) Apps**:
+  - If ACTIVE -> placed in Running tab.
+  - If NOT active -> appears NOWHERE (neither Running nor Other).
+  - Guarantee: `Other` tab contains exactly ZERO installed third-party packages.
+- **Running Tab**: Contains currently/recently active AND killable packages: `(installed AND active) OR (system AND suggested AND active)`. Core packages are NEVER in Running.
+- **Core Tab**: Contains protected system packages. Never killable, never selectable.
+
+### 3. Usage Access Flow
+- If Usage access is not granted, `KillScreen` presents a warning card and an "Open Usage Access Settings" button launching `Settings.ACTION_USAGE_ACCESS_SETTINGS` (with package URI and general settings fallbacks).
+- State re-checked automatically on `Lifecycle.Event.ON_RESUME`.
+- Zero occurrences of "Safe"/"SAFE" in user-visible UI.
+
+### 4. Honest Technical Limit
+- An app that has neither come to the foreground since the accessibility service started nor been used recently (within the 30-minute UsageStats window) may not be detected as active. This limitation is due to Android process isolation and is documented plainly.
+

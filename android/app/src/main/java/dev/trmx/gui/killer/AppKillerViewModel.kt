@@ -36,6 +36,9 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _isAccessibilityEnabled = MutableStateFlow(false)
     val isAccessibilityEnabled: StateFlow<Boolean> = _isAccessibilityEnabled.asStateFlow()
 
+    private val _isUsageAccessGranted = MutableStateFlow(false)
+    val isUsageAccessGranted: StateFlow<Boolean> = _isUsageAccessGranted.asStateFlow()
+
     private val _isKilling = MutableStateFlow(false)
     val isKilling: StateFlow<Boolean> = _isKilling.asStateFlow()
 
@@ -53,6 +56,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         checkAccessibility()
+        checkUsageAccess()
         loadApps()
     }
 
@@ -61,8 +65,17 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
         _isAccessibilityEnabled.value = enabled
     }
 
+    fun checkUsageAccess() {
+        val granted = AppKillerEngine.hasUsageAccessPermission(getApplication())
+        _isUsageAccessGranted.value = granted
+    }
+
     fun openAccessibilitySettings() {
         AppKillerEngine.openAccessibilitySettings(getApplication())
+    }
+
+    fun openUsageAccessSettings() {
+        AppKillerEngine.openUsageAccessSettings(getApplication())
     }
 
     fun loadApps() {
@@ -132,7 +145,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectAllOther() {
         val otherPackages = _apps.value
-            .filter { !AppCategories.isCore(it.packageName) && !AppCategories.isKillableRunning(it) }
+            .filter { AppCategories.belongsToOtherTab(it) }
             .map { it.packageName }
             .toSet()
         _selectedPackages.update { it + otherPackages }
@@ -180,6 +193,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
                 _isKilling.value = false
                 _progress.value = null
                 checkAccessibility()
+                checkUsageAccess()
                 loadApps()
             }
         }

@@ -203,4 +203,137 @@ class AppCategoriesTest {
             )
         }
     }
+
+    @Test
+    fun testOtherTabCanNeverContainInstalledThirdPartyPackages() {
+        // v3 Spec Rule 2 & 3: Other must contain ZERO installed third-party packages, running or not.
+        val installedApps = listOf(
+            "in.gov.uidai.aadhaar",
+            "com.spotify.music",
+            "com.whatsapp",
+            "org.videolan.vlc",
+            "com.supercell.clashofclans",
+            "com.thirdparty.anyapp",
+        )
+
+        for (pkg in installedApps) {
+            // Test with running = true
+            assertFalse(
+                "Installed third-party app $pkg (running) must NEVER belong to Other tab",
+                AppCategories.belongsToOtherTab(packageName = pkg, isSystem = false, isRunning = true),
+            )
+            // Test with running = false
+            assertFalse(
+                "Installed third-party app $pkg (not running) must NEVER belong to Other tab",
+                AppCategories.belongsToOtherTab(packageName = pkg, isSystem = false, isRunning = false),
+            )
+
+            // Also test with AppInfo object overload
+            val runningAppInfo = AppInfo(
+                packageName = pkg,
+                label = pkg,
+                category = AppCategory.UNKNOWN,
+                isSystem = false,
+                isRunning = true,
+            )
+            assertFalse(
+                "AppInfo for $pkg (running) must NEVER belong to Other tab",
+                AppCategories.belongsToOtherTab(runningAppInfo),
+            )
+
+            val stoppedAppInfo = AppInfo(
+                packageName = pkg,
+                label = pkg,
+                category = AppCategory.UNKNOWN,
+                isSystem = false,
+                isRunning = false,
+            )
+            assertFalse(
+                "AppInfo for $pkg (not running) must NEVER belong to Other tab",
+                AppCategories.belongsToOtherTab(stoppedAppInfo),
+            )
+        }
+    }
+
+    @Test
+    fun testNonRunningInstalledAppAppearsInNoTab() {
+        // v3 Spec Rule 2: If user-installed and NOT running -> appears NOWHERE (neither Running nor Other).
+        val userApps = listOf(
+            "in.gov.uidai.aadhaar",
+            "com.spotify.music",
+            "com.whatsapp",
+        )
+
+        for (pkg in userApps) {
+            val inRunning = AppCategories.isKillableRunning(packageName = pkg, isSystem = false, isRunning = false)
+            val inOther = AppCategories.belongsToOtherTab(packageName = pkg, isSystem = false, isRunning = false)
+            val isCore = AppCategories.isCore(pkg)
+
+            assertFalse("Non-running installed app $pkg must NOT be in Running tab", inRunning)
+            assertFalse("Non-running installed app $pkg must NOT be in Other tab", inOther)
+            assertFalse("Installed app $pkg must NOT be in Core tab", isCore)
+            // Mathematically verified: matches zero tabs.
+        }
+    }
+
+    @Test
+    fun testRunningInstalledAppAppearsOnlyInRunningTab() {
+        // v3 Spec Rule 2 & 4: If user-installed and RUNNING -> Running tab ONLY.
+        val userApps = listOf(
+            "in.gov.uidai.aadhaar",
+            "com.spotify.music",
+            "com.whatsapp",
+        )
+
+        for (pkg in userApps) {
+            val inRunning = AppCategories.isKillableRunning(packageName = pkg, isSystem = false, isRunning = true)
+            val inOther = AppCategories.belongsToOtherTab(packageName = pkg, isSystem = false, isRunning = true)
+            val isCore = AppCategories.isCore(pkg)
+
+            assertTrue("Running installed app $pkg must be in Running tab", inRunning)
+            assertFalse("Running installed app $pkg must NOT be in Other tab", inOther)
+            assertFalse("Installed app $pkg must NOT be in Core tab", isCore)
+        }
+    }
+
+    @Test
+    fun testOtherTabContainsOnlyNonCoreSystemApps() {
+        // v3 Spec Rule 3: Other tab content = non-core SYSTEM apps only:
+        // non-running system apps, plus running system apps that are NOT in the safe suggestion list.
+
+        // 1. Non-running suggested vendor app -> belongs to Other
+        val suggestedVendor = "com.sec.android.app.popupcalculator"
+        assertTrue(
+            "Non-running suggested vendor app must belong to Other tab",
+            AppCategories.belongsToOtherTab(packageName = suggestedVendor, isSystem = true, isRunning = false),
+        )
+        // When running, it belongs to Running tab, NOT Other
+        assertFalse(
+            "Running suggested vendor app belongs to Running, NOT Other",
+            AppCategories.belongsToOtherTab(packageName = suggestedVendor, isSystem = true, isRunning = true),
+        )
+
+        // 2. Unknown system app (not in suggestion list) -> belongs to Other whether running or not
+        val unknownSystem = "com.samsung.android.knox.containercore"
+        assertTrue(
+            "Non-running unknown system app must belong to Other tab",
+            AppCategories.belongsToOtherTab(packageName = unknownSystem, isSystem = true, isRunning = false),
+        )
+        assertTrue(
+            "Running unknown system app (not suggested) must belong to Other tab",
+            AppCategories.belongsToOtherTab(packageName = unknownSystem, isSystem = true, isRunning = true),
+        )
+
+        // 3. Core system apps -> can NEVER belong to Other tab
+        for (pkg in AppCategories.CORE_PACKAGES) {
+            assertFalse(
+                "Core package $pkg must NEVER belong to Other tab (running)",
+                AppCategories.belongsToOtherTab(packageName = pkg, isSystem = true, isRunning = true),
+            )
+            assertFalse(
+                "Core package $pkg must NEVER belong to Other tab (not running)",
+                AppCategories.belongsToOtherTab(packageName = pkg, isSystem = true, isRunning = false),
+            )
+        }
+    }
 }

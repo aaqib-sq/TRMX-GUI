@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Control plane: lets us send RUN_COMMAND intents to Termux.
          Granted by the user in OUR App Info → Permissions (consent screen 2). -->
@@ -9,6 +10,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- App Killer: runtime app enumeration for user-confirmed force-stop. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- App Killer: UsageStats access to detect recently active apps on-device. -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- Package visibility (Android 11+): we need to see Termux to check
          it is installed before offering the wizard. -->

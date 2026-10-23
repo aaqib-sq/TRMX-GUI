@@ -74,6 +74,7 @@ fun KillScreen(
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val filterTab by viewModel.filterTab.collectAsStateWithLifecycle()
     val isAccessibilityEnabled by viewModel.isAccessibilityEnabled.collectAsStateWithLifecycle()
+    val isUsageAccessGranted by viewModel.isUsageAccessGranted.collectAsStateWithLifecycle()
     val isKilling by viewModel.isKilling.collectAsStateWithLifecycle()
     val progress by viewModel.progress.collectAsStateWithLifecycle()
     val lastReport by viewModel.lastReport.collectAsStateWithLifecycle()
@@ -81,9 +82,11 @@ fun KillScreen(
 
     var showConfirmDialog by remember { mutableStateOf(false) }
 
-    // Re-check accessibility state when user returns to TRMX from system settings
+    // Re-check permission states when user returns to TRMX from system settings
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.checkAccessibility()
+        viewModel.checkUsageAccess()
+        viewModel.loadApps()
     }
 
     val filteredApps = remember(apps, searchQuery, filterTab) {
@@ -94,7 +97,7 @@ fun KillScreen(
 
             val matchesTab = when (filterTab) {
                 KillerFilterTab.RUNNING -> AppCategories.isKillableRunning(app)
-                KillerFilterTab.OTHER -> !AppCategories.isCore(app.packageName) && !AppCategories.isKillableRunning(app)
+                KillerFilterTab.OTHER -> AppCategories.belongsToOtherTab(app)
                 KillerFilterTab.CORE -> AppCategories.isCore(app.packageName)
             }
             matchesQuery && matchesTab
@@ -105,7 +108,7 @@ fun KillScreen(
         apps.count { AppCategories.isKillableRunning(it) }
     }
     val otherCount = remember(apps) {
-        apps.count { !AppCategories.isCore(it.packageName) && !AppCategories.isKillableRunning(it) }
+        apps.count { AppCategories.belongsToOtherTab(it) }
     }
 
     Column(
@@ -154,7 +157,41 @@ fun KillScreen(
                 }
             }
 
-            // 2. Active Killing Progress Card
+            // 2. Usage Access State Banner (shown when not granted)
+            if (!isUsageAccessGranted) {
+                TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 14.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Outlined.Warning,
+                                contentDescription = null,
+                                tint = P.Danger,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Usage Access Needed",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = P.TextPrimary,
+                            )
+                        }
+                        Text(
+                            "Allow Usage access in Settings so TRMX can detect recently active apps. Detection happens strictly on-device.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = P.TextSecondary,
+                        )
+                        TrmxButton(
+                            label = "Open Usage Access Settings",
+                            onClick = { viewModel.openUsageAccessSettings() },
+                            kind = TrmxButtonKind.Secondary,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+
+            // 3. Active Killing Progress Card
             if (isKilling) {
                 TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 14.dp) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -210,7 +247,7 @@ fun KillScreen(
                 }
             }
 
-            // 3. Search Bar
+            // 4. Search Bar
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = viewModel::setSearchQuery,
@@ -229,7 +266,7 @@ fun KillScreen(
                 ),
             )
 
-            // 4. Filter Chips + Quick Actions
+            // 5. Filter Chips + Quick Actions
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,

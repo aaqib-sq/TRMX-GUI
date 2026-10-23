@@ -2,6 +2,9 @@ package dev.trmx.gui.killer
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.ActivityManager
+import android.app.AppOpsManager
+import android.app.usage.UsageStats
+import android.app.usage.UsageStatsManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -9,10 +12,12 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Process
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import dev.trmx.gui.MainActivity
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -36,6 +41,14 @@ data class KillReport(
 )
 
 object AppKillerEngine {
+
+    /**
+     * Recent window for UsageStats detection: 30 minutes.
+     * Packages active within this window are detected as running.
+     */
+    const val USAGE_STATS_WINDOW_MS: Long = 30 * 60 * 1000L // 30 minutes
+
+    private val killedTimestamps = ConcurrentHashMap<String, Long>()
 
     fun isAccessibilityEnabled(context: Context): Boolean {
         if (AppKillerAccessibilityService.isRunning) return true
@@ -94,22 +107,147 @@ object AppKillerEngine {
         }
     }
 
-    fun getRunningPackages(context: Context, installedPackages: Set<String>? = null): Set<String> {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return emptySet()
-        val runningProcesses = am.runningAppProcesses ?: return emptySet()
-        val running = mutableSetOf<String>()
-        for (proc in runningProcesses) {
-            val pkgList = proc.pkgList ?: continue
-            for (pkg in pkgList) {
-                val trimmed = pkg?.trim() ?: continue
-                if (trimmed.isEmpty()) continue
-                // Exclude core packages (includes this app itself dev.trmx.gui, com.termux*, and core blocklist)
-                if (AppCategories.isCore(trimmed)) continue
-                if (installedPackages != null && !installedPackages.contains(trimmed)) continue
-                running.add(trimmed)
+    fun hasUsageAccessPermission(context: Context): Boolean {
+        return try {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager ?: return false
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(),
+                    context.packageName,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(),
+                    context.packageName,
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun openUsageAccessSettings(context: Context) {
+        try {
+            val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                val intent = Intent(Settings.ACTION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
             }
         }
-        return running
+    }
+
+    /**
+     * Queries recent app activity via UsageStatsManager on-device.
+     *
+     * Privacy guarantee: All UsageStats data is strictly queried and processed on-device
+     * solely to determine recently active packages for the Kill screen. No usage data leaves the device.
+     */
+    fun getActivePackagesFromUsageStats(context: Context, windowMs: Long = USAGE_STATS_WINDOW_MS): Set<String> {
+        if (!hasUsageAccessPermission(context)) return emptySet()
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return emptySet()
+        val now = System.currentTimeMillis()
+        val startTime = now - windowMs
+
+        return try {
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, startTime, now) ?: return emptySet()
+            val active = mutableSetOf<String>()
+            for (usage in stats) {
+                val pkg = usage.packageName ?: continue
+                val trimmed = pkg.trim()
+                if (trimmed.isEmpty() || AppCategories.isCore(trimmed)) continue
+
+                val lastUsed = usage.lastTimeUsed
+                val lastVisible = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) usage.lastTimeVisible else 0L
+                val mostRecent = maxOf(lastUsed, lastVisible)
+
+                if (mostRecent >= startTime) {
+                    val killedAt = getPackageLastKilledTimestamp(trimmed)
+                    if (mostRecent > killedAt) {
+                        active.add(trimmed)
+                    }
+                }
+            }
+            active
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    fun markPackageKilled(context: Context?, packageName: String) {
+        val pkg = packageName.trim()
+        if (pkg.isEmpty()) return
+        killedTimestamps[pkg] = System.currentTimeMillis()
+        AppKillerAccessibilityService.removeObservedPackage(context, pkg)
+    }
+
+    fun getPackageLastKilledTimestamp(packageName: String): Long {
+        return killedTimestamps[packageName.trim()] ?: 0L
+    }
+
+    /**
+     * Determines active running packages using a union of two on-device signals:
+     * 1. Window events observed by AppKillerAccessibilityService (persisted locally across screen-off).
+     * 2. Recent usage stats within the 30-minute window (UsageStatsManager).
+     *
+     * Core packages are strictly excluded.
+     */
+    fun getActivePackages(context: Context, installedPackages: Set<String>? = null): Set<String> {
+        val active = mutableSetOf<String>()
+
+        // Signal 1: Accessibility service observed foreground packages
+        active.addAll(AppKillerAccessibilityService.getObservedPackages(context))
+
+        // Signal 2: UsageStats recent activity (30-minute window)
+        active.addAll(getActivePackagesFromUsageStats(context, USAGE_STATS_WINDOW_MS))
+
+        // Fallback: ActivityManager running processes (for older Android / emulators)
+        try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val runningProcesses = am?.runningAppProcesses
+            if (runningProcesses != null) {
+                for (proc in runningProcesses) {
+                    val pkgList = proc.pkgList ?: continue
+                    for (pkg in pkgList) {
+                        val trimmed = pkg?.trim() ?: continue
+                        if (trimmed.isNotEmpty()) {
+                            active.add(trimmed)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        // Filter: exclude core packages and uninstalled packages
+        val iterator = active.iterator()
+        while (iterator.hasNext()) {
+            val pkg = iterator.next()
+            if (AppCategories.isCore(pkg) || (installedPackages != null && !installedPackages.contains(pkg))) {
+                iterator.remove()
+            }
+        }
+
+        return active
+    }
+
+    fun getRunningPackages(context: Context, installedPackages: Set<String>? = null): Set<String> {
+        return getActivePackages(context, installedPackages)
     }
 
     fun loadInstalledApps(context: Context): List<AppInfo> {
@@ -122,7 +260,10 @@ object AppKillerEngine {
         }
 
         val installedSet = packages.mapNotNull { it.packageName }.toSet()
-        val runningPackages = getRunningPackages(context, installedSet)
+        // Prune any uninstalled packages from accessibility cache
+        AppKillerAccessibilityService.pruneObservedPackages(context, installedSet)
+
+        val runningPackages = getActivePackages(context, installedSet)
 
         val result = ArrayList<AppInfo>(packages.size)
         for (pkgInfo in packages) {
@@ -376,6 +517,7 @@ object AppKillerEngine {
             }
 
             if (forceStopDisabled) {
+                markPackageKilled(context, pkg)
                 skipped.add(pkg to "Already stopped (Force Stop disabled)")
                 continue
             }
@@ -403,6 +545,7 @@ object AppKillerEngine {
                     }
                     delay(100)
                 }
+                markPackageKilled(context, pkg)
                 killed.add(pkg)
                 delay(150)
             }
