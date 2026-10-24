@@ -61,8 +61,8 @@ class AppCategoriesTest {
     }
 
     @Test
-    fun testSafePackagesAreSuggestedAndKillable() {
-        val safe = listOf(
+    fun testNonCoreAppsAreKillable() {
+        val nonCore = listOf(
             "com.sec.android.app.samsungapps",
             "com.samsung.android.themestore",
             "com.samsung.android.game.gamehome",
@@ -72,10 +72,10 @@ class AppCategoriesTest {
             "com.google.android.dialer",
         )
 
-        for (pkg in safe) {
-            assertFalse("Safe app $pkg must not be CORE", AppCategories.isCore(pkg))
-            assertTrue("Safe app $pkg must be killable", AppCategories.isKillable(pkg))
-            assertEquals("Expected category SAFE for $pkg", AppCategory.SAFE, AppCategories.categoryFor(pkg))
+        for (pkg in nonCore) {
+            assertFalse("Non-core app $pkg must not be CORE", AppCategories.isCore(pkg))
+            assertTrue("Non-core app $pkg must be killable", AppCategories.isKillable(pkg))
+            assertEquals("Expected category UNKNOWN for $pkg", AppCategory.UNKNOWN, AppCategories.categoryFor(pkg))
         }
     }
 
@@ -83,15 +83,15 @@ class AppCategoriesTest {
     fun testDialerUiVsPhoneServiceDistinction() {
         // Critical safety distinction from design plan:
         // Phone service (com.android.phone) is CORE and must NEVER be stopped.
-        // Dialer UI (com.samsung.android.dialer / com.google.android.dialer) is SAFE UI.
+        // Dialer UI (com.samsung.android.dialer / com.google.android.dialer) is killable UI.
         assertTrue(AppCategories.isCore("com.android.phone"))
         assertFalse(AppCategories.isKillable("com.android.phone"))
 
         assertTrue(AppCategories.isKillable("com.samsung.android.dialer"))
-        assertEquals(AppCategory.SAFE, AppCategories.categoryFor("com.samsung.android.dialer"))
+        assertEquals(AppCategory.UNKNOWN, AppCategories.categoryFor("com.samsung.android.dialer"))
 
         assertTrue(AppCategories.isKillable("com.google.android.dialer"))
-        assertEquals(AppCategory.SAFE, AppCategories.categoryFor("com.google.android.dialer"))
+        assertEquals(AppCategory.UNKNOWN, AppCategories.categoryFor("com.google.android.dialer"))
     }
 
     @Test
@@ -142,26 +142,27 @@ class AppCategoriesTest {
             AppCategories.isKillableRunning(packageName = userApp, isSystem = false, isRunning = false),
         )
 
-        // 2. Suggested vendor apps (isSystem = true, in suggestion list)
-        val suggestedVendor = "com.sec.android.app.popupcalculator"
+        // 2. Vendor apps (isSystem = true)
+        val vendorApp = "com.sec.android.app.popupcalculator"
         assertTrue(
-            "Running suggested vendor app must be killable running",
-            AppCategories.isKillableRunning(packageName = suggestedVendor, isSystem = true, isRunning = true),
+            "Running vendor app must be killable running",
+            AppCategories.isKillableRunning(packageName = vendorApp, isSystem = true, isRunning = true),
         )
         assertFalse(
-            "Non-running suggested vendor app must NOT be in running tab",
-            AppCategories.isKillableRunning(packageName = suggestedVendor, isSystem = true, isRunning = false),
+            "Non-running vendor app must NOT be in running tab",
+            AppCategories.isKillableRunning(packageName = vendorApp, isSystem = true, isRunning = false),
         )
 
-        // 3. Unknown system apps (isSystem = true, not in suggestion list)
-        val unknownSystem = "com.samsung.android.knox.containercore"
-        assertFalse(
-            "Running unknown system app must NOT be in running tab (must go to Other)",
-            AppCategories.isKillableRunning(packageName = unknownSystem, isSystem = true, isRunning = true),
+        // 3. System apps NOT in old suggestion list
+        // v5 Rule 1: active AND NOT core. Hardcoded suggestion list removed.
+        val unlistedSystem = "com.samsung.android.knox.containercore"
+        assertTrue(
+            "Running unlisted system app must be in running tab",
+            AppCategories.isKillableRunning(packageName = unlistedSystem, isSystem = true, isRunning = true),
         )
         assertFalse(
-            "Non-running unknown system app must NOT be in running tab",
-            AppCategories.isKillableRunning(packageName = unknownSystem, isSystem = true, isRunning = false),
+            "Non-running unlisted system app must NOT be in running tab",
+            AppCategories.isKillableRunning(packageName = unlistedSystem, isSystem = true, isRunning = false),
         )
 
         // 4. Core system apps can NEVER be in running tab, even if running
@@ -298,30 +299,29 @@ class AppCategoriesTest {
 
     @Test
     fun testOtherTabContainsOnlyNonCoreSystemApps() {
-        // v3 Spec Rule 3: Other tab content = non-core SYSTEM apps only:
-        // non-running system apps, plus running system apps that are NOT in the safe suggestion list.
+        // v5 Spec Rule 2: Other tab content = non-core SYSTEM apps that are NOT in Running (not active).
 
-        // 1. Non-running suggested vendor app -> belongs to Other
-        val suggestedVendor = "com.sec.android.app.popupcalculator"
+        // 1. Non-running vendor app -> belongs to Other
+        val vendorApp = "com.sec.android.app.popupcalculator"
         assertTrue(
-            "Non-running suggested vendor app must belong to Other tab",
-            AppCategories.belongsToOtherTab(packageName = suggestedVendor, isSystem = true, isRunning = false),
+            "Non-running vendor app must belong to Other tab",
+            AppCategories.belongsToOtherTab(packageName = vendorApp, isSystem = true, isRunning = false),
         )
         // When running, it belongs to Running tab, NOT Other
         assertFalse(
-            "Running suggested vendor app belongs to Running, NOT Other",
-            AppCategories.belongsToOtherTab(packageName = suggestedVendor, isSystem = true, isRunning = true),
+            "Running vendor app belongs to Running, NOT Other",
+            AppCategories.belongsToOtherTab(packageName = vendorApp, isSystem = true, isRunning = true),
         )
 
-        // 2. Unknown system app (not in suggestion list) -> belongs to Other whether running or not
-        val unknownSystem = "com.samsung.android.knox.containercore"
+        // 2. System app NOT in old suggestion list -> belongs to Other when inactive, Running when active
+        val unlistedSystem = "com.samsung.android.knox.containercore"
         assertTrue(
-            "Non-running unknown system app must belong to Other tab",
-            AppCategories.belongsToOtherTab(packageName = unknownSystem, isSystem = true, isRunning = false),
+            "Non-running unlisted system app must belong to Other tab",
+            AppCategories.belongsToOtherTab(packageName = unlistedSystem, isSystem = true, isRunning = false),
         )
-        assertTrue(
-            "Running unknown system app (not suggested) must belong to Other tab",
-            AppCategories.belongsToOtherTab(packageName = unknownSystem, isSystem = true, isRunning = true),
+        assertFalse(
+            "Running unlisted system app belongs to Running, NOT Other",
+            AppCategories.belongsToOtherTab(packageName = unlistedSystem, isSystem = true, isRunning = true),
         )
 
         // 3. Core system apps -> can NEVER belong to Other tab
@@ -341,5 +341,48 @@ class AppCategoriesTest {
     fun testUsageStatsWindowIs24Hours() {
         // v4 Spec: Window changed from 30 minutes to 24 hours so every app used today appears in Running
         assertEquals(24 * 60 * 60 * 1000L, AppKillerEngine.USAGE_STATS_WINDOW_MS)
+    }
+
+    @Test
+    fun testV5EligibilityRules() {
+        // Verification 1: Active non-core SYSTEM app NOT in old suggestion list now belongs to Running
+        val activeUnlistedSystem = "com.samsung.android.knox.containercore"
+        assertFalse(AppCategories.isCore(activeUnlistedSystem))
+        assertTrue(
+            "Active non-core SYSTEM app NOT in old suggestion list belongs to Running",
+            AppCategories.isKillableRunning(packageName = activeUnlistedSystem, isSystem = true, isRunning = true),
+        )
+        assertFalse(
+            "Active non-core SYSTEM app must NOT belong to Other",
+            AppCategories.belongsToOtherTab(packageName = activeUnlistedSystem, isSystem = true, isRunning = true),
+        )
+
+        // Verification 2: Non-active installed app belongs to NO tab
+        val nonActiveInstalled = "com.spotify.music"
+        assertFalse(
+            "Non-active installed app must NOT belong to Running",
+            AppCategories.isKillableRunning(packageName = nonActiveInstalled, isSystem = false, isRunning = false),
+        )
+        assertFalse(
+            "Non-active installed app must NOT belong to Other",
+            AppCategories.belongsToOtherTab(packageName = nonActiveInstalled, isSystem = false, isRunning = false),
+        )
+        assertFalse(
+            "Non-active installed app must NOT belong to Core",
+            AppCategories.isCore(nonActiveInstalled),
+        )
+
+        // Verification 3: Core app can NEVER be selected or in Running/Other
+        val coreApp = "com.android.systemui"
+        assertTrue(AppCategories.isCore(coreApp))
+        assertFalse(AppCategories.isKillable(coreApp))
+        assertFalse(
+            "Core app can never be in Running even if active",
+            AppCategories.isKillableRunning(packageName = coreApp, isSystem = true, isRunning = true),
+        )
+        assertFalse(
+            "Core app can never belong to Other",
+            AppCategories.belongsToOtherTab(packageName = coreApp, isSystem = true, isRunning = false),
+        )
     }
 }

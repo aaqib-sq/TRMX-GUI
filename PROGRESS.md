@@ -272,4 +272,34 @@ Spec: User-approved v4 specification (locked)
 ### 4. Honest Technical Limit
 - An app that has neither come to the foreground since the accessibility service started nor been used in the last 24 hours (UsageStats window) may not be detected as active. This limitation is due to Android process isolation and is documented plainly.
 
+---
+
+## 10. App Killer v5 (Universal Active Eligibility & Dead Suggestion List Removal)
+
+Date: 2026-10-24
+Spec: User-approved v5 specification (locked)
+
+### 1. Root Cause & Solution
+- **The Bug**: Running tab eligibility previously gated system apps through a hardcoded 29-package suggestion list (`SUGGESTED_PACKAGES` / `SAFE_PACKAGES`) based on guesswork rather than the actual device's installed package inventory (489 apps enumerated at runtime by PackageManager).
+- **The Fix**: Removed the suggestion-list gate entirely. New rule for `isKillableRunning`: **active AND NOT core**.
+- Any non-core app that is active (UsageStats 24-hour window OR Accessibility-observed OR ActivityManager fallback) belongs in the Running tab — system or installed, with no hardcoded list filtering it.
+
+### 2. Other Tab Automatically Follows
+- Structure of `belongsToOtherTab` preserved: `!isCore && isSystem && !isKillableRunning`.
+- Non-core SYSTEM apps that are NOT active remain in Other.
+- Installed third-party apps that are not active appear in NO tab (unchanged rule).
+
+### 3. Core Blocklist Untouched
+- `AppCategories.isCore`, `CORE_PACKAGES` (all 38 critical framework and telephony packages), and dynamic suffix rules stay completely intact and protected. Core apps can never be killed or selected.
+
+### 4. Dead Code Cleanup & Ban Guarantees
+- Deleted dead constants and helper: `SUGGESTED_PACKAGES`, `SAFE_PACKAGES`, `isSuggested`.
+- Updated stale code comments and tests.
+- Zero occurrences of "Safe"/"SAFE" in user-visible Kill UI.
+- Strictly on-device: zero network calls in the killer package.
+
+### 5. Honest Technical Limit
+- Background-only services with no foreground window or UsageStats signal (e.g. background daemons without an interactive task) cannot be observed by any normal unprivileged Android app due to OS-level process sandbox boundaries.
+
+
 
