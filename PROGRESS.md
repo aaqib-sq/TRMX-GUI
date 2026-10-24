@@ -177,3 +177,220 @@ Investigation of GitHub Actions CI compile failure during `:app:compileDebugKotl
     - Resolved by typing `suffix = unit?.let { u -> { Text(u) } }`.
 16. **`ui/ToolFormScreen.kt:320:17` (Overload resolution ambiguity: [Text overloads])**:
     - Resolved automatically once `helpText` was typed as `String?` from `a.help` instead of `[Error type]`.
+
+---
+
+## 7. App Killer Feature (Branch `agy/trmx-app-killer`)
+
+Date: 2026-10-23  
+Goal: Built-in automated app force-stop feature designed for ease of use: one Accessibility toggle (one-time setup), then one button force-stops user-confirmed background apps one by one with live progress and a final report.
+
+### Architecture & Components:
+1. **Runtime App Enumeration (`AppKillerEngine.loadInstalledApps`)**:
+   - Queries device `PackageManager` at runtime via `getInstalledPackages` (supporting both API 33+ `PackageInfoFlags` and legacy fallback).
+   - Extracts real label, package name, system app flag, and categorizes into CORE, SAFE, or UNKNOWN.
+   - Manifest permission `android.permission.QUERY_ALL_PACKAGES` declared and justified.
+2. **3 Strict Safety Categories (`AppCategories.kt`)**:
+   - **CORE**: System-critical packages that can NEVER be stopped under any circumstances. Enforced both in UI (unselectable, locked badge) and in the kill engine (`executeKillList` filters out CORE packages and marks them skipped). Contains `dev.trmx.gui`, `com.termux.*`, framework, `com.android.systemui`, settings, telecom/phone, package installers, Play services, keyboards, and home launchers.
+   - **SAFE**: Non-essential vendor apps (Galaxy Store, Theme Store, Game Launcher, Voice Recorder, Samsung Tips, Weather, etc.) suggested as pre-selected hints. User can uncheck any or clear all.
+   - **UNKNOWN**: Third-party and other unclassified apps. Default EXCLUDED from the kill selection; only included if user explicitly checks the box.
+3. **AccessibilityService Automation Engine (`AppKillerAccessibilityService.kt` & `AppKillerEngine.kt`)**:
+   - Declared in `AndroidManifest.xml` with `android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"` and configured via `res/xml/accessibility_service_config.xml`.
+   - Per-app execution loop: opens `Settings.ACTION_APPLICATION_DETAILS_SETTINGS` -> polls active window for "Force Stop" node (handling case variants and container hierarchies) -> checks enabled state (skips already stopped apps without waiting for timeout) -> clicks button -> detects confirmation dialog (checks for positive button `button1`, "OK", or "Force stop" alongside dialog cancel) -> clicks confirmation -> records success/skip -> resumes `MainActivity` at end of run.
+   - Per-app 3.5s timeout: if a button is not found or not clickable, records app as SKIPPED with reason and continues without hanging.
+4. **User Interface (`KillScreen.kt` & Navigation)**:
+   - Navigation: Added 3rd tab "Kill" in bottom navigation bar and a quick entry card in `RunScreen.kt`.
+   - Filter tabs: Safe, Other, and Core (protected). Real-time search by app label or package name.
+   - Session confirmation: Confirms total app count before the first kill run of the session.
+   - Accessibility guidance: Clear warning card and one-tap button to open Accessibility settings when service is off; automatically updates on resume (`Lifecycle.Event.ON_RESUME`).
+   - Live progress: Progress bar, current count, and active app label with instant "Stop" cancellation.
+   - Final report dialog: Displays total targeted, stopped count, and detailed skipped reasons.
+
+### Verification & Conformance:
+- `python3 tests/spec_conformance.py`: **100% PASSED** (op table, routes, fixtures, manifest, comment balance, payload shapes, registry, route table, version story).
+- Kotlin symbol resolution: All symbols verified against real SDK and project definitions.
+- Unit tests: Comprehensive category and protection tests in `AppCategoriesTest.kt`.
+- Working tree clean and properly tracked.
+
+---
+
+## 8. App Killer v3 (Active Detection & Partitioning Fix)
+
+Date: 2026-10-23
+Spec: User-corrected v3 specification (locked)
+
+### 1. Dual-Signal Active Detection
+- **Modern Android Detection Fix**: `ActivityManager.getRunningAppProcesses()` is restricted on modern Android and returned 0 processes on user devices. v3 introduces a robust dual-signal detection architecture:
+  1. **Accessibility Window Events**: `AppKillerAccessibilityService` tracks foreground package transitions (`TYPE_WINDOW_STATE_CHANGED` and `TYPE_WINDOWS_CHANGED`) and active interactive windows (`rootInActiveWindow`, `windows`). Observed packages are stored in-memory and persisted to private `SharedPreferences` to survive screen-off and process recreation.
+  2. **UsageStats Recent Activity**: `UsageStatsManager.queryUsageStats(INTERVAL_BEST, startTime, now)` queries recent app activity within a documented **30-minute window** (`USAGE_STATS_WINDOW_MS = 30 * 60 * 1000L`).
+  - Active packages are the union of both signals.
+  - **On-Device Guarantee**: UsageStats is used strictly on-device to assemble the running list; no data ever leaves the device.
+  - **Post-Kill State Tracking**: When an app is force-stopped or confirmed already stopped by TRMX, it is marked with a kill timestamp and pruned from the Accessibility observed cache. A package will only be considered active via UsageStats if used *after* the kill timestamp, preventing killed apps from immediately reappearing in Running on refresh.
+
+### 2. Tab Partitioning & Installed vs System Rules
+- **Other Tab**: Retained and populated exclusively with non-core SYSTEM apps (non-running system apps, plus running system apps that are NOT in the safe suggestion list).
+- **User-Installed (Third-Party) Apps**:
+  - If ACTIVE -> placed in Running tab.
+  - If NOT active -> appears NOWHERE (neither Running nor Other).
+  - Guarantee: `Other` tab contains exactly ZERO installed third-party packages.
+- **Running Tab**: Contains currently/recently active AND killable packages: `(installed AND active) OR (system AND suggested AND active)`. Core packages are NEVER in Running.
+- **Core Tab**: Contains protected system packages. Never killable, never selectable.
+
+### 3. Usage Access Flow
+- If Usage access is not granted, `KillScreen` presents a warning card and an "Open Usage Access Settings" button launching `Settings.ACTION_USAGE_ACCESS_SETTINGS` (with package URI and general settings fallbacks).
+- State re-checked automatically on `Lifecycle.Event.ON_RESUME`.
+- Zero occurrences of "Safe"/"SAFE" in user-visible UI.
+
+### 4. Honest Technical Limit
+- An app that has neither come to the foreground since the accessibility service started nor been used recently (within the 30-minute UsageStats window) may not be detected as active. This limitation is due to Android process isolation and is documented plainly.
+
+---
+
+## 9. App Killer v4 (24-Hour UsageStats Window)
+
+Date: 2026-10-24
+Spec: User-approved v4 specification (locked)
+
+### 1. 24-Hour UsageStats Window
+- **Diagnosis**: v3's 30-minute UsageStats window caused apps used earlier in the day to disappear from the Running tab even if they remained alive in the background (user device showed 8 apps in TRMX vs 16 in Play Store killer).
+- **Fix**: Expanded `AppKillerEngine.USAGE_STATS_WINDOW_MS` from 30 minutes (`30 * 60 * 1000L`) to 24 hours (`24 * 60 * 60 * 1000L`).
+- Every app used in the last 24 hours is now captured in the Running tab.
+- Preserved the Accessibility observed-packages foreground signal and ActivityManager fallback without modifications.
+
+### 2. Partitioning & Core Lock Preserved Exactly
+- Partitioning remains strictly locked to v3 logic:
+  - **Running**: Active AND (installed OR safe-list system).
+  - **Other**: Non-core SYSTEM apps only. Installed third-party packages NEVER appear in Other, running or not.
+  - **Non-running installed apps**: Appear in NO tab.
+  - **Core**: NEVER killable and NEVER selectable. `AppCategories.isCore` and the core blocklist remain untouched.
+
+### 3. User Guarantees & Privacy
+- **NO ADS**: Zero ad SDKs, zero ad UI, zero ad placeholders.
+- **NO DATA LEAVES THE DEVICE**: Strictly on-device only. Zero network calls (HttpURLConnection, OkHttp, Retrofit, Sockets). UsageStats and Accessibility data are processed solely in local memory and private app storage.
+- **ALL APPS COVERED**: Every non-core app has a place (Running if active, Other if system).
+
+### 4. Honest Technical Limit
+- An app that has neither come to the foreground since the accessibility service started nor been used in the last 24 hours (UsageStats window) may not be detected as active. This limitation is due to Android process isolation and is documented plainly.
+
+---
+
+## 10. App Killer v5 (Universal Active Eligibility & Dead Suggestion List Removal)
+
+Date: 2026-10-24
+Spec: User-approved v5 specification (locked)
+
+### 1. Root Cause & Solution
+- **The Bug**: Running tab eligibility previously gated system apps through a hardcoded 29-package suggestion list (`SUGGESTED_PACKAGES` / `SAFE_PACKAGES`) based on guesswork rather than the actual device's installed package inventory (489 apps enumerated at runtime by PackageManager).
+- **The Fix**: Removed the suggestion-list gate entirely. New rule for `isKillableRunning`: **active AND NOT core**.
+- Any non-core app that is active (UsageStats 24-hour window OR Accessibility-observed OR ActivityManager fallback) belongs in the Running tab — system or installed, with no hardcoded list filtering it.
+
+### 2. Other Tab Automatically Follows
+- Structure of `belongsToOtherTab` preserved: `!isCore && isSystem && !isKillableRunning`.
+- Non-core SYSTEM apps that are NOT active remain in Other.
+- Installed third-party apps that are not active appear in NO tab (unchanged rule).
+
+### 3. Core Blocklist Untouched
+- `AppCategories.isCore`, `CORE_PACKAGES` (all 38 critical framework and telephony packages), and dynamic suffix rules stay completely intact and protected. Core apps can never be killed or selected.
+
+### 4. Dead Code Cleanup & Ban Guarantees
+- Deleted dead constants and helper: `SUGGESTED_PACKAGES`, `SAFE_PACKAGES`, `isSuggested`.
+- Updated stale code comments and tests.
+- Zero occurrences of "Safe"/"SAFE" in user-visible Kill UI.
+- Strictly on-device: zero network calls in the killer package.
+
+### 5. Honest Technical Limit
+- Background-only services with no foreground window or UsageStats signal (e.g. background daemons without an interactive task) cannot be observed by any normal unprivileged Android app due to OS-level process sandbox boundaries.
+
+---
+
+## 11. App Killer v6-DIAGNOSTIC (Ground Truth Signal Diagnostics)
+
+Date: 2026-10-24
+Spec: User-approved v6-DIAGNOSTIC specification (locked)
+
+### 1. Ground Truth Diagnostics (No Guesswork)
+- Five list iterations (v1–v5) previously relied on guesses about why apps were missing from the Running tab.
+- v6-DIAGNOSTIC adds a dedicated diagnostic view that produces ground truth directly on the device, explaining per app why it is or is not in Running.
+- **ZERO changes to eligibility rules**: `isKillableRunning`, `belongsToOtherTab`, `isCore`, the 24-hour UsageStats window, dual signals, and the kill engine remain 100% untouched.
+
+### 2. Debug Affordance on Kill Screen
+- Added a clearly labeled "Debug" button near the top in the top bar actions, right next to the existing gear icon.
+- Tapping "Debug" opens `KillerDebugScreen`.
+
+### 3. Debug View Information
+1. **Toggle states at top**:
+   - Accessibility enabled: `yes` / `no`
+   - Usage access granted: `yes` / `no`
+2. **Signal counts**:
+   - Total installed apps (count of all packages enumerated by PackageManager)
+   - Count from UsageStats (24-hour window)
+   - Count from Accessibility-observed packages
+   - Count from ActivityManager fallback
+   - Final Running count
+3. **Searchable generic per-app list (ALL installed apps)**:
+   - Dynamic search by app label or package name for any installed app.
+   - Each row displays:
+     - Label + package name
+     - `lastTimeUsed`: hours ago from UsageStats (e.g. `2.4h ago`, `<1h ago (12m)`) or `"no stats"`
+     - `Accessibility-observed`: `yes` / `no`
+     - `FLAG_STOPPED`: `stopped` / `not stopped` (from `ApplicationInfo.FLAG_STOPPED`)
+     - `In Running`: `yes` / `no`
+     - If NOT in Running, a plain reason string computed directly from actual signal values (`"core-blocked"`, `"stopped"`, `"not active in 24h window"`, `"no usage stats and not observed"`, `"usage access not granted and not observed"`). Never generic "unknown".
+
+### 4. Guarantees & Privacy
+- **NEVER hardcode app names**: No third-party or example app package names hardcoded. List is generic for all installed packages.
+- **Privacy**: All diagnostic data is computed and displayed on-device only. Zero network calls, zero uploads, zero analytics.
+- **Word Ban**: Zero occurrences of "Safe"/"SAFE" in user-visible UI.
+
+### 5. Honest Technical Limit
+- The debug view explains the signals — it cannot make Android reveal a background-only process that no signal sees.
+
+---
+
+## 12. App Killer v7 (7-Day Window, Stopped Pre-check, Single Predicate Truth, Repeat-on-Timeout)
+
+Date: 2026-10-24
+Spec: User-approved v7 specification (locked)
+
+### 1. 7-Day UsageStats Window
+- Expanded `USAGE_STATS_WINDOW_MS` from 24 hours to 7 days (`7 * 24 * 60 * 60 * 1000L`).
+- Diagnostic screen label updated from `"UsageStats (24-hour window)"` to `"UsageStats (7-day window)"`.
+- Resolves device evidence where Meta AI (`com.facebook.stella`) was used 74.7h ago and was missing from Running despite not being stopped.
+
+### 2. Single Source of Truth Running Predicate
+- An app is `Running` iff ALL of:
+  1. `NOT core` (enforced via `AppCategories.isCore`)
+  2. `NOT stopped` (`ApplicationInfo.FLAG_STOPPED` clear via shared helper `AppKillerEngine.isStopped`)
+  3. `active by at least one existing signal` (Accessibility-observed OR UsageStats within 7-day window OR ActivityManager fallback)
+- Named `AppCategories.isRunning(...)` (with `AppCategories.isKillableRunning(...)` aliasing it).
+- Called by BOTH `KillScreen` and `KillerDebugScreen`. Zero duplicated predicate logic.
+
+### 3. Other Tab Predicate
+- An app belongs to `Other` iff ALL of:
+  1. `NOT core`
+  2. `isSystem`
+  3. `NOT Running` (per the predicate in item 2)
+  4. `NOT stopped`
+- Stopped apps appear in NEITHER Running NOR Other (except Core tab if core).
+
+### 4. Kill Flow Pre-Check Skip
+- Before opening an app's Settings page, if the app is already stopped (`isPackageStopped(context, pkg)`), skip it immediately with reason `"Already stopped"` WITHOUT opening Settings.
+- Eliminates mid-flow skipped settings transitions for already stopped apps.
+
+### 5. Kill Flow Refresh & Selection Snapshot
+- Selection is snapshotted at run start (`targets = _selectedPackages.value.toList()`).
+- On run completion (success, skip, or timeout), selection is cleared (`emptySet()`) and the app list is reloaded from PackageManager so a second Force Stop press cannot re-run the stale list.
+
+### 6. Android 13+ Timeout & Repeat-on-Timeout
+- On Android 13+ (`Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU`), per-app task has a 3500ms timeout with repeat-on-timeout (max 2 attempts).
+- `"Force Stop button not found (timed out)"` remains a safe skip reason, never a crash.
+
+### 7. Diagnostic Screen Enhancements
+- Added `isSystem` to `AppDiagnosticInfo` and displayed on every diagnostic row (`System: yes/no`).
+- Row `inRunning` value evaluates the exact same `AppCategories.isRunning` predicate.
+- Updated reason strings: `"stopped"`, `"core-blocked"`, `"not active in 7-day window"`, `"no usage stats and not observed"`, `"usage access not granted and not observed"`.
+
+
+
+
+

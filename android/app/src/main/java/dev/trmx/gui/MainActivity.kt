@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Button
@@ -41,6 +42,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -59,10 +61,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.trmx.gui.killer.AppKillerViewModel
 import dev.trmx.gui.model.ToolExample
 import dev.trmx.gui.ui.ActivityScreen
 import dev.trmx.gui.ui.ConnectScreen
 import dev.trmx.gui.ui.JobDetailScreen
+import dev.trmx.gui.ui.KillScreen
+import dev.trmx.gui.ui.KillerDebugScreen
 import dev.trmx.gui.ui.RunScreen
 import dev.trmx.gui.ui.SettingsScreen
 import dev.trmx.gui.ui.ToolFormScreen
@@ -75,8 +80,8 @@ import dev.trmx.gui.wizard.SetupViewModel
 import dev.trmx.gui.wizard.WizardStep
 import java.io.File
 
-/** 2 primary destinations: Run (console + tools) & Activity (jobs + output). */
-private enum class Screen { RUN, ACTIVITY }
+/** Destinations: Run (console + tools), Kill (app killer), & Activity (jobs + output). */
+private enum class Screen { RUN, KILL, ACTIVITY }
 
 private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 
@@ -112,6 +117,7 @@ fun AppRoot(
     vm: AppViewModel = viewModel(),
     setupVm: SetupViewModel = viewModel(),
     filesVm: FilesViewModel = viewModel(),
+    killerVm: AppKillerViewModel = viewModel(),
 ) {
     val setup by setupVm.wizard.collectAsStateWithLifecycle()
     val setupLogText by setupVm.setupLogText.collectAsStateWithLifecycle()
@@ -126,6 +132,7 @@ fun AppRoot(
 
     var screen by remember { mutableStateOf(Screen.RUN) }
     var showSettings by remember { mutableStateOf(false) }
+    var showKillerDebug by remember { mutableStateOf(false) }
 
     // Pair-link token adopted on cold start or warm onNewIntent.
     LaunchedEffect(pendingPairToken) {
@@ -226,6 +233,13 @@ fun AppRoot(
                     onBack = { showSettings = false },
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else if (showKillerDebug) {
+                BackHandler { showKillerDebug = false }
+                KillerDebugScreen(
+                    viewModel = killerVm,
+                    onBack = { showKillerDebug = false },
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else {
                 // ---- Compact Main Shell (2 Tabs) -------------------------
                 BackHandler(enabled = screen != Screen.RUN) {
@@ -240,9 +254,21 @@ fun AppRoot(
                 Scaffold(
                     topBar = {
                         TrmxTopBar(
-                            title = "TRMX",
-                            subtitle = if (connected) "Connected · 127.0.0.1:8080" else "Bridge unreachable",
+                            title = if (screen == Screen.KILL) "App Killer" else "TRMX",
+                            subtitle = if (screen == Screen.KILL) "Automated force-stop"
+                                       else if (connected) "Connected · 127.0.0.1:8080"
+                                       else "Bridge unreachable",
                             actions = {
+                                if (screen == Screen.KILL) {
+                                    TextButton(onClick = { showKillerDebug = true }) {
+                                        Text(
+                                            "Debug",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = P.Accent,
+                                        )
+                                    }
+                                }
                                 IconButton(onClick = { showSettings = true }) {
                                     Icon(
                                         Icons.Outlined.Settings,
@@ -270,6 +296,20 @@ fun AppRoot(
                                     )
                                 },
                                 label = { Text("Run", style = MaterialTheme.typography.labelSmall) },
+                                colors = TrmxNavItemColors(),
+                            )
+
+                            NavigationBarItem(
+                                selected = screen == Screen.KILL,
+                                onClick = { screen = Screen.KILL },
+                                icon = {
+                                    Icon(
+                                        Icons.Outlined.PowerSettingsNew,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                },
+                                label = { Text("Kill", style = MaterialTheme.typography.labelSmall) },
                                 colors = TrmxNavItemColors(),
                             )
 
@@ -309,6 +349,13 @@ fun AppRoot(
                                 onRefreshTools = vm::refreshToolsNow,
                                 onOpenTool = { toolId -> vm.openToolForm(toolId) },
                                 onInstallTool = vm::installTool,
+                                onGoToKill = { screen = Screen.KILL },
+                                modifier = Modifier.padding(padding),
+                            )
+                        }
+                        Screen.KILL -> {
+                            KillScreen(
+                                viewModel = killerVm,
                                 modifier = Modifier.padding(padding),
                             )
                         }
