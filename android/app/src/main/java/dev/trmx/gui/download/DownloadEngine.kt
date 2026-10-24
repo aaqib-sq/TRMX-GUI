@@ -213,7 +213,7 @@ class DownloadEngine(
         }
 
         when (submitResult) {
-            is BridgeResult.Ok -> {
+            is BridgeResult.Success -> {
                 val jobId = submitResult.data.response.job_id
                 val updating = initialRecord.copy(
                     status = "DOWNLOADING",
@@ -229,7 +229,7 @@ class DownloadEngine(
             is BridgeResult.HttpError -> {
                 val failed = initialRecord.copy(
                     status = "FAILED",
-                    error = "Bridge HTTP error ${submitResult.status}: ${submitResult.error.message}",
+                    error = "Bridge HTTP error ${submitResult.status}: ${submitResult.message}",
                     endedAt = System.currentTimeMillis()
                 )
                 historyStore.update(failed)
@@ -238,7 +238,7 @@ class DownloadEngine(
             is BridgeResult.NetworkError -> {
                 val failed = initialRecord.copy(
                     status = "FAILED",
-                    error = "Bridge unreachable (${submitResult.error.message ?: "Connection refused"}). Check Termux.",
+                    error = "Bridge unreachable (${submitResult.cause.message ?: "Connection refused"}). Check Termux.",
                     endedAt = System.currentTimeMillis()
                 )
                 historyStore.update(failed)
@@ -253,7 +253,7 @@ class DownloadEngine(
             while (scope.isActive) {
                 delay(1000)
                 when (val r = client.getJob(jobId)) {
-                    is BridgeResult.Ok -> {
+                    is BridgeResult.Success -> {
                         val job = r.data
                         val pct = (job.progress_pct ?: 0.0).toFloat()
                         val detail = job.progress_detail ?: ""
