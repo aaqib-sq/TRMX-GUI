@@ -244,3 +244,32 @@ Spec: User-corrected v3 specification (locked)
 ### 4. Honest Technical Limit
 - An app that has neither come to the foreground since the accessibility service started nor been used recently (within the 30-minute UsageStats window) may not be detected as active. This limitation is due to Android process isolation and is documented plainly.
 
+---
+
+## 9. App Killer v4 (24-Hour UsageStats Window)
+
+Date: 2026-10-24
+Spec: User-approved v4 specification (locked)
+
+### 1. 24-Hour UsageStats Window
+- **Diagnosis**: v3's 30-minute UsageStats window caused apps used earlier in the day to disappear from the Running tab even if they remained alive in the background (user device showed 8 apps in TRMX vs 16 in Play Store killer).
+- **Fix**: Expanded `AppKillerEngine.USAGE_STATS_WINDOW_MS` from 30 minutes (`30 * 60 * 1000L`) to 24 hours (`24 * 60 * 60 * 1000L`).
+- Every app used in the last 24 hours is now captured in the Running tab.
+- Preserved the Accessibility observed-packages foreground signal and ActivityManager fallback without modifications.
+
+### 2. Partitioning & Core Lock Preserved Exactly
+- Partitioning remains strictly locked to v3 logic:
+  - **Running**: Active AND (installed OR safe-list system).
+  - **Other**: Non-core SYSTEM apps only. Installed third-party packages NEVER appear in Other, running or not.
+  - **Non-running installed apps**: Appear in NO tab.
+  - **Core**: NEVER killable and NEVER selectable. `AppCategories.isCore` and the core blocklist remain untouched.
+
+### 3. User Guarantees & Privacy
+- **NO ADS**: Zero ad SDKs, zero ad UI, zero ad placeholders.
+- **NO DATA LEAVES THE DEVICE**: Strictly on-device only. Zero network calls (HttpURLConnection, OkHttp, Retrofit, Sockets). UsageStats and Accessibility data are processed solely in local memory and private app storage.
+- **ALL APPS COVERED**: Every non-core app has a place (Running if active, Other if system).
+
+### 4. Honest Technical Limit
+- An app that has neither come to the foreground since the accessibility service started nor been used in the last 24 hours (UsageStats window) may not be detected as active. This limitation is due to Android process isolation and is documented plainly.
+
+

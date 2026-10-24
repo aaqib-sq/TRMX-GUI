@@ -40,13 +40,22 @@ data class KillReport(
     val skipped: List<Pair<String, String>>, // (packageName, reason)
 )
 
+/**
+ * Core engine for TRMX App Killer.
+ *
+ * Privacy & Security Guarantee:
+ * STRICTLY ON-DEVICE ONLY. All UsageStats, Accessibility observations, and package metadata
+ * are processed solely in local device memory and local private storage. ZERO network calls,
+ * zero HTTP requests, zero uploads, zero analytics, zero ad SDKs, and zero telemetry.
+ * No data leaves the device.
+ */
 object AppKillerEngine {
 
     /**
-     * Recent window for UsageStats detection: 30 minutes.
+     * Recent window for UsageStats detection: 24 hours.
      * Packages active within this window are detected as running.
      */
-    const val USAGE_STATS_WINDOW_MS: Long = 30 * 60 * 1000L // 30 minutes
+    const val USAGE_STATS_WINDOW_MS: Long = 24 * 60 * 60 * 1000L // 24 hours
 
     private val killedTimestamps = ConcurrentHashMap<String, Long>()
 
@@ -203,7 +212,7 @@ object AppKillerEngine {
     /**
      * Determines active running packages using a union of two on-device signals:
      * 1. Window events observed by AppKillerAccessibilityService (persisted locally across screen-off).
-     * 2. Recent usage stats within the 30-minute window (UsageStatsManager).
+     * 2. Recent usage stats within the 24-hour window (UsageStatsManager).
      *
      * Core packages are strictly excluded.
      */
@@ -213,7 +222,7 @@ object AppKillerEngine {
         // Signal 1: Accessibility service observed foreground packages
         active.addAll(AppKillerAccessibilityService.getObservedPackages(context))
 
-        // Signal 2: UsageStats recent activity (30-minute window)
+        // Signal 2: UsageStats recent activity (24-hour window)
         active.addAll(getActivePackagesFromUsageStats(context, USAGE_STATS_WINDOW_MS))
 
         // Fallback: ActivityManager running processes (for older Android / emulators)

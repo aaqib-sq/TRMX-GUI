@@ -9,6 +9,14 @@ import java.util.Collections
 import java.util.HashSet
 import java.util.LinkedHashSet
 
+/**
+ * Accessibility service for TRMX App Killer.
+ *
+ * Privacy guarantee:
+ * STRICTLY ON-DEVICE ONLY. Accessibility events and observed foreground packages are processed
+ * solely in local device memory and local private storage. ZERO network calls, zero uploads,
+ * zero analytics, zero ad SDKs, and zero telemetry. No data leaves the device.
+ */
 class AppKillerAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {

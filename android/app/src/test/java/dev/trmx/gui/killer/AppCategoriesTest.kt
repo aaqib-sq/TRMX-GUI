@@ -336,4 +336,10 @@ class AppCategoriesTest {
             )
         }
     }
+
+    @Test
+    fun testUsageStatsWindowIs24Hours() {
+        // v4 Spec: Window changed from 30 minutes to 24 hours so every app used today appears in Running
+        assertEquals(24 * 60 * 60 * 1000L, AppKillerEngine.USAGE_STATS_WINDOW_MS)
+    }
 }
