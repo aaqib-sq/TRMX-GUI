@@ -27,8 +27,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Settings
@@ -61,10 +63,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.trmx.gui.download.DownloadViewModel
 import dev.trmx.gui.killer.AppKillerViewModel
 import dev.trmx.gui.model.ToolExample
 import dev.trmx.gui.ui.ActivityScreen
 import dev.trmx.gui.ui.ConnectScreen
+import dev.trmx.gui.ui.DownloadScreen
 import dev.trmx.gui.ui.JobDetailScreen
 import dev.trmx.gui.ui.KillScreen
 import dev.trmx.gui.ui.KillerDebugScreen
@@ -80,8 +84,8 @@ import dev.trmx.gui.wizard.SetupViewModel
 import dev.trmx.gui.wizard.WizardStep
 import java.io.File
 
-/** Destinations: Run (console + tools), Kill (app killer), & Activity (jobs + output). */
-private enum class Screen { RUN, KILL, ACTIVITY }
+/** Destinations: Run (console + tools), Kill (app killer), Activity (jobs + output), & Download (Instagram downloader). */
+private enum class Screen { RUN, KILL, ACTIVITY, DOWNLOAD }
 
 private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 
@@ -118,6 +122,7 @@ fun AppRoot(
     setupVm: SetupViewModel = viewModel(),
     filesVm: FilesViewModel = viewModel(),
     killerVm: AppKillerViewModel = viewModel(),
+    downloadVm: DownloadViewModel = viewModel(),
 ) {
     val setup by setupVm.wizard.collectAsStateWithLifecycle()
     val setupLogText by setupVm.setupLogText.collectAsStateWithLifecycle()
@@ -254,10 +259,16 @@ fun AppRoot(
                 Scaffold(
                     topBar = {
                         TrmxTopBar(
-                            title = if (screen == Screen.KILL) "App Killer" else "TRMX",
-                            subtitle = if (screen == Screen.KILL) "Automated force-stop"
-                                       else if (connected) "Connected · 127.0.0.1:8080"
-                                       else "Bridge unreachable",
+                            title = when (screen) {
+                                Screen.KILL -> "App Killer"
+                                Screen.DOWNLOAD -> "Download"
+                                else -> "TRMX"
+                            },
+                            subtitle = when (screen) {
+                                Screen.KILL -> "Automated force-stop"
+                                Screen.DOWNLOAD -> "Instagram media & stories"
+                                else -> if (connected) "Connected · 127.0.0.1:8080" else "Bridge unreachable"
+                            },
                             actions = {
                                 if (screen == Screen.KILL) {
                                     TextButton(onClick = { showKillerDebug = true }) {
@@ -337,6 +348,21 @@ fun AppRoot(
                                 label = { Text("Activity", style = MaterialTheme.typography.labelSmall) },
                                 colors = TrmxNavItemColors(),
                             )
+
+                            NavigationBarItem(
+                                selected = screen == Screen.DOWNLOAD,
+                                onClick = { screen = Screen.DOWNLOAD },
+                                icon = {
+                                    Icon(
+                                        if (screen == Screen.DOWNLOAD) Icons.Filled.Download
+                                        else Icons.Outlined.Download,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                },
+                                label = { Text("Download", style = MaterialTheme.typography.labelSmall) },
+                                colors = TrmxNavItemColors(),
+                            )
                         }
                     },
                 ) { padding ->
@@ -366,6 +392,12 @@ fun AppRoot(
                                 onJobClick = vm::selectJob,
                                 onCancelJob = vm::cancelJob,
                                 onGoToRun = { screen = Screen.RUN },
+                                modifier = Modifier.padding(padding),
+                            )
+                        }
+                        Screen.DOWNLOAD -> {
+                            DownloadScreen(
+                                viewModel = downloadVm,
                                 modifier = Modifier.padding(padding),
                             )
                         }
