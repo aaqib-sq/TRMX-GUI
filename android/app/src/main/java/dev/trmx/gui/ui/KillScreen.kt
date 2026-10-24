@@ -96,7 +96,7 @@ fun KillScreen(
                 app.packageName.contains(searchQuery, ignoreCase = true)
 
             val matchesTab = when (filterTab) {
-                KillerFilterTab.RUNNING -> AppCategories.isKillableRunning(app)
+                KillerFilterTab.RUNNING -> AppCategories.isRunning(app)
                 KillerFilterTab.OTHER -> AppCategories.belongsToOtherTab(app)
                 KillerFilterTab.CORE -> AppCategories.isCore(app.packageName)
             }
@@ -105,7 +105,7 @@ fun KillScreen(
     }
 
     val runningCount = remember(apps) {
-        apps.count { AppCategories.isKillableRunning(it) }
+        apps.count { AppCategories.isRunning(it) }
     }
     val otherCount = remember(apps) {
         apps.count { AppCategories.belongsToOtherTab(it) }

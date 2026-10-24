@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.trmx.gui.killer.AppCategories
 import dev.trmx.gui.killer.AppDiagnosticInfo
 import dev.trmx.gui.killer.AppKillerViewModel
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -187,7 +188,7 @@ fun KillerDebugScreen(
                                 color = P.TextMuted,
                             )
                             CountRow(label = "Total installed apps", count = "${data.totalInstalledApps}")
-                            CountRow(label = "UsageStats (24-hour window)", count = "${data.usageStatsCount}")
+                            CountRow(label = "UsageStats (7-day window)", count = "${data.usageStatsCount}")
                             CountRow(label = "Accessibility-observed packages", count = "${data.accessibilityObservedCount}")
                             CountRow(label = "ActivityManager fallback", count = "${data.activityManagerFallbackCount}")
                             CountRow(label = "Final Running count", count = "${data.runningCount}", isHighlight = true)
@@ -303,6 +304,7 @@ private fun DiagnosticAppRow(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             // Row 1: Label + Package Name + In Running badge
+            val inRunning = AppCategories.isRunning(app)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top,
@@ -328,8 +330,8 @@ private fun DiagnosticAppRow(
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                // In Running badge
-                if (app.inRunning) {
+                // In Running badge (single source of truth predicate)
+                if (inRunning) {
                     DiagnosticBadge(
                         label = "In Running: yes",
                         color = Color(0xFF66BB6A),
@@ -345,7 +347,7 @@ private fun DiagnosticAppRow(
             }
 
             // Row 2: Plain reason if NOT in running
-            if (!app.inRunning && app.notRunningReason != null) {
+            if (!inRunning && app.notRunningReason != null) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -369,6 +371,7 @@ private fun DiagnosticAppRow(
             }
 
             // Row 3: Signal breakdown
+            // - System: yes/no
             // - lastTimeUsed
             // - Accessibility-observed
             // - FLAG_STOPPED
@@ -376,6 +379,24 @@ private fun DiagnosticAppRow(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "System:",
+                        fontSize = 11.sp,
+                        color = P.TextMuted,
+                    )
+                    Text(
+                        text = if (app.isSystem) "yes" else "no",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = P.TextPrimary,
+                    )
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,

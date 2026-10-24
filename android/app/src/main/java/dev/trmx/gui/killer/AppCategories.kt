@@ -70,49 +70,108 @@ object AppCategories {
     )
 
     /**
-     * Determines if an app belongs to the Running tab (currently/recently active AND killable):
-     * active AND NOT core. That is all.
-     * System or installed does not matter, and no hardcoded list filters it.
-     *
-     * Core packages can NEVER be killable running under any circumstances.
+     * Determines if an app is Running (v7 predicate - single source of truth):
+     * ALL of:
+     * 1. NOT core
+     * 2. NOT stopped (ApplicationInfo FLAG_STOPPED is clear)
+     * 3. Active by at least one existing signal (Accessibility-observed OR UsageStats within 7-day window OR ActivityManager fallback)
      */
-    fun isKillableRunning(app: AppInfo): Boolean {
-        return isKillableRunning(
+    fun isRunning(
+        packageName: String,
+        isStopped: Boolean,
+        isActive: Boolean,
+    ): Boolean {
+        val pkg = packageName.trim()
+        if (isCore(pkg)) return false
+        if (isStopped) return false
+        return isActive
+    }
+
+    fun isRunning(app: AppInfo): Boolean {
+        return isRunning(
             packageName = app.packageName,
-            isSystem = app.isSystem,
-            isRunning = app.isRunning,
+            isStopped = app.isStopped,
+            isActive = app.isActive,
         )
     }
 
+    fun isRunning(app: AppDiagnosticInfo): Boolean {
+        return isRunning(
+            packageName = app.packageName,
+            isStopped = app.isStopped,
+            isActive = app.isActive,
+        )
+    }
+
+    fun isKillableRunning(app: AppInfo): Boolean = isRunning(app)
+
+    fun isKillableRunning(app: AppDiagnosticInfo): Boolean = isRunning(app)
+
+    fun isKillableRunning(
+        packageName: String,
+        isStopped: Boolean,
+        isActive: Boolean,
+    ): Boolean = isRunning(packageName = packageName, isStopped = isStopped, isActive = isActive)
+
     fun isKillableRunning(packageName: String, isRunning: Boolean): Boolean {
-        val pkg = packageName.trim()
-        if (isCore(pkg)) return false
-        return isRunning
+        return isRunning(packageName = packageName, isStopped = false, isActive = isRunning)
     }
 
     fun isKillableRunning(packageName: String, isSystem: Boolean, isRunning: Boolean): Boolean {
-        return isKillableRunning(packageName, isRunning)
+        return isRunning(packageName = packageName, isStopped = false, isActive = isRunning)
     }
 
+    fun isKillableRunning(
+        packageName: String,
+        isSystem: Boolean,
+        isStopped: Boolean,
+        isActive: Boolean,
+    ): Boolean = isRunning(packageName = packageName, isStopped = isStopped, isActive = isActive)
+
     /**
-     * Determines if an app belongs to the Other tab:
-     * Non-core SYSTEM apps that are NOT running (not active).
+     * Determines if an app belongs to the Other tab (v7 predicate):
+     * ALL of:
+     * 1. NOT core
+     * 2. isSystem
+     * 3. NOT Running (per the Running predicate)
+     * 4. NOT stopped (ApplicationInfo FLAG_STOPPED clear)
      *
-     * Installed third-party packages NEVER appear here, running or not.
+     * Stopped apps must appear in NEITHER Running NOR Other (except Core tab if core).
      */
+    fun belongsToOtherTab(
+        packageName: String,
+        isSystem: Boolean,
+        isStopped: Boolean,
+        isActive: Boolean,
+    ): Boolean {
+        val pkg = packageName.trim()
+        if (isCore(pkg)) return false
+        if (!isSystem) return false
+        if (isStopped) return false
+        if (isRunning(packageName = pkg, isStopped = isStopped, isActive = isActive)) return false
+        return true
+    }
+
+    fun belongsToOtherTab(
+        packageName: String,
+        isSystem: Boolean,
+        isRunning: Boolean,
+    ): Boolean {
+        return belongsToOtherTab(
+            packageName = packageName,
+            isSystem = isSystem,
+            isStopped = false,
+            isActive = isRunning,
+        )
+    }
+
     fun belongsToOtherTab(app: AppInfo): Boolean {
         return belongsToOtherTab(
             packageName = app.packageName,
             isSystem = app.isSystem,
-            isRunning = app.isRunning,
+            isStopped = app.isStopped,
+            isActive = app.isActive,
         )
-    }
-
-    fun belongsToOtherTab(packageName: String, isSystem: Boolean, isRunning: Boolean): Boolean {
-        val pkg = packageName.trim()
-        if (isCore(pkg)) return false
-        if (!isSystem) return false
-        return !isKillableRunning(pkg, isSystem = true, isRunning = isRunning)
     }
 
     fun isCore(packageName: String): Boolean {

@@ -90,7 +90,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
             val list = AppKillerEngine.loadInstalledApps(getApplication())
             _apps.value = list
 
-            val runningKillable = list.filter { AppCategories.isKillableRunning(it) }
+            val runningKillable = list.filter { AppCategories.isRunning(it) }
                 .map { it.packageName }
                 .toSet()
 
@@ -116,7 +116,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
             _apps.value = list
 
             // Re-scanning running apps pre-selects all currently running killable apps
-            val runningKillable = list.filter { AppCategories.isKillableRunning(it) }
+            val runningKillable = list.filter { AppCategories.isRunning(it) }
                 .map { it.packageName }
                 .toSet()
             _selectedPackages.value = runningKillable
@@ -147,7 +147,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectAllRunning() {
         val runningPackages = _apps.value
-            .filter { AppCategories.isKillableRunning(it) }
+            .filter { AppCategories.isRunning(it) }
             .map { it.packageName }
             .toSet()
         _selectedPackages.update { it + runningPackages }
@@ -209,13 +209,19 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
                 },
             )
 
+            val refreshedApps = AppKillerEngine.loadInstalledApps(getApplication())
+            val refreshedDiag = AppKillerEngine.loadDiagnosticData(getApplication())
+
             withContext(Dispatchers.Main) {
                 _lastReport.value = report
                 _isKilling.value = false
                 _progress.value = null
+                // Clear selection and reload app list so a second Force Stop press can never re-run the stale list
+                _selectedPackages.value = emptySet()
+                _apps.value = refreshedApps
+                _diagnosticData.value = refreshedDiag
                 checkAccessibility()
                 checkUsageAccess()
-                loadApps()
             }
         }
     }
@@ -225,6 +231,16 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
         killJob = null
         _isKilling.value = false
         _progress.value = null
+        _selectedPackages.value = emptySet()
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = AppKillerEngine.loadInstalledApps(getApplication())
+            val diag = AppKillerEngine.loadDiagnosticData(getApplication())
+            withContext(Dispatchers.Main) {
+                _apps.value = list
+                _diagnosticData.value = diag
+                _selectedPackages.value = emptySet()
+            }
+        }
     }
 
     fun clearReport() {

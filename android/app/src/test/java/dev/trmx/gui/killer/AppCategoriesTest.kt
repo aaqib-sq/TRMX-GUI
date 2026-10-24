@@ -338,10 +338,182 @@ class AppCategoriesTest {
     }
 
     @Test
-    fun testUsageStatsWindowIs24Hours() {
-        // v4 Spec: Window changed from 30 minutes to 24 hours so every app used today appears in Running
-        assertEquals(24 * 60 * 60 * 1000L, AppKillerEngine.USAGE_STATS_WINDOW_MS)
+    fun testUsageStatsWindowIs7Days() {
+        // v7 Spec: Window changed from 24 hours to 7 days so apps used over the week appear in Running
+        assertEquals(7 * 24 * 60 * 60 * 1000L, AppKillerEngine.USAGE_STATS_WINDOW_MS)
     }
+
+    @Test
+    fun testV7StoppedExclusionFromRunningAndOther() {
+        val userPkg = "com.spotify.music"
+        val vendorPkg = "com.sec.android.app.popupcalculator"
+        val corePkg = "com.android.systemui"
+
+        // 1. User app: stopped app must appear in NEITHER Running NOR Other
+        val stoppedUserApp = AppInfo(
+            packageName = userPkg,
+            label = "Spotify",
+            category = AppCategory.UNKNOWN,
+            isSystem = false,
+            isRunning = false,
+            isStopped = true,
+            isActive = true, // even if it was active by some signal
+        )
+        assertFalse("Stopped user app must NOT be running", AppCategories.isRunning(stoppedUserApp))
+        assertFalse("Stopped user app must NOT belong to other", AppCategories.belongsToOtherTab(stoppedUserApp))
+        assertFalse("Stopped user app is not core", AppCategories.isCore(userPkg))
+
+        // 2. Vendor app: stopped vendor app must appear in NEITHER Running NOR Other
+        val stoppedVendorApp = AppInfo(
+            packageName = vendorPkg,
+            label = "Calculator",
+            category = AppCategory.UNKNOWN,
+            isSystem = true,
+            isRunning = false,
+            isStopped = true,
+            isActive = false,
+        )
+        assertFalse("Stopped vendor app must NOT be running", AppCategories.isRunning(stoppedVendorApp))
+        assertFalse("Stopped vendor app must NOT belong to other", AppCategories.belongsToOtherTab(stoppedVendorApp))
+        assertFalse("Stopped vendor app is not core", AppCategories.isCore(vendorPkg))
+
+        // 3. Core app: stopped core app still appears in Core tab
+        val stoppedCoreApp = AppInfo(
+            packageName = corePkg,
+            label = "System UI",
+            category = AppCategory.CORE,
+            isSystem = true,
+            isRunning = false,
+            isStopped = true,
+            isActive = true,
+        )
+        assertFalse("Stopped core app can NEVER be running", AppCategories.isRunning(stoppedCoreApp))
+        assertFalse("Stopped core app can NEVER belong to other", AppCategories.belongsToOtherTab(stoppedCoreApp))
+        assertTrue("Core app belongs to core tab", AppCategories.isCore(corePkg))
+
+        // 4. Overloads check
+        assertFalse(
+            AppCategories.isRunning(packageName = vendorPkg, isStopped = true, isActive = true),
+        )
+        assertFalse(
+            AppCategories.belongsToOtherTab(packageName = vendorPkg, isSystem = true, isStopped = true, isActive = false),
+        )
+        assertFalse(
+            AppCategories.belongsToOtherTab(packageName = vendorPkg, isSystem = true, isStopped = true, isActive = true),
+        )
+    }
+
+    @Test
+    fun testDiagnosticTabPredicateAgreement() {
+        val testCases = listOf(
+            // (pkg, isSystem, isStopped, isActive)
+            Quad("com.test.user", isSystem = false, isStopped = false, isActive = true),
+            Quad("com.test.user", isSystem = false, isStopped = true, isActive = true),
+            Quad("com.test.user", isSystem = false, isStopped = false, isActive = false),
+            Quad("com.test.vendor", isSystem = true, isStopped = false, isActive = true),
+            Quad("com.test.vendor", isSystem = true, isStopped = true, isActive = true),
+            Quad("com.test.vendor", isSystem = true, isStopped = false, isActive = false),
+            Quad("com.test.vendor", isSystem = true, isStopped = true, isActive = false),
+            Quad("com.android.systemui", isSystem = true, isStopped = false, isActive = true),
+            Quad("com.android.systemui", isSystem = true, isStopped = true, isActive = false),
+        )
+
+        for (case in testCases) {
+            val appInfo = AppInfo(
+                packageName = case.pkg,
+                label = case.pkg,
+                category = AppCategories.categoryFor(case.pkg),
+                isSystem = case.isSystem,
+                isRunning = AppCategories.isRunning(case.pkg, case.isStopped, case.isActive),
+                isStopped = case.isStopped,
+                isActive = case.isActive,
+            )
+
+            val diagInfo = AppDiagnosticInfo(
+                packageName = case.pkg,
+                label = case.pkg,
+                isSystem = case.isSystem,
+                lastTimeUsedMs = if (case.isActive) System.currentTimeMillis() - 1000L else 0L,
+                lastTimeUsedFormatted = "recent",
+                isAccessibilityObserved = case.isActive,
+                isStopped = case.isStopped,
+                inRunning = AppCategories.isRunning(case.pkg, case.isStopped, case.isActive),
+                notRunningReason = null,
+                isActive = case.isActive,
+            )
+
+            val appRunning = AppCategories.isRunning(appInfo)
+            val diagRunning = AppCategories.isRunning(diagInfo)
+
+            assertEquals(
+                "AppInfo and AppDiagnosticInfo must agree on isRunning for ${case.pkg} (stopped=${case.isStopped}, active=${case.isActive})",
+                appRunning,
+                diagRunning,
+            )
+            assertEquals(
+                "diagInfo.inRunning must agree with AppCategories.isRunning for ${case.pkg}",
+                appRunning,
+                diagInfo.inRunning,
+            )
+        }
+    }
+
+    @Test
+    fun testDiagnosticIsSystemField() {
+        val systemDiag = AppDiagnosticInfo(
+            packageName = "com.sec.android.app.popupcalculator",
+            label = "Calculator",
+            isSystem = true,
+            lastTimeUsedMs = null,
+            lastTimeUsedFormatted = "no stats",
+            isAccessibilityObserved = false,
+            isStopped = false,
+            inRunning = false,
+            notRunningReason = "no usage stats and not observed",
+        )
+        assertTrue("isSystem must be true for system package", systemDiag.isSystem)
+
+        val userDiag = AppDiagnosticInfo(
+            packageName = "com.spotify.music",
+            label = "Spotify",
+            isSystem = false,
+            lastTimeUsedMs = null,
+            lastTimeUsedFormatted = "no stats",
+            isAccessibilityObserved = false,
+            isStopped = false,
+            inRunning = false,
+            notRunningReason = "no usage stats and not observed",
+        )
+        assertFalse("isSystem must be false for user package", userDiag.isSystem)
+    }
+
+    @Test
+    fun testMetaAi74HourEvidenceWindow() {
+        val metaAi = "com.facebook.stella"
+        assertFalse("Meta AI must not be core", AppCategories.isCore(metaAi))
+
+        // Used 74.7 hours ago
+        val diffMs = (74.7 * 60 * 60 * 1000L).toLong()
+        assertTrue("74.7h must be strictly within 7-day window", diffMs < AppKillerEngine.USAGE_STATS_WINDOW_MS)
+
+        // When NOT stopped: eligible and running
+        assertTrue(
+            "Meta AI (not stopped, active within 7d window) must be Running",
+            AppCategories.isRunning(packageName = metaAi, isStopped = false, isActive = true),
+        )
+
+        // When stopped: excluded from Running and Other
+        assertFalse(
+            "Meta AI when stopped must NOT be Running",
+            AppCategories.isRunning(packageName = metaAi, isStopped = true, isActive = true),
+        )
+        assertFalse(
+            "Meta AI when stopped must NOT be in Other",
+            AppCategories.belongsToOtherTab(packageName = metaAi, isSystem = false, isStopped = true, isActive = true),
+        )
+    }
+
+    private data class Quad(val pkg: String, val isSystem: Boolean, val isStopped: Boolean, val isActive: Boolean)
 
     @Test
     fun testV5EligibilityRules() {

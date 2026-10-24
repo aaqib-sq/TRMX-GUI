@@ -345,6 +345,52 @@ Spec: User-approved v6-DIAGNOSTIC specification (locked)
 ### 5. Honest Technical Limit
 - The debug view explains the signals — it cannot make Android reveal a background-only process that no signal sees.
 
+---
+
+## 12. App Killer v7 (7-Day Window, Stopped Pre-check, Single Predicate Truth, Repeat-on-Timeout)
+
+Date: 2026-10-24
+Spec: User-approved v7 specification (locked)
+
+### 1. 7-Day UsageStats Window
+- Expanded `USAGE_STATS_WINDOW_MS` from 24 hours to 7 days (`7 * 24 * 60 * 60 * 1000L`).
+- Diagnostic screen label updated from `"UsageStats (24-hour window)"` to `"UsageStats (7-day window)"`.
+- Resolves device evidence where Meta AI (`com.facebook.stella`) was used 74.7h ago and was missing from Running despite not being stopped.
+
+### 2. Single Source of Truth Running Predicate
+- An app is `Running` iff ALL of:
+  1. `NOT core` (enforced via `AppCategories.isCore`)
+  2. `NOT stopped` (`ApplicationInfo.FLAG_STOPPED` clear via shared helper `AppKillerEngine.isStopped`)
+  3. `active by at least one existing signal` (Accessibility-observed OR UsageStats within 7-day window OR ActivityManager fallback)
+- Named `AppCategories.isRunning(...)` (with `AppCategories.isKillableRunning(...)` aliasing it).
+- Called by BOTH `KillScreen` and `KillerDebugScreen`. Zero duplicated predicate logic.
+
+### 3. Other Tab Predicate
+- An app belongs to `Other` iff ALL of:
+  1. `NOT core`
+  2. `isSystem`
+  3. `NOT Running` (per the predicate in item 2)
+  4. `NOT stopped`
+- Stopped apps appear in NEITHER Running NOR Other (except Core tab if core).
+
+### 4. Kill Flow Pre-Check Skip
+- Before opening an app's Settings page, if the app is already stopped (`isPackageStopped(context, pkg)`), skip it immediately with reason `"Already stopped"` WITHOUT opening Settings.
+- Eliminates mid-flow skipped settings transitions for already stopped apps.
+
+### 5. Kill Flow Refresh & Selection Snapshot
+- Selection is snapshotted at run start (`targets = _selectedPackages.value.toList()`).
+- On run completion (success, skip, or timeout), selection is cleared (`emptySet()`) and the app list is reloaded from PackageManager so a second Force Stop press cannot re-run the stale list.
+
+### 6. Android 13+ Timeout & Repeat-on-Timeout
+- On Android 13+ (`Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU`), per-app task has a 3500ms timeout with repeat-on-timeout (max 2 attempts).
+- `"Force Stop button not found (timed out)"` remains a safe skip reason, never a crash.
+
+### 7. Diagnostic Screen Enhancements
+- Added `isSystem` to `AppDiagnosticInfo` and displayed on every diagnostic row (`System: yes/no`).
+- Row `inRunning` value evaluates the exact same `AppCategories.isRunning` predicate.
+- Updated reason strings: `"stopped"`, `"core-blocked"`, `"not active in 7-day window"`, `"no usage stats and not observed"`, `"usage access not granted and not observed"`.
+
+
 
 
 

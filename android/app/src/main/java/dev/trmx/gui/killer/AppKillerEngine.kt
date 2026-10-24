@@ -53,12 +53,44 @@ data class KillReport(
 object AppKillerEngine {
 
     /**
-     * Recent window for UsageStats detection: 24 hours.
+     * Recent window for UsageStats detection: 7 days.
      * Packages active within this window are detected as running.
      */
-    const val USAGE_STATS_WINDOW_MS: Long = 24 * 60 * 60 * 1000L // 24 hours
+    const val USAGE_STATS_WINDOW_MS: Long = 7 * 24 * 60 * 60 * 1000L // 7 days
 
     private val killedTimestamps = ConcurrentHashMap<String, Long>()
+
+    @Volatile
+    var isPackageStoppedOverride: ((String) -> Boolean)? = null
+
+    /**
+     * Shared helper to check if an app has ApplicationInfo.FLAG_STOPPED set.
+     * Reused across loadInstalledApps, loadDiagnosticData, and executeKillList pre-check.
+     */
+    fun isStopped(flags: Int): Boolean {
+        return (flags and ApplicationInfo.FLAG_STOPPED) != 0
+    }
+
+    fun isStopped(appInfo: ApplicationInfo?): Boolean {
+        if (appInfo == null) return false
+        return isStopped(appInfo.flags)
+    }
+
+    fun isPackageStopped(context: Context, packageName: String): Boolean {
+        isPackageStoppedOverride?.let { return it(packageName) }
+        return try {
+            val pm = context.packageManager
+            val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0L))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getApplicationInfo(packageName, 0)
+            }
+            isStopped(appInfo)
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     fun isAccessibilityEnabled(context: Context): Boolean {
         if (AppKillerAccessibilityService.isRunning) return true
@@ -273,7 +305,7 @@ object AppKillerEngine {
         // Prune any uninstalled packages from accessibility cache
         AppKillerAccessibilityService.pruneObservedPackages(context, installedSet)
 
-        val runningPackages = getActivePackages(context, installedSet)
+        val activePackages = getActivePackages(context, installedSet)
 
         val result = ArrayList<AppInfo>(packages.size)
         for (pkgInfo in packages) {
@@ -293,7 +325,13 @@ object AppKillerEngine {
                 (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
             )
 
-            val isRunning = runningPackages.contains(pkg)
+            val isStopped = isStopped(appInfo)
+            val isActive = activePackages.contains(pkg)
+            val isRunning = AppCategories.isRunning(
+                packageName = pkg,
+                isStopped = isStopped,
+                isActive = isActive,
+            )
 
             result.add(
                 AppInfo(
@@ -302,6 +340,8 @@ object AppKillerEngine {
                     category = category,
                     isSystem = isSystem,
                     isRunning = isRunning,
+                    isStopped = isStopped,
+                    isActive = isActive,
                 ),
             )
         }
@@ -382,7 +422,7 @@ object AppKillerEngine {
         isStopped: Boolean,
         killedAt: Long,
         lastTimeUsedMs: Long?,
-        startTime24h: Long,
+        startTime7d: Long,
         isAccessibilityObserved: Boolean,
         hasUsageAccess: Boolean,
     ): String {
@@ -397,13 +437,13 @@ object AppKillerEngine {
         if (!hasUsageAccess && !isAccessibilityObserved) {
             return "usage access not granted and not observed"
         }
-        if (mostRecent > 0L && mostRecent < startTime24h) {
-            return "not active in 24h window"
+        if (mostRecent > 0L && mostRecent < startTime7d) {
+            return "not active in 7-day window"
         }
         if (mostRecent <= 0L && !isAccessibilityObserved) {
             return "no usage stats and not observed"
         }
-        return "not active in 24h window and not observed"
+        return "not active in 7-day window and not observed"
     }
 
     fun loadDiagnosticData(context: Context): KillerDiagnosticData {
@@ -423,23 +463,22 @@ object AppKillerEngine {
         val observedPackages = AppKillerAccessibilityService.getObservedPackages(context)
         val a11yObservedCount = observedPackages.count { installedSet.contains(it) && !AppCategories.isCore(it) }
 
-        // 2. UsageStats 24h
-        val usageStats24hActive = getActivePackagesFromUsageStats(context, USAGE_STATS_WINDOW_MS)
-        val usageStatsCount = usageStats24hActive.size
+        // 2. UsageStats 7-day window
+        val usageStats7dActive = getActivePackagesFromUsageStats(context, USAGE_STATS_WINDOW_MS)
+        val usageStatsCount = usageStats7dActive.size
 
         // 3. ActivityManager fallback
         val amFallbackPackages = getActivityManagerRunningPackages(context)
         val amFallbackCount = amFallbackPackages.count { installedSet.contains(it) && !AppCategories.isCore(it) }
 
-        // Final Running
-        val runningPackages = getActivePackages(context, installedSet)
-        val runningCount = runningPackages.size
+        // Active packages union (signals)
+        val activePackages = getActivePackages(context, installedSet)
 
         // UsageStats for lastTimeUsed
         val usageStatsMap = queryAllUsageStats(context)
 
         val now = System.currentTimeMillis()
-        val startTime24h = now - USAGE_STATS_WINDOW_MS
+        val startTime7d = now - USAGE_STATS_WINDOW_MS
 
         val diagnosticApps = ArrayList<AppDiagnosticInfo>(packages.size)
 
@@ -453,14 +492,25 @@ object AppKillerEngine {
                 null
             } ?: pkg
 
-            val flags = appInfo?.flags ?: 0
-            val isStopped = (flags and ApplicationInfo.FLAG_STOPPED) != 0
+            val isSystem = appInfo != null && (
+                (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 ||
+                (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            )
+
+            val isStopped = isStopped(appInfo)
 
             val lastTimeUsedMs = usageStatsMap[pkg]
             val lastTimeUsedFormatted = formatHoursAgo(lastTimeUsedMs, now)
 
             val isObserved = observedPackages.contains(pkg)
-            val inRunning = runningPackages.contains(pkg)
+            val isActive = activePackages.contains(pkg)
+
+            // Single source of truth predicate (Item 2)
+            val inRunning = AppCategories.isRunning(
+                packageName = pkg,
+                isStopped = isStopped,
+                isActive = isActive,
+            )
 
             val isCore = AppCategories.isCore(pkg)
             val killedAt = getPackageLastKilledTimestamp(pkg)
@@ -471,7 +521,7 @@ object AppKillerEngine {
                     isStopped = isStopped,
                     killedAt = killedAt,
                     lastTimeUsedMs = lastTimeUsedMs,
-                    startTime24h = startTime24h,
+                    startTime7d = startTime7d,
                     isAccessibilityObserved = isObserved,
                     hasUsageAccess = hasUsage,
                 )
@@ -483,17 +533,21 @@ object AppKillerEngine {
                 AppDiagnosticInfo(
                     packageName = pkg,
                     label = label,
+                    isSystem = isSystem,
                     lastTimeUsedMs = lastTimeUsedMs,
                     lastTimeUsedFormatted = lastTimeUsedFormatted,
                     isAccessibilityObserved = isObserved,
                     isStopped = isStopped,
                     inRunning = inRunning,
                     notRunningReason = notRunningReason,
+                    isActive = isActive,
                 ),
             )
         }
 
         diagnosticApps.sortBy { it.label.lowercase() }
+
+        val runningCount = diagnosticApps.count { it.inRunning }
 
         return KillerDiagnosticData(
             isAccessibilityEnabled = isA11yEnabled,
@@ -647,7 +701,9 @@ object AppKillerEngine {
         context: Context,
         packagesToKill: List<String>,
         appLabels: Map<String, String>,
-        onProgress: (KillProgress) -> Unit,
+        onProgress: (KillProgress) -> Unit = {},
+        serviceProvider: () -> AppKillerAccessibilityService? = { AppKillerAccessibilityService.instance },
+        startActivityAction: (Intent) -> Unit = { context.startActivity(it) },
     ): KillReport {
         val eligible = mutableListOf<String>()
         val skipped = mutableListOf<Pair<String, String>>()
@@ -663,7 +719,7 @@ object AppKillerEngine {
         }
 
         // 2. Verify accessibility service instance
-        val service = AppKillerAccessibilityService.instance
+        val service = serviceProvider()
         if (service == null) {
             for (pkg in eligible) {
                 skipped.add(pkg to "Accessibility service not running")
@@ -687,38 +743,55 @@ object AppKillerEngine {
             val label = appLabels[pkg] ?: pkg
             onProgress(KillProgress(current = index + 1, total = total, currentPackage = pkg, currentLabel = label))
 
-            try {
-                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.fromParts("package", pkg, null)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                }
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                skipped.add(pkg to "Failed to open settings: ${e.message ?: "Unknown error"}")
+            // Pre-check: if already stopped, skip immediately WITHOUT opening Settings
+            if (isPackageStopped(context, pkg)) {
+                markPackageKilled(context, pkg)
+                skipped.add(pkg to "Already stopped")
                 continue
             }
 
+            // On Android 13+ (API 33+), allow 1 repeat-on-timeout (max 2 attempts) with 3500ms timeout each
+            val maxAttempts = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) 2 else 1
+            var attempt = 0
             var forceStopFound = false
             var forceStopClicked = false
             var forceStopDisabled = false
-            val startTime = System.currentTimeMillis()
 
-            while (System.currentTimeMillis() - startTime < 3500) {
+            while (attempt < maxAttempts && !forceStopFound && !forceStopDisabled) {
+                attempt++
                 if (!coroutineContext.isActive) break
-                delay(100)
 
-                val root = service.rootInActiveWindow ?: continue
-                val forceStopNode = findForceStopNode(root)
-                if (forceStopNode != null) {
-                    forceStopFound = true
-                    if (!isNodeAndAncestorsEnabled(forceStopNode)) {
-                        forceStopDisabled = true
-                        break
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", pkg, null)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                     }
-                    val clicked = performClick(forceStopNode)
-                    if (clicked) {
-                        forceStopClicked = true
-                        break
+                    startActivityAction(intent)
+                } catch (e: Exception) {
+                    if (attempt >= maxAttempts) {
+                        skipped.add(pkg to "Failed to open settings: ${e.message ?: "Unknown error"}")
+                    }
+                    continue
+                }
+
+                val startTime = System.currentTimeMillis()
+                while (System.currentTimeMillis() - startTime < 3500) {
+                    if (!coroutineContext.isActive) break
+                    delay(100)
+
+                    val root = service.rootInActiveWindow ?: continue
+                    val forceStopNode = findForceStopNode(root)
+                    if (forceStopNode != null) {
+                        forceStopFound = true
+                        if (!isNodeAndAncestorsEnabled(forceStopNode)) {
+                            forceStopDisabled = true
+                            break
+                        }
+                        val clicked = performClick(forceStopNode)
+                        if (clicked) {
+                            forceStopClicked = true
+                            break
+                        }
                     }
                 }
             }
@@ -762,7 +835,7 @@ object AppKillerEngine {
             val returnIntent = Intent(context, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-            context.startActivity(returnIntent)
+            startActivityAction(returnIntent)
         } catch (_: Exception) {
         }
 
