@@ -42,6 +42,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -66,6 +67,7 @@ import dev.trmx.gui.ui.ActivityScreen
 import dev.trmx.gui.ui.ConnectScreen
 import dev.trmx.gui.ui.JobDetailScreen
 import dev.trmx.gui.ui.KillScreen
+import dev.trmx.gui.ui.KillerDebugScreen
 import dev.trmx.gui.ui.RunScreen
 import dev.trmx.gui.ui.SettingsScreen
 import dev.trmx.gui.ui.ToolFormScreen
@@ -130,6 +132,7 @@ fun AppRoot(
 
     var screen by remember { mutableStateOf(Screen.RUN) }
     var showSettings by remember { mutableStateOf(false) }
+    var showKillerDebug by remember { mutableStateOf(false) }
 
     // Pair-link token adopted on cold start or warm onNewIntent.
     LaunchedEffect(pendingPairToken) {
@@ -230,6 +233,13 @@ fun AppRoot(
                     onBack = { showSettings = false },
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else if (showKillerDebug) {
+                BackHandler { showKillerDebug = false }
+                KillerDebugScreen(
+                    viewModel = killerVm,
+                    onBack = { showKillerDebug = false },
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else {
                 // ---- Compact Main Shell (2 Tabs) -------------------------
                 BackHandler(enabled = screen != Screen.RUN) {
@@ -249,6 +259,16 @@ fun AppRoot(
                                        else if (connected) "Connected · 127.0.0.1:8080"
                                        else "Bridge unreachable",
                             actions = {
+                                if (screen == Screen.KILL) {
+                                    TextButton(onClick = { showKillerDebug = true }) {
+                                        Text(
+                                            "Debug",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = P.Accent,
+                                        )
+                                    }
+                                }
                                 IconButton(onClick = { showSettings = true }) {
                                     Icon(
                                         Icons.Outlined.Settings,

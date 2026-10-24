@@ -301,5 +301,50 @@ Spec: User-approved v5 specification (locked)
 ### 5. Honest Technical Limit
 - Background-only services with no foreground window or UsageStats signal (e.g. background daemons without an interactive task) cannot be observed by any normal unprivileged Android app due to OS-level process sandbox boundaries.
 
+---
+
+## 11. App Killer v6-DIAGNOSTIC (Ground Truth Signal Diagnostics)
+
+Date: 2026-10-24
+Spec: User-approved v6-DIAGNOSTIC specification (locked)
+
+### 1. Ground Truth Diagnostics (No Guesswork)
+- Five list iterations (v1–v5) previously relied on guesses about why apps were missing from the Running tab.
+- v6-DIAGNOSTIC adds a dedicated diagnostic view that produces ground truth directly on the device, explaining per app why it is or is not in Running.
+- **ZERO changes to eligibility rules**: `isKillableRunning`, `belongsToOtherTab`, `isCore`, the 24-hour UsageStats window, dual signals, and the kill engine remain 100% untouched.
+
+### 2. Debug Affordance on Kill Screen
+- Added a clearly labeled "Debug" button near the top in the top bar actions, right next to the existing gear icon.
+- Tapping "Debug" opens `KillerDebugScreen`.
+
+### 3. Debug View Information
+1. **Toggle states at top**:
+   - Accessibility enabled: `yes` / `no`
+   - Usage access granted: `yes` / `no`
+2. **Signal counts**:
+   - Total installed apps (count of all packages enumerated by PackageManager)
+   - Count from UsageStats (24-hour window)
+   - Count from Accessibility-observed packages
+   - Count from ActivityManager fallback
+   - Final Running count
+3. **Searchable generic per-app list (ALL installed apps)**:
+   - Dynamic search by app label or package name for any installed app.
+   - Each row displays:
+     - Label + package name
+     - `lastTimeUsed`: hours ago from UsageStats (e.g. `2.4h ago`, `<1h ago (12m)`) or `"no stats"`
+     - `Accessibility-observed`: `yes` / `no`
+     - `FLAG_STOPPED`: `stopped` / `not stopped` (from `ApplicationInfo.FLAG_STOPPED`)
+     - `In Running`: `yes` / `no`
+     - If NOT in Running, a plain reason string computed directly from actual signal values (`"core-blocked"`, `"stopped"`, `"not active in 24h window"`, `"no usage stats and not observed"`, `"usage access not granted and not observed"`). Never generic "unknown".
+
+### 4. Guarantees & Privacy
+- **NEVER hardcode app names**: No third-party or example app package names hardcoded. List is generic for all installed packages.
+- **Privacy**: All diagnostic data is computed and displayed on-device only. Zero network calls, zero uploads, zero analytics.
+- **Word Ban**: Zero occurrences of "Safe"/"SAFE" in user-visible UI.
+
+### 5. Honest Technical Limit
+- The debug view explains the signals — it cannot make Android reveal a background-only process that no signal sees.
+
+
 
 

@@ -17,6 +17,7 @@ import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import dev.trmx.gui.MainActivity
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.delay
@@ -307,6 +308,203 @@ object AppKillerEngine {
 
         result.sortBy { it.label.lowercase() }
         return result
+    }
+
+    fun getActivityManagerRunningPackages(context: Context): Set<String> {
+        val result = mutableSetOf<String>()
+        try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val runningProcesses = am?.runningAppProcesses
+            if (runningProcesses != null) {
+                for (proc in runningProcesses) {
+                    val pkgList = proc.pkgList ?: continue
+                    for (pkg in pkgList) {
+                        val trimmed = pkg?.trim() ?: continue
+                        if (trimmed.isNotEmpty() && !AppCategories.isCore(trimmed)) {
+                            result.add(trimmed)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return result
+    }
+
+    fun queryAllUsageStats(context: Context): Map<String, Long> {
+        if (!hasUsageAccessPermission(context)) return emptyMap()
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return emptyMap()
+        val now = System.currentTimeMillis()
+        val map = mutableMapOf<String, Long>()
+
+        fun aggregate(stats: List<UsageStats>?) {
+            if (stats == null) return
+            for (usage in stats) {
+                val pkg = usage.packageName?.trim() ?: continue
+                if (pkg.isEmpty()) continue
+                val lastUsed = usage.lastTimeUsed
+                val lastVisible = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) usage.lastTimeVisible else 0L
+                val mostRecent = maxOf(lastUsed, lastVisible)
+                if (mostRecent > 0) {
+                    val current = map[pkg] ?: 0L
+                    if (mostRecent > current) {
+                        map[pkg] = mostRecent
+                    }
+                }
+            }
+        }
+
+        try {
+            val stats24h = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, now - USAGE_STATS_WINDOW_MS, now)
+            aggregate(stats24h)
+            val stats30d = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, now - (30L * 24 * 60 * 60 * 1000L), now)
+            aggregate(stats30d)
+        } catch (_: Exception) {
+        }
+        return map
+    }
+
+    fun formatHoursAgo(lastTimeUsedMs: Long?, now: Long = System.currentTimeMillis()): String {
+        if (lastTimeUsedMs == null || lastTimeUsedMs <= 0L) return "no stats"
+        val diffMs = now - lastTimeUsedMs
+        if (diffMs < 0L) return "<1h ago"
+        val hours = diffMs / 3600000.0
+        return if (hours < 1.0) {
+            val mins = (diffMs / 60000L).coerceAtLeast(0)
+            "<1h ago (${mins}m)"
+        } else {
+            String.format(Locale.US, "%.1fh ago", hours)
+        }
+    }
+
+    fun computeNotRunningReason(
+        isCore: Boolean,
+        isStopped: Boolean,
+        killedAt: Long,
+        lastTimeUsedMs: Long?,
+        startTime24h: Long,
+        isAccessibilityObserved: Boolean,
+        hasUsageAccess: Boolean,
+    ): String {
+        if (isCore) {
+            return "core-blocked"
+        }
+        val mostRecent = lastTimeUsedMs ?: 0L
+        val wasKilledThisSession = killedAt > 0L && mostRecent <= killedAt
+        if (isStopped || wasKilledThisSession) {
+            return "stopped"
+        }
+        if (!hasUsageAccess && !isAccessibilityObserved) {
+            return "usage access not granted and not observed"
+        }
+        if (mostRecent > 0L && mostRecent < startTime24h) {
+            return "not active in 24h window"
+        }
+        if (mostRecent <= 0L && !isAccessibilityObserved) {
+            return "no usage stats and not observed"
+        }
+        return "not active in 24h window and not observed"
+    }
+
+    fun loadDiagnosticData(context: Context): KillerDiagnosticData {
+        val pm = context.packageManager
+        val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0L))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstalledPackages(0)
+        }
+
+        val installedSet = packages.mapNotNull { it.packageName }.toSet()
+        val isA11yEnabled = isAccessibilityEnabled(context)
+        val hasUsage = hasUsageAccessPermission(context)
+
+        // 1. Accessibility observed
+        val observedPackages = AppKillerAccessibilityService.getObservedPackages(context)
+        val a11yObservedCount = observedPackages.count { installedSet.contains(it) && !AppCategories.isCore(it) }
+
+        // 2. UsageStats 24h
+        val usageStats24hActive = getActivePackagesFromUsageStats(context, USAGE_STATS_WINDOW_MS)
+        val usageStatsCount = usageStats24hActive.size
+
+        // 3. ActivityManager fallback
+        val amFallbackPackages = getActivityManagerRunningPackages(context)
+        val amFallbackCount = amFallbackPackages.count { installedSet.contains(it) && !AppCategories.isCore(it) }
+
+        // Final Running
+        val runningPackages = getActivePackages(context, installedSet)
+        val runningCount = runningPackages.size
+
+        // UsageStats for lastTimeUsed
+        val usageStatsMap = queryAllUsageStats(context)
+
+        val now = System.currentTimeMillis()
+        val startTime24h = now - USAGE_STATS_WINDOW_MS
+
+        val diagnosticApps = ArrayList<AppDiagnosticInfo>(packages.size)
+
+        for (pkgInfo in packages) {
+            val pkg = pkgInfo.packageName ?: continue
+            val appInfo = pkgInfo.applicationInfo
+
+            val label = try {
+                appInfo?.loadLabel(pm)?.toString()?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            } ?: pkg
+
+            val flags = appInfo?.flags ?: 0
+            val isStopped = (flags and ApplicationInfo.FLAG_STOPPED) != 0
+
+            val lastTimeUsedMs = usageStatsMap[pkg]
+            val lastTimeUsedFormatted = formatHoursAgo(lastTimeUsedMs, now)
+
+            val isObserved = observedPackages.contains(pkg)
+            val inRunning = runningPackages.contains(pkg)
+
+            val isCore = AppCategories.isCore(pkg)
+            val killedAt = getPackageLastKilledTimestamp(pkg)
+
+            val notRunningReason = if (!inRunning) {
+                computeNotRunningReason(
+                    isCore = isCore,
+                    isStopped = isStopped,
+                    killedAt = killedAt,
+                    lastTimeUsedMs = lastTimeUsedMs,
+                    startTime24h = startTime24h,
+                    isAccessibilityObserved = isObserved,
+                    hasUsageAccess = hasUsage,
+                )
+            } else {
+                null
+            }
+
+            diagnosticApps.add(
+                AppDiagnosticInfo(
+                    packageName = pkg,
+                    label = label,
+                    lastTimeUsedMs = lastTimeUsedMs,
+                    lastTimeUsedFormatted = lastTimeUsedFormatted,
+                    isAccessibilityObserved = isObserved,
+                    isStopped = isStopped,
+                    inRunning = inRunning,
+                    notRunningReason = notRunningReason,
+                ),
+            )
+        }
+
+        diagnosticApps.sortBy { it.label.lowercase() }
+
+        return KillerDiagnosticData(
+            isAccessibilityEnabled = isA11yEnabled,
+            isUsageAccessGranted = hasUsage,
+            totalInstalledApps = packages.size,
+            usageStatsCount = usageStatsCount,
+            accessibilityObservedCount = a11yObservedCount,
+            activityManagerFallbackCount = amFallbackCount,
+            runningCount = runningCount,
+            apps = diagnosticApps,
+        )
     }
 
     fun isNodeOrAncestorClickable(node: AccessibilityNodeInfo): Boolean {

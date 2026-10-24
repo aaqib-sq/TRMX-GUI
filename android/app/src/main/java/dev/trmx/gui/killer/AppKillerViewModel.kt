@@ -51,6 +51,12 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _hasConfirmedInSession = MutableStateFlow(false)
     val hasConfirmedInSession: StateFlow<Boolean> = _hasConfirmedInSession.asStateFlow()
 
+    private val _diagnosticData = MutableStateFlow<KillerDiagnosticData?>(null)
+    val diagnosticData: StateFlow<KillerDiagnosticData?> = _diagnosticData.asStateFlow()
+
+    private val _diagnosticSearchQuery = MutableStateFlow("")
+    val diagnosticSearchQuery: StateFlow<String> = _diagnosticSearchQuery.asStateFlow()
+
     private var hasInitializedSelection = false
     private var killJob: Job? = null
 
@@ -58,6 +64,7 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
         checkAccessibility()
         checkUsageAccess()
         loadApps()
+        loadDiagnosticData()
     }
 
     fun checkAccessibility() {
@@ -113,6 +120,9 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
                 .map { it.packageName }
                 .toSet()
             _selectedPackages.value = runningKillable
+
+            val diag = AppKillerEngine.loadDiagnosticData(getApplication())
+            _diagnosticData.value = diag
         }
     }
 
@@ -157,6 +167,17 @@ class AppKillerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
+    }
+
+    fun setDiagnosticSearchQuery(query: String) {
+        _diagnosticSearchQuery.value = query
+    }
+
+    fun loadDiagnosticData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val data = AppKillerEngine.loadDiagnosticData(getApplication())
+            _diagnosticData.value = data
+        }
     }
 
     fun setFilterTab(tab: KillerFilterTab) {
