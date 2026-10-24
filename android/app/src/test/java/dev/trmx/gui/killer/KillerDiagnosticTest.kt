@@ -118,7 +118,7 @@ class KillerDiagnosticTest {
 
     @Test
     fun testFormatHoursAgo() {
-        val now = 100_000_000L
+        val now = 1_000_000_000L
 
         assertEquals("no stats", AppKillerEngine.formatHoursAgo(null, now))
         assertEquals("no stats", AppKillerEngine.formatHoursAgo(0L, now))
