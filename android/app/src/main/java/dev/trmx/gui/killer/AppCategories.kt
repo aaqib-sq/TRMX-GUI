@@ -107,12 +107,6 @@ object AppCategories {
 
     fun isKillableRunning(app: AppDiagnosticInfo): Boolean = isRunning(app)
 
-    fun isKillableRunning(
-        packageName: String,
-        isStopped: Boolean,
-        isActive: Boolean,
-    ): Boolean = isRunning(packageName = packageName, isStopped = isStopped, isActive = isActive)
-
     fun isKillableRunning(packageName: String, isRunning: Boolean): Boolean {
         return isRunning(packageName = packageName, isStopped = false, isActive = isRunning)
     }
