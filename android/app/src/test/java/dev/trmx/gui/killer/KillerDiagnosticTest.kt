@@ -53,7 +53,7 @@ class KillerDiagnosticTest {
 
     @Test
     fun testComputeNotRunningReasonNotActiveIn24hWindow() {
-        val now = 100_000_000L
+        val now = 1_000_000_000L
         val windowMs = AppKillerEngine.USAGE_STATS_WINDOW_MS
         val startTime24h = now - windowMs
 
