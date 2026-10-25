@@ -16,7 +16,6 @@ import dev.trmx.gui.store.TokenStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -36,7 +35,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private val fetchEngine = InstagramFetchEngine(http)
     private val downloadEngine = DownloadEngine(::client, historyStore, viewModelScope)
 
-    // UI state
+    // UI state for Instagram Tools
     private val _inputUrl = MutableStateFlow("")
     val inputUrl: StateFlow<String> = _inputUrl.asStateFlow()
 
@@ -58,15 +57,28 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private val _selectedTab = MutableStateFlow(DownloadTab.POSTS)
     val selectedTab: StateFlow<DownloadTab> = _selectedTab.asStateFlow()
 
-    // Upfront Mode & Quality Selection
+    // Overlay Preview State: playable video player overlay or full photo preview overlay
+    private val _activePreviewItem = MutableStateFlow<InstagramItem?>(null)
+    val activePreviewItem: StateFlow<InstagramItem?> = _activePreviewItem.asStateFlow()
+
+    // Downloader Stage & Upfront Choices (SEPARATE from Instagram section)
+    private val _stagedItem = MutableStateFlow<InstagramItem?>(null)
+    val stagedItem: StateFlow<InstagramItem?> = _stagedItem.asStateFlow()
+
+    private val _directDownloadUrl = MutableStateFlow("")
+    val directDownloadUrl: StateFlow<String> = _directDownloadUrl.asStateFlow()
+
     private val _mediaMode = MutableStateFlow(MediaMode.VIDEO)
     val mediaMode: StateFlow<MediaMode> = _mediaMode.asStateFlow()
 
-    private val _videoQuality = MutableStateFlow(VideoQuality.P1080)
+    private val _videoQuality = MutableStateFlow(VideoQuality.ORIGINAL)
     val videoQuality: StateFlow<VideoQuality> = _videoQuality.asStateFlow()
 
     private val _audioQuality = MutableStateFlow(AudioQuality.KBPS320)
     val audioQuality: StateFlow<AudioQuality> = _audioQuality.asStateFlow()
+
+    private val _saveCoverAlongsideVideo = MutableStateFlow(true)
+    val saveCoverAlongsideVideo: StateFlow<Boolean> = _saveCoverAlongsideVideo.asStateFlow()
 
     // History and progress
     private val _history = MutableStateFlow<List<DownloadRecord>>(emptyList())
@@ -89,6 +101,11 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _error.value = null
     }
 
+    fun onDirectDownloadUrlChange(newUrl: String) {
+        _directDownloadUrl.value = newUrl
+        _error.value = null
+    }
+
     fun onPaste(pasted: String) {
         _inputUrl.value = pasted
         _error.value = null
@@ -108,6 +125,23 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _selectedTab.value = tab
     }
 
+    fun openPreview(item: InstagramItem) {
+        _activePreviewItem.value = item
+    }
+
+    fun closePreview() {
+        _activePreviewItem.value = null
+    }
+
+    fun stageItemForDownload(item: InstagramItem) {
+        _stagedItem.value = item
+        _error.value = null
+    }
+
+    fun clearStagedItem() {
+        _stagedItem.value = null
+    }
+
     fun setMediaMode(mode: MediaMode) {
         _mediaMode.value = mode
     }
@@ -118,6 +152,10 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     fun setAudioQuality(quality: AudioQuality) {
         _audioQuality.value = quality
+    }
+
+    fun setSaveCoverAlongsideVideo(save: Boolean) {
+        _saveCoverAlongsideVideo.value = save
     }
 
     fun clearNotice() {
@@ -137,7 +175,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _history.value = emptyList()
     }
 
-    fun fetchUrl() {
+    fun fetchUrl(tool: InstagramTool? = null) {
         val query = _inputUrl.value.trim()
         if (query.isBlank()) {
             _error.value = "Please enter an Instagram link or handle"
@@ -160,8 +198,8 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
         viewModelScope.launch {
             try {
-                when (parsed.type) {
-                    InstagramUrlType.PROFILE -> {
+                when {
+                    tool == InstagramTool.STORIES_VIEWER || tool == InstagramTool.STORY_SAVER && parsed.type == InstagramUrlType.PROFILE || parsed.type == InstagramUrlType.PROFILE -> {
                         val result = fetchEngine.fetchProfile(parsed.username ?: query)
                         _profile.value = result.profile
                         _items.value = result.items
@@ -170,7 +208,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                         }
                     }
                     else -> {
-                        // Single item (Post, Reel, Story, Highlight)
+                        // Single item (Post, Reel, Story, Highlight, IGTV)
                         val item = fetchEngine.fetchSingleItem(parsed)
                         _singleItem.value = item
                     }
@@ -183,7 +221,11 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun downloadItem(item: InstagramItem, option: DownloadOption = DownloadOption.MEDIA) {
+    fun startDownload(
+        item: InstagramItem,
+        option: DownloadOption = DownloadOption.MEDIA,
+        onStarted: (() -> Unit)? = null
+    ) {
         viewModelScope.launch {
             try {
                 val record = downloadEngine.startDownload(
@@ -191,22 +233,38 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                     mode = _mediaMode.value,
                     videoQuality = _videoQuality.value,
                     audioQuality = _audioQuality.value,
+                    saveCover = _saveCoverAlongsideVideo.value,
                     option = option
                 )
                 _notice.value = "Download started: ${record.title}"
                 refreshHistory()
+                onStarted?.invoke()
             } catch (e: Exception) {
                 _error.value = "Failed to start download: ${e.message}"
             }
         }
     }
 
-    fun downloadCarouselAll(item: InstagramItem) {
-        downloadItem(item, DownloadOption.CAROUSEL_ALL)
-    }
+    fun startDirectDownload(onStarted: (() -> Unit)? = null) {
+        val rawUrl = _directDownloadUrl.value.trim()
+        if (rawUrl.isBlank()) {
+            _error.value = "Please enter a URL to download"
+            return
+        }
 
-    fun downloadCover(item: InstagramItem) {
-        downloadItem(item, DownloadOption.COVER_IMAGE)
+        val syntheticItem = InstagramItem(
+            id = "dl_${System.currentTimeMillis()}",
+            shortcode = rawUrl.substringAfterLast("/").substringBefore("?").ifBlank { "media" },
+            type = if (_mediaMode.value == MediaMode.MP3) InstagramItemType.POST else InstagramItemType.VIDEO,
+            title = "Download: ${rawUrl.substringAfterLast("/").substringBefore("?")}",
+            url = rawUrl,
+            isVideo = (_mediaMode.value == MediaMode.VIDEO)
+        )
+
+        startDownload(syntheticItem, DownloadOption.MEDIA) {
+            _directDownloadUrl.value = ""
+            onStarted?.invoke()
+        }
     }
 
     fun retryDownload(recordId: String) {

@@ -38,7 +38,7 @@ enum class MediaMode {
     MP3
 }
 
-/** Video resolution quality choices shown upfront. */
+/** Video resolution quality choices shown upfront in Downloader. */
 enum class VideoQuality(val label: String, val height: Int?, val ytdlpFormat: String) {
     ORIGINAL("Original", null, "bestvideo+bestaudio/best"),
     P1080("1080p", 1080, "bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
@@ -51,7 +51,7 @@ enum class VideoQuality(val label: String, val height: Int?, val ytdlpFormat: St
     }
 }
 
-/** Audio bitrate choices shown upfront in MP3 mode. */
+/** Audio bitrate choices shown upfront in MP3 mode in Downloader. */
 enum class AudioQuality(val label: String, val bitrateKbps: Int, val ytdlpQuality: String) {
     KBPS320("320 kbps", 320, "320K"),
     KBPS192("192 kbps", 192, "192K"),
@@ -92,6 +92,60 @@ enum class DownloadOption {
     CAROUSEL_ALL    // All items of a carousel
 }
 
+/**
+ * Separate per-tool entries under the Instagram homepage section.
+ * Each tool has a dedicated page with specialized placeholders and actions.
+ */
+enum class InstagramTool(
+    val title: String,
+    val description: String,
+    val placeholder: String,
+    val actionButtonLabel: String
+) {
+    STORY_SAVER(
+        title = "Story Saver",
+        description = "Download stories from public Instagram profiles",
+        placeholder = "Paste story link or @username…",
+        actionButtonLabel = "Fetch Stories"
+    ),
+    REELS_DOWNLOADER(
+        title = "Reels Downloader",
+        description = "Download Instagram reels in full quality",
+        placeholder = "Paste reel link (e.g. instagram.com/reel/…)…",
+        actionButtonLabel = "Fetch Reel"
+    ),
+    PHOTO_DOWNLOADER(
+        title = "Photo Downloader",
+        description = "Download photos and full-resolution post images",
+        placeholder = "Paste photo link (e.g. instagram.com/p/…)…",
+        actionButtonLabel = "Fetch Photo"
+    ),
+    VIDEO_DOWNLOADER(
+        title = "Video Downloader",
+        description = "Download public Instagram videos and posts",
+        placeholder = "Paste video link (e.g. instagram.com/p/…)…",
+        actionButtonLabel = "Fetch Video"
+    ),
+    IGTV_DOWNLOADER(
+        title = "IGTV Downloader",
+        description = "Download long-form IGTV videos",
+        placeholder = "Paste IGTV link (e.g. instagram.com/tv/…)…",
+        actionButtonLabel = "Fetch IGTV"
+    ),
+    CAROUSEL_DOWNLOADER(
+        title = "Carousel Downloader",
+        description = "Download multi-slide posts and albums",
+        placeholder = "Paste carousel link (e.g. instagram.com/p/…)…",
+        actionButtonLabel = "Fetch Carousel"
+    ),
+    STORIES_VIEWER(
+        title = "Stories Viewer",
+        description = "View public stories anonymously without login",
+        placeholder = "Enter public @username or profile link…",
+        actionButtonLabel = "View Stories"
+    )
+}
+
 /** Public Instagram profile header metadata. */
 data class InstagramProfile(
     val username: String,
@@ -123,7 +177,10 @@ data class InstagramItem(
     val timestamp: Long? = null,
     val carouselItems: List<InstagramItem> = emptyList(),
     val errorMessage: String? = null,
-    val isAvailable: Boolean = true
+    val isAvailable: Boolean = true,
+    val likesCount: Long? = null,
+    val commentsCount: Long? = null,
+    val formattedDate: String? = null
 )
 
 /** Persistent on-device record of a past or running download. */

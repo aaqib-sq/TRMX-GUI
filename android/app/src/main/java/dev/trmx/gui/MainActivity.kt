@@ -27,10 +27,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Settings
@@ -64,11 +62,14 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.trmx.gui.download.DownloadViewModel
+import dev.trmx.gui.download.InstagramItem
+import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.killer.AppKillerViewModel
 import dev.trmx.gui.model.ToolExample
 import dev.trmx.gui.ui.ActivityScreen
 import dev.trmx.gui.ui.ConnectScreen
-import dev.trmx.gui.ui.DownloadScreen
+import dev.trmx.gui.ui.DownloaderScreen
+import dev.trmx.gui.ui.InstagramToolScreen
 import dev.trmx.gui.ui.JobDetailScreen
 import dev.trmx.gui.ui.KillScreen
 import dev.trmx.gui.ui.KillerDebugScreen
@@ -84,8 +85,8 @@ import dev.trmx.gui.wizard.SetupViewModel
 import dev.trmx.gui.wizard.WizardStep
 import java.io.File
 
-/** Destinations: Run (console + tools), Kill (app killer), Activity (jobs + output), & Download (Instagram downloader). */
-private enum class Screen { RUN, KILL, ACTIVITY, DOWNLOAD }
+/** Destinations: Run (homepage + tools), Kill (app killer), & Activity (jobs + output). */
+private enum class Screen { RUN, KILL, ACTIVITY }
 
 private const val FILE_PROVIDER = "dev.trmx.gui.fileprovider"
 
@@ -131,13 +132,15 @@ fun AppRoot(
     val detail by vm.detail.collectAsStateWithLifecycle()
     val output by vm.output.collectAsStateWithLifecycle()
     val filesState by filesVm.files.collectAsStateWithLifecycle()
-    val toolsState by vm.tools.collectAsStateWithLifecycle()
     val toolFormState by vm.toolForm.collectAsStateWithLifecycle()
     val artifactsState by vm.artifacts.collectAsStateWithLifecycle()
 
     var screen by remember { mutableStateOf(Screen.RUN) }
     var showSettings by remember { mutableStateOf(false) }
     var showKillerDebug by remember { mutableStateOf(false) }
+    var selectedInstagramTool by remember { mutableStateOf<InstagramTool?>(null) }
+    var isDownloaderOpen by remember { mutableStateOf(false) }
+    var stagedDownloadItem by remember { mutableStateOf<InstagramItem?>(null) }
 
     // Pair-link token adopted on cold start or warm onNewIntent.
     LaunchedEffect(pendingPairToken) {
@@ -246,9 +249,19 @@ fun AppRoot(
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
-                // ---- Compact Main Shell (2 Tabs) -------------------------
-                BackHandler(enabled = screen != Screen.RUN) {
-                    screen = Screen.RUN
+                // ---- Main Shell (3 Tabs: Run, Kill, Activity) ------------
+                val isInstagramSubScreen = screen == Screen.RUN && selectedInstagramTool != null
+                val isDownloaderSubScreen = screen == Screen.RUN && isDownloaderOpen
+
+                BackHandler(enabled = screen != Screen.RUN || isDownloaderSubScreen || isInstagramSubScreen) {
+                    when {
+                        isDownloaderSubScreen -> {
+                            isDownloaderOpen = false
+                            stagedDownloadItem = null
+                        }
+                        isInstagramSubScreen -> selectedInstagramTool = null
+                        else -> screen = Screen.RUN
+                    }
                 }
 
                 val connected = dashboard.error == null
@@ -259,15 +272,31 @@ fun AppRoot(
                 Scaffold(
                     topBar = {
                         TrmxTopBar(
-                            title = when (screen) {
-                                Screen.KILL -> "App Killer"
-                                Screen.DOWNLOAD -> "Download"
+                            title = when {
+                                screen == Screen.KILL -> "App Killer"
+                                screen == Screen.ACTIVITY -> "Activity"
+                                isDownloaderSubScreen -> "Downloader"
+                                isInstagramSubScreen -> selectedInstagramTool!!.title
                                 else -> "TRMX"
                             },
-                            subtitle = when (screen) {
-                                Screen.KILL -> "Automated force-stop"
-                                Screen.DOWNLOAD -> "Instagram media & stories"
+                            subtitle = when {
+                                screen == Screen.KILL -> "Automated force-stop"
+                                screen == Screen.ACTIVITY -> "Jobs & live output"
+                                isDownloaderSubScreen -> "Video & MP3 download engine"
+                                isInstagramSubScreen -> selectedInstagramTool!!.description
                                 else -> if (connected) "Connected · 127.0.0.1:8080" else "Bridge unreachable"
+                            },
+                            onBack = when {
+                                isDownloaderSubScreen -> {
+                                    {
+                                        isDownloaderOpen = false
+                                        stagedDownloadItem = null
+                                    }
+                                }
+                                isInstagramSubScreen -> {
+                                    { selectedInstagramTool = null }
+                                }
+                                else -> null
                             },
                             actions = {
                                 if (screen == Screen.KILL) {
@@ -297,7 +326,14 @@ fun AppRoot(
                         ) {
                             NavigationBarItem(
                                 selected = screen == Screen.RUN,
-                                onClick = { screen = Screen.RUN },
+                                onClick = {
+                                    screen = Screen.RUN
+                                    // return to homepage if switching to Run
+                                    if (screen != Screen.RUN) {
+                                        isDownloaderOpen = false
+                                        selectedInstagramTool = null
+                                    }
+                                },
                                 icon = {
                                     Icon(
                                         if (screen == Screen.RUN) Icons.Filled.Terminal
@@ -348,36 +384,51 @@ fun AppRoot(
                                 label = { Text("Activity", style = MaterialTheme.typography.labelSmall) },
                                 colors = TrmxNavItemColors(),
                             )
-
-                            NavigationBarItem(
-                                selected = screen == Screen.DOWNLOAD,
-                                onClick = { screen = Screen.DOWNLOAD },
-                                icon = {
-                                    Icon(
-                                        if (screen == Screen.DOWNLOAD) Icons.Filled.Download
-                                        else Icons.Outlined.Download,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp),
-                                    )
-                                },
-                                label = { Text("Download", style = MaterialTheme.typography.labelSmall) },
-                                colors = TrmxNavItemColors(),
-                            )
                         }
                     },
                 ) { padding ->
                     when (screen) {
                         Screen.RUN -> {
-                            LaunchedEffect(Unit) { vm.loadTools() }
-                            RunScreen(
-                                state = toolsState,
-                                onRunCommand = vm::runCommandLine,
-                                onRefreshTools = vm::refreshToolsNow,
-                                onOpenTool = { toolId -> vm.openToolForm(toolId) },
-                                onInstallTool = vm::installTool,
-                                onGoToKill = { screen = Screen.KILL },
-                                modifier = Modifier.padding(padding),
-                            )
+                            when {
+                                isDownloaderOpen -> {
+                                    DownloaderScreen(
+                                        stagedItem = stagedDownloadItem,
+                                        viewModel = downloadVm,
+                                        onBack = {
+                                            isDownloaderOpen = false
+                                            stagedDownloadItem = null
+                                        },
+                                        modifier = Modifier.padding(padding),
+                                    )
+                                }
+                                selectedInstagramTool != null -> {
+                                    val currentTool = selectedInstagramTool!!
+                                    InstagramToolScreen(
+                                        tool = currentTool,
+                                        viewModel = downloadVm,
+                                        onOpenDownloader = { item ->
+                                            stagedDownloadItem = item
+                                            isDownloaderOpen = true
+                                        },
+                                        onBack = { selectedInstagramTool = null },
+                                        modifier = Modifier.padding(padding),
+                                    )
+                                }
+                                else -> {
+                                    RunScreen(
+                                        onRunCommand = vm::runCommandLine,
+                                        onGoToKill = { screen = Screen.KILL },
+                                        onOpenDownloader = {
+                                            stagedDownloadItem = null
+                                            isDownloaderOpen = true
+                                        },
+                                        onOpenInstagramTool = { tool ->
+                                            selectedInstagramTool = tool
+                                        },
+                                        modifier = Modifier.padding(padding),
+                                    )
+                                }
+                            }
                         }
                         Screen.KILL -> {
                             KillScreen(
@@ -392,12 +443,6 @@ fun AppRoot(
                                 onJobClick = vm::selectJob,
                                 onCancelJob = vm::cancelJob,
                                 onGoToRun = { screen = Screen.RUN },
-                                modifier = Modifier.padding(padding),
-                            )
-                        }
-                        Screen.DOWNLOAD -> {
-                            DownloadScreen(
-                                viewModel = downloadVm,
                                 modifier = Modifier.padding(padding),
                             )
                         }

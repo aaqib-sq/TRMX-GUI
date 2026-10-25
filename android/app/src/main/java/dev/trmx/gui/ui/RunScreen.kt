@@ -1,16 +1,22 @@
 package dev.trmx.gui.ui
 
 /*
- * RunScreen (Compact Redesign) — the unified execution surface.
- * Replaces the bloated ToolboxScreen + SubmitDialog with a fast,
- * focused command runner and discovered tools grid.
+ * RunScreen (Homepage) — the unified homepage surface (PART A & B).
+ * 1. Quick Command Bar: Direct shell execution in Termux with quick suggestion chips.
+ * 2. App Killer Card: Force-stop background apps.
+ * 3. Downloader Card: Media & MP3 download engine and history.
+ * 4. Instagram Section: Named exactly "Instagram", with separate per-tool entries:
+ *    - Story Saver
+ *    - Reels Downloader
+ *    - Photo Downloader
+ *    - Video Downloader
+ *    - IGTV Downloader
+ *    - Carousel Downloader
+ *    - Stories Viewer
  *
- * 1. Quick Command Bar: Direct shell execution with 1 tap.
- * 2. Suggestion Chips: Quick common inspection commands.
- * 3. Discovered Tools: Clean cards for schemas in ~/.trmx/tools.
+ * The legacy 9-tools list and Scan affordance are completely deleted.
  */
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,25 +35,26 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.outlined.Tv
+import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material.icons.outlined.ViewCarousel
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,7 +62,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -63,22 +69,20 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.trmx.gui.ToolsState
-import dev.trmx.gui.model.ToolStatus
+import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.ui.Tokens.Palette as P
+import dev.trmx.gui.ui.Tokens.Radius as R
+import dev.trmx.gui.ui.Tokens.Space as Sp
 
 @Composable
 fun RunScreen(
-    state: ToolsState,
     onRunCommand: (String) -> Unit,
-    onRefreshTools: () -> Unit,
-    onOpenTool: (String) -> Unit,
-    onInstallTool: (ToolStatus) -> Unit,
-    onGoToKill: (() -> Unit)? = null,
+    onGoToKill: () -> Unit,
+    onOpenDownloader: () -> Unit,
+    onOpenInstagramTool: (InstagramTool) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var commandInput by remember { mutableStateOf("") }
-    var confirmInstall by remember { mutableStateOf<ToolStatus?>(null) }
 
     Column(
         modifier = modifier
@@ -159,9 +163,7 @@ fun RunScreen(
                     val suggestions = listOf("uname -a", "uptime", "df -h", "pkg list-installed", "whoami")
                     suggestions.forEach { suggestion ->
                         AssistChip(
-                            onClick = {
-                                commandInput = suggestion
-                            },
+                            onClick = { commandInput = suggestion },
                             label = {
                                 Text(
                                     suggestion,
@@ -170,13 +172,8 @@ fun RunScreen(
                                     color = P.TextSecondary,
                                 )
                             },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = P.SurfaceHigh,
-                            ),
-                            border = AssistChipDefaults.assistChipBorder(
-                                enabled = true,
-                                borderColor = P.Border,
-                            ),
+                            colors = AssistChipDefaults.assistChipColors(containerColor = P.SurfaceHigh),
+                            border = AssistChipDefaults.assistChipBorder(enabled = true, borderColor = P.Border),
                         )
                     }
                 }
@@ -198,165 +195,159 @@ fun RunScreen(
         }
 
         // ---- App Killer Entry Card ---------------------------------------
-        if (onGoToKill != null) {
-            TrmxCard(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = 16.dp,
-                onClick = onGoToKill,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = P.SurfaceHigh,
-                        modifier = Modifier.size(44.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Outlined.PowerSettingsNew,
-                                contentDescription = null,
-                                tint = P.TextPrimary,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.width(14.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "App Killer",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = P.TextPrimary,
-                        )
-                        Text(
-                            "Force-stop background apps with one tap",
-                            fontSize = 12.sp,
-                            color = P.TextSecondary,
-                        )
-                    }
-
-                    Icon(
-                        Icons.Outlined.ChevronRight,
-                        contentDescription = null,
-                        tint = P.TextMuted,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            }
-        }
-
-        // ---- 2. Discovered Tools Section ---------------------------------
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        TrmxCard(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = 16.dp,
+            onClick = onGoToKill,
         ) {
-            Text(
-                "Tools",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = P.TextPrimary,
-            )
-            Spacer(Modifier.width(8.dp))
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = P.SurfaceHigh,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    "${state.tools.size}",
-                    fontSize = 12.sp,
-                    color = P.TextSecondary,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            if (state.loading) {
-                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-            }
-            TrmxButton(
-                label = "Scan",
-                leading = { Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                onClick = onRefreshTools,
-                kind = TrmxButtonKind.Secondary,
-            )
-        }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = P.SurfaceHigh,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Outlined.PowerSettingsNew,
+                            contentDescription = null,
+                            tint = P.TextPrimary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
 
-        state.notice?.let {
-            Text(it, fontSize = 13.sp, color = P.TextSecondary)
-        }
-        state.error?.let {
-            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-        }
+                Spacer(Modifier.width(14.dp))
 
-        if (state.tools.isEmpty() && !state.loading) {
-            TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = 20.dp) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "No tools discovered.",
+                        "App Killer",
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp,
                         color = P.TextPrimary,
                     )
                     Text(
-                        "Add a tool JSON schema to ~/.trmx/tools/ to generate an instant UI form.",
-                        fontSize = 13.sp,
+                        "Force-stop background apps with one tap",
+                        fontSize = 12.sp,
                         color = P.TextSecondary,
                     )
                 }
+
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = P.TextMuted,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
 
-        state.tools.forEach { tool ->
-            CompactToolCard(
-                tool = tool,
-                onOpen = { onOpenTool(tool.schema.id) },
-                onInstall = { confirmInstall = tool },
-            )
-        }
-    }
+        // ---- Downloader Entry Card (PART D) -------------------------------
+        TrmxCard(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = 16.dp,
+            onClick = onOpenDownloader,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = P.SurfaceHigh,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Outlined.Download,
+                            contentDescription = null,
+                            tint = P.TextPrimary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
 
-    confirmInstall?.let { tool ->
-        AlertDialog(
-            onDismissRequest = { confirmInstall = null },
-            title = { Text("Install ${tool.schema.name}?") },
-            text = {
-                Text(
-                    "This will run `pkg install -y ${tool.schema.pkg ?: tool.schema.binary}` in Termux."
+                Spacer(Modifier.width(14.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Downloader",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = P.TextPrimary,
+                    )
+                    Text(
+                        "Video & MP3 download engine, quality choices, history",
+                        fontSize = 12.sp,
+                        color = P.TextSecondary,
+                    )
+                }
+
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = P.TextMuted,
+                    modifier = Modifier.size(20.dp),
                 )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = confirmInstall
-                    confirmInstall = null
-                    if (target != null) onInstallTool(target)
-                }) {
-                    Text("Install")
+            }
+        }
+
+        // ---- PART B: Instagram Section (Homepage) -------------------------
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Text(
+                    "Instagram",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = P.TextPrimary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = P.SurfaceHigh,
+                ) {
+                    Text(
+                        "7 tools",
+                        fontSize = 12.sp,
+                        color = P.TextSecondary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmInstall = null }) {
-                    Text("Cancel")
-                }
-            },
-        )
+            }
+
+            Text(
+                "Anonymous media & story tools for public profiles · No login required",
+                style = MaterialTheme.typography.bodySmall,
+                color = P.TextMuted,
+            )
+
+            // 7 SEPARATE per-tool entries:
+            InstagramTool.entries.forEach { tool ->
+                InstagramToolCard(
+                    tool = tool,
+                    onClick = { onOpenInstagramTool(tool) }
+                )
+            }
+        }
+
+        Spacer(Modifier.height(Sp.m))
     }
 }
 
 @Composable
-private fun CompactToolCard(
-    tool: ToolStatus,
-    onOpen: () -> Unit,
-    onInstall: () -> Unit,
+private fun InstagramToolCard(
+    tool: InstagramTool,
+    onClick: () -> Unit
 ) {
-    val ready = tool.installed
     TrmxCard(
         modifier = Modifier.fillMaxWidth(),
-        contentPadding = 16.dp,
-        onClick = if (ready) onOpen else null,
+        contentPadding = 14.dp,
+        onClick = onClick,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -365,14 +356,14 @@ private fun CompactToolCard(
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = P.SurfaceHigh,
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier.size(42.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        toolIcon(tool.schema.id, tool.schema.binary),
+                        toolIcon(tool),
                         contentDescription = null,
                         tint = P.TextPrimary,
-                        modifier = Modifier.size(22.dp),
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }
@@ -381,16 +372,15 @@ private fun CompactToolCard(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    tool.schema.name.ifBlank { tool.schema.id },
-                    style = MaterialTheme.typography.titleMedium,
+                    tool.title,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = P.TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    tool.schema.binary,
-                    fontFamily = FontFamily.Monospace,
+                    tool.description,
                     fontSize = 12.sp,
                     color = P.TextSecondary,
                     maxLines = 1,
@@ -400,44 +390,22 @@ private fun CompactToolCard(
 
             Spacer(Modifier.width(8.dp))
 
-            if (ready) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFF142417),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF285430)),
-                ) {
-                    Text(
-                        "READY",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF66BB6A),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
-                Spacer(Modifier.width(6.dp))
-                Icon(
-                    Icons.Outlined.ChevronRight,
-                    contentDescription = null,
-                    tint = P.TextMuted,
-                    modifier = Modifier.size(20.dp),
-                )
-            } else {
-                TrmxButton(
-                    label = "Install",
-                    leading = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(14.dp)) },
-                    onClick = onInstall,
-                    kind = TrmxButtonKind.Secondary,
-                )
-            }
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = P.TextMuted,
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }
 
-private fun toolIcon(id: String, binary: String): ImageVector {
-    val key = (id + " " + binary).lowercase()
-    return when {
-        "yt-dlp" in key || "ytdlp" in key || "media" in key || "download" in key -> Icons.Outlined.Download
-        "ffmpeg" in key || "video" in key || "encode" in key -> Icons.Outlined.Movie
-        else -> Icons.Outlined.Build
-    }
+private fun toolIcon(tool: InstagramTool): ImageVector = when (tool) {
+    InstagramTool.STORY_SAVER -> Icons.Outlined.AutoStories
+    InstagramTool.REELS_DOWNLOADER -> Icons.Outlined.Movie
+    InstagramTool.PHOTO_DOWNLOADER -> Icons.Outlined.Image
+    InstagramTool.VIDEO_DOWNLOADER -> Icons.Outlined.VideoLibrary
+    InstagramTool.IGTV_DOWNLOADER -> Icons.Outlined.Tv
+    InstagramTool.CAROUSEL_DOWNLOADER -> Icons.Outlined.ViewCarousel
+    InstagramTool.STORIES_VIEWER -> Icons.Outlined.Visibility
 }

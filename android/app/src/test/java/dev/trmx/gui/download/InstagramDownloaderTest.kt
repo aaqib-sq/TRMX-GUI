@@ -1,5 +1,6 @@
 package dev.trmx.gui.download
 
+import dev.trmx.gui.job.SubmitValidator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -11,10 +12,13 @@ import org.junit.rules.TemporaryFolder
 
 /**
  * Unit tests for Instagram Downloader pure logic:
+ * - HTML entity decoding at parse layer (&#x909;, named entities, numeric entities, surrogate emoji)
+ * - Strict bridge job name construction (<type>:<shortcode>, 200-char cap, never from title/caption)
  * - URL and handle parsing (profiles, posts, reels, stories with ID, story trays, highlights, IGTV)
  * - Upfront quality mapping and label resolution (Video resolutions, Audio bitrates)
- * - Video / MP3 mode selection and yt-dlp argv synthesis
+ * - Video / MP3 mode selection and yt-dlp argv synthesis with cover option
  * - On-device download history store (add, update, list sorted, remove, clear, retry state machine)
+ * - End-to-end bridge submit validation acceptance test
  */
 class InstagramDownloaderTest {
 
@@ -22,7 +26,97 @@ class InstagramDownloaderTest {
     val tempFolder = TemporaryFolder()
 
     // ------------------------------------------------------------------------
-    // 1. Link and Handle Parsing Tests
+    // 1. HTML Entity Decoding Tests (PART E.1)
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `decodes hexadecimal numeric entities including devanagari characters`() {
+        // &#x909; is Devanagari letter U (\u0909) — the exact failure case cited in spec
+        val decoded = HtmlDecoder.decode("Hindi title: &#x909; and &#x915;")
+        assertEquals("Hindi title: \u0909 and \u0915", decoded)
+
+        // Quotes and apostrophes
+        assertEquals("It's working", HtmlDecoder.decode("It&#x27;s working"))
+        assertEquals("\"Featured\"", HtmlDecoder.decode("&#x22;Featured&#x22;"))
+    }
+
+    @Test
+    fun `decodes decimal numeric entities and quotes`() {
+        assertEquals("User's Reel", HtmlDecoder.decode("User&#39;s Reel"))
+        assertEquals("<Hello & World>", HtmlDecoder.decode("&#60;Hello &#38; World&#62;"))
+    }
+
+    @Test
+    fun `decodes standard named HTML entities`() {
+        val input = "Rock &amp; Roll &quot;Album&quot; &lt;Live&gt; &copy; 2026 &euro;10"
+        val expected = "Rock & Roll \"Album\" <Live> © 2026 €10"
+        assertEquals(expected, HtmlDecoder.decode(input))
+    }
+
+    @Test
+    fun `decodes surrogate pair emojis above 16 bit range`() {
+        // Grinning face 😀 is U+1F600
+        val decoded = HtmlDecoder.decode("Awesome reel! &#x1F600;&#x1F525;")
+        assertEquals("Awesome reel! \uD83D\uDE00\uD83D\uDD25", decoded)
+    }
+
+    @Test
+    fun `handles plain text, empty string, null, and invalid entities safely`() {
+        assertEquals("", HtmlDecoder.decode(null))
+        assertEquals("", HtmlDecoder.decode(""))
+        assertEquals("Plain text without entities", HtmlDecoder.decode("Plain text without entities"))
+        assertEquals("Malformed &unknown; and &#xZZ;", HtmlDecoder.decode("Malformed &unknown; and &#xZZ;"))
+    }
+
+    // ------------------------------------------------------------------------
+    // 2. Strict Job Name Construction & Validation (PART E.2)
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `builds job name strictly as type and shortcode`() {
+        val reelJob = DownloadEngine.buildJobName("reel", "DO5tIDME6t-")
+        assertEquals("reel:DO5tIDME6t-", reelJob)
+
+        val postJob = DownloadEngine.buildJobName("POST", "C8XYZ123")
+        assertEquals("post:C8XYZ123", postJob)
+
+        val storyJob = DownloadEngine.buildJobName("story", "123456789")
+        assertEquals("story:123456789", storyJob)
+    }
+
+    @Test
+    fun `never builds job name from caption or title`() {
+        // Captions can be 2,200 characters long — job name must ignore them completely
+        val longCaption = "A".repeat(500)
+        val shortcode = "DO5tIDME6t-"
+        val jobName = DownloadEngine.buildJobName("reel", shortcode)
+
+        // Job name must NOT contain caption
+        assertFalse(jobName.contains(longCaption))
+        assertEquals("reel:DO5tIDME6t-", jobName)
+    }
+
+    @Test
+    fun `hard caps job name at 200 characters`() {
+        val hugeShortcode = "B".repeat(300)
+        val jobName = DownloadEngine.buildJobName("reel", hugeShortcode)
+
+        assertEquals(DownloadEngine.MAX_JOB_NAME_CHARS, jobName.length)
+        assertTrue(jobName.startsWith("reel:BBBB"))
+        assertTrue(jobName.length <= 200)
+    }
+
+    @Test
+    fun `job name passes bridge SubmitValidator with zero errors`() {
+        val jobName = DownloadEngine.buildJobName("reel", "DO5tIDME6t-")
+        val argv = listOf("yt-dlp", "https://instagram.com/reel/DO5tIDME6t-/")
+        val errors = SubmitValidator.validate(jobName, argv, null, DownloadEngine.DOWNLOAD_DIR)
+
+        assertTrue(errors.isEmpty())
+    }
+
+    // ------------------------------------------------------------------------
+    // 3. Link and Handle Parsing Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -125,7 +219,7 @@ class InstagramDownloaderTest {
     }
 
     // ------------------------------------------------------------------------
-    // 2. Quality & Mode Mapping Tests
+    // 4. Quality & Mode Mapping Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -166,7 +260,7 @@ class InstagramDownloaderTest {
     }
 
     // ------------------------------------------------------------------------
-    // 3. Engine Argv Synthesis Tests
+    // 5. Engine Argv Synthesis Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -176,6 +270,7 @@ class InstagramDownloaderTest {
             mode = MediaMode.VIDEO,
             videoQuality = VideoQuality.P1080,
             audioQuality = AudioQuality.KBPS320,
+            saveCover = false,
             option = DownloadOption.MEDIA
         )
         assertTrue(argv.contains("yt-dlp"))
@@ -188,12 +283,28 @@ class InstagramDownloaderTest {
     }
 
     @Test
+    fun `synthesizes video mode argv with cover image saved alongside`() {
+        val argv = DownloadEngine.buildYtdlpArgv(
+            url = "https://www.instagram.com/reel/DO5tIDME6t-/",
+            mode = MediaMode.VIDEO,
+            videoQuality = VideoQuality.ORIGINAL,
+            audioQuality = AudioQuality.KBPS320,
+            saveCover = true,
+            option = DownloadOption.MEDIA
+        )
+        assertTrue(argv.contains("--write-thumbnail"))
+        assertTrue(argv.contains("--convert-thumbnails"))
+        assertTrue(argv.contains("jpg"))
+    }
+
+    @Test
     fun `synthesizes mp3 mode argv extracting audio only with bitrate`() {
         val argv = DownloadEngine.buildYtdlpArgv(
             url = "https://www.instagram.com/reel/C8XYZ123/",
             mode = MediaMode.MP3,
             videoQuality = VideoQuality.P1080,
             audioQuality = AudioQuality.KBPS320,
+            saveCover = false,
             option = DownloadOption.MEDIA
         )
         assertTrue(argv.contains("-x"))
@@ -211,6 +322,7 @@ class InstagramDownloaderTest {
             mode = MediaMode.VIDEO,
             videoQuality = VideoQuality.P1080,
             audioQuality = AudioQuality.KBPS320,
+            saveCover = false,
             option = DownloadOption.COVER_IMAGE
         )
         assertTrue(argv.contains("--skip-download"))
@@ -226,14 +338,15 @@ class InstagramDownloaderTest {
             mode = MediaMode.VIDEO,
             videoQuality = VideoQuality.P1080,
             audioQuality = AudioQuality.KBPS320,
+            saveCover = false,
             option = DownloadOption.CAROUSEL_ALL
         )
         assertTrue(argv.contains("--yes-playlist"))
-        assertTrue(argv.contains("bestvideo+bestaudio/best"))
+        assertTrue(argv.contains("bestvideo[height<=1080]+bestaudio/best[height<=1080]"))
     }
 
     // ------------------------------------------------------------------------
-    // 4. Download History Store Tests
+    // 6. Download History Store Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -342,5 +455,47 @@ class InstagramDownloaderTest {
 
         store.clear()
         assertTrue(store.list().isEmpty())
+    }
+
+    // ------------------------------------------------------------------------
+    // 7. Acceptance Test: Public Reel Download Payload (PART E.4)
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `public reel download payload passes bridge validation end-to-end without 400`() {
+        val reelUrl = "https://www.instagram.com/reel/DO5tIDME6t-/"
+        val parsed = InstagramUrlParser.parse(reelUrl)
+        assertEquals(InstagramUrlType.REEL, parsed.type)
+        assertEquals("DO5tIDME6t-", parsed.shortcode)
+
+        // 1. Build strict job name
+        val jobName = DownloadEngine.buildJobName("reel", parsed.shortcode)
+        assertEquals("reel:DO5tIDME6t-", jobName)
+        assertTrue("Job name length must be between 1 and 200 chars", jobName.length in 1..200)
+
+        // 2. Build yt-dlp argv
+        val argv = DownloadEngine.buildYtdlpArgv(
+            url = parsed.canonicalUrl,
+            mode = MediaMode.VIDEO,
+            videoQuality = VideoQuality.ORIGINAL,
+            audioQuality = AudioQuality.KBPS320,
+            saveCover = true,
+            option = DownloadOption.MEDIA
+        )
+
+        // 3. Verify bridge validation constraints
+        assertEquals("yt-dlp", argv[0])
+        assertTrue("Argv count within 1..256", argv.size in 1..256)
+        assertTrue("No single arg exceeds 8192 chars", argv.all { it.length <= 8192 })
+        assertTrue("Total argv length under 65536", argv.sumOf { it.length } <= 65536)
+
+        // 4. Verify client-side mirror of bridge validator
+        val errors = SubmitValidator.validate(
+            name = jobName,
+            argv = argv,
+            timeoutS = null,
+            cwd = DownloadEngine.DOWNLOAD_DIR
+        )
+        assertTrue("Expected 0 validation errors for reel download, got: $errors", errors.isEmpty())
     }
 }

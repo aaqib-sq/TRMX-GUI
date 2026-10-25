@@ -9,7 +9,6 @@ package dev.trmx.gui.download
  */
 
 import dev.trmx.gui.model.SubmitRequest
-import dev.trmx.gui.model.ToolSubmitRequest
 import dev.trmx.gui.net.BridgeClient
 import dev.trmx.gui.net.BridgeResult
 import kotlinx.coroutines.CancellationException
@@ -23,7 +22,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 
 /**
@@ -39,13 +37,27 @@ class DownloadEngine(
 
     companion object {
         const val DOWNLOAD_DIR = "~/downloads"
+        const val MAX_JOB_NAME_CHARS = 200
+
+        /**
+         * Builds a bridge-compliant job name strictly in the format "<type>:<shortcode>".
+         * HARD-CAPPED at 200 characters. NEVER built from captions or titles.
+         * The bridge rejects names outside 1..200 characters.
+         */
+        fun buildJobName(type: String, shortcode: String?): String {
+            val cleanType = type.trim().lowercase().ifBlank { "media" }
+            val cleanCode = shortcode?.trim()?.ifBlank { "item" } ?: "item"
+            val raw = "$cleanType:$cleanCode"
+            return if (raw.length > MAX_JOB_NAME_CHARS) raw.take(MAX_JOB_NAME_CHARS) else raw
+        }
 
         fun buildYtdlpArgv(
             url: String,
             mode: MediaMode,
             videoQuality: VideoQuality,
             audioQuality: AudioQuality,
-            option: DownloadOption
+            saveCover: Boolean = false,
+            option: DownloadOption = DownloadOption.MEDIA
         ): List<String> = when (option) {
             DownloadOption.COVER_IMAGE -> listOf(
                 "yt-dlp",
@@ -60,7 +72,7 @@ class DownloadEngine(
                 "yt-dlp",
                 "--newline",
                 "--yes-playlist",
-                "-f", "bestvideo+bestaudio/best",
+                "-f", videoQuality.ytdlpFormat,
                 "--merge-output-format", "mp4",
                 "-P", DOWNLOAD_DIR,
                 url
@@ -84,14 +96,23 @@ class DownloadEngine(
                     "-P", DOWNLOAD_DIR,
                     url
                 )
-                MediaMode.VIDEO -> listOf(
-                    "yt-dlp",
-                    "--newline",
-                    "-f", videoQuality.ytdlpFormat,
-                    "--merge-output-format", "mp4",
-                    "-P", DOWNLOAD_DIR,
-                    url
-                )
+                MediaMode.VIDEO -> {
+                    val argv = mutableListOf(
+                        "yt-dlp",
+                        "--newline",
+                        "-f", videoQuality.ytdlpFormat,
+                        "--merge-output-format", "mp4"
+                    )
+                    if (saveCover) {
+                        argv.add("--write-thumbnail")
+                        argv.add("--convert-thumbnails")
+                        argv.add("jpg")
+                    }
+                    argv.add("-P")
+                    argv.add(DOWNLOAD_DIR)
+                    argv.add(url)
+                    argv
+                }
             }
         }
     }
@@ -104,12 +125,13 @@ class DownloadEngine(
         mode: MediaMode,
         videoQuality: VideoQuality,
         audioQuality: AudioQuality,
+        saveCover: Boolean = false,
         option: DownloadOption = DownloadOption.MEDIA
     ): DownloadRecord = withContext(Dispatchers.IO) {
         val recordId = UUID.randomUUID().toString()
         val qualityLabel = when {
             option == DownloadOption.COVER_IMAGE -> "Cover Image"
-            option == DownloadOption.CAROUSEL_ALL -> "All Full HD"
+            option == DownloadOption.CAROUSEL_ALL -> "All Slides (${videoQuality.label})"
             mode == MediaMode.MP3 || option == DownloadOption.AUDIO_ONLY -> audioQuality.label
             else -> videoQuality.label
         }
@@ -135,7 +157,7 @@ class DownloadEngine(
         _activeDownloads.update { it + (recordId to record) }
 
         scope.launch {
-            executeDownload(record, item, mode, videoQuality, audioQuality, option)
+            executeDownload(record, item, mode, videoQuality, audioQuality, saveCover, option)
         }
 
         record
@@ -166,7 +188,7 @@ class DownloadEngine(
 
         _activeDownloads.update { it + (recordId to retried) }
         scope.launch {
-            executeDownload(retried, syntheticItem, mode, vQuality, aQuality, option)
+            executeDownload(retried, syntheticItem, mode, vQuality, aQuality, saveCover = true, option = option)
         }
     }
 
@@ -176,41 +198,32 @@ class DownloadEngine(
         mode: MediaMode,
         videoQuality: VideoQuality,
         audioQuality: AudioQuality,
+        saveCover: Boolean,
         option: DownloadOption
     ) = withContext(Dispatchers.IO) {
         val client = clientProvider()
-        val jobName = "Instagram: ${item.title} (${initialRecord.quality})"
 
-        // Determine whether to use standard ToolSubmitRequest or custom argv SubmitRequest
-        val submitResult = if (option == DownloadOption.MEDIA && videoQuality == VideoQuality.ORIGINAL && mode == MediaMode.VIDEO) {
-            // Standard yt-dlp tool schema path
-            val toolArgs = mapOf(
-                "url" to JsonPrimitive(item.url),
-                "format" to JsonPrimitive("mp4"),
-                "audio" to JsonPrimitive(false),
-                "outdir" to JsonPrimitive(DOWNLOAD_DIR)
-            )
-            client.submitToolJob(
-                ToolSubmitRequest(
-                    name = jobName,
-                    tool = "yt-dlp",
-                    args = toolArgs,
-                    cwd = DOWNLOAD_DIR
-                )
-            )
-        } else {
-            // Enhanced custom options (1080p, 720p, MP3 bitrates, cover images, carousel playlists)
-            val argv = buildYtdlpArgv(item.url, mode, videoQuality, audioQuality, option)
-            client.submitJob(
-                SubmitRequest(
-                    name = jobName,
-                    type = "argv",
-                    argv = argv,
-                    cwd = DOWNLOAD_DIR,
-                    confirm = true
-                )
-            )
+        // Strict bridge job name "<type>:<shortcode>", hard-capped at 200 chars.
+        // NEVER uses item.title or item.caption.
+        val typeName = when (option) {
+            DownloadOption.COVER_IMAGE -> "cover"
+            DownloadOption.CAROUSEL_ALL -> "carousel"
+            DownloadOption.AUDIO_ONLY -> "audio"
+            else -> item.type.name.lowercase()
         }
+        val shortcode = item.shortcode ?: item.id
+        val jobName = buildJobName(typeName, shortcode)
+
+        val argv = buildYtdlpArgv(item.url, mode, videoQuality, audioQuality, saveCover, option)
+        val submitResult = client.submitJob(
+            SubmitRequest(
+                name = jobName,
+                type = "argv",
+                argv = argv,
+                cwd = DOWNLOAD_DIR,
+                confirm = true
+            )
+        )
 
         when (submitResult) {
             is BridgeResult.Success -> {
@@ -249,68 +262,61 @@ class DownloadEngine(
 
     private suspend fun monitorJob(recordId: String, jobId: String) {
         val client = clientProvider()
-        try {
-            while (scope.isActive) {
-                delay(1000)
-                when (val r = client.getJob(jobId)) {
-                    is BridgeResult.Success -> {
-                        val job = r.data
-                        val pct = (job.progress_pct ?: 0.0).toFloat()
-                        val detail = job.progress_detail ?: ""
+        var completed = false
+        var consecutiveErrors = 0
 
-                        when (job.status) {
-                            "COMPLETED" -> {
-                                val completed = (historyStore.byId(recordId) ?: return).copy(
-                                    status = "COMPLETED",
-                                    progressPct = 100f,
-                                    progressDetail = detail.ifBlank { "Completed" },
-                                    endedAt = System.currentTimeMillis()
-                                )
-                                historyStore.update(completed)
-                                _activeDownloads.update { it - recordId }
-                                return
-                            }
-                            "FAILED", "CANCELLED" -> {
-                                val failed = (historyStore.byId(recordId) ?: return).copy(
-                                    status = "FAILED",
-                                    error = job.error?.message?.takeIf { it.isNotBlank() } ?: "Download terminated (${job.status})",
-                                    endedAt = System.currentTimeMillis()
-                                )
-                                historyStore.update(failed)
-                                _activeDownloads.update { it - recordId }
-                                return
-                            }
-                            else -> {
-                                val inProgress = (historyStore.byId(recordId) ?: return).copy(
-                                    status = "DOWNLOADING",
-                                    progressPct = pct,
-                                    progressDetail = detail
-                                )
-                                historyStore.update(inProgress)
-                                _activeDownloads.update { it + (recordId to inProgress) }
-                            }
-                        }
+        while (scope.isActive && !completed) {
+            delay(1000)
+            when (val res = client.getJob(jobId)) {
+                is BridgeResult.Success -> {
+                    consecutiveErrors = 0
+                    val job = res.data.job
+                    val isDone = job.status in listOf("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT")
+
+                    val progressPct = when (job.status) {
+                        "COMPLETED" -> 100f
+                        "STARTING", "QUEUED" -> 5f
+                        "RUNNING" -> 50f
+                        else -> 0f
                     }
-                    is BridgeResult.HttpError -> {
-                        if (r.status == 404) {
-                            // Job pruned or missing
-                            val failed = (historyStore.byId(recordId) ?: return).copy(
-                                status = "FAILED",
-                                error = "Job $jobId no longer exists",
-                                endedAt = System.currentTimeMillis()
-                            )
+
+                    val updated = _activeDownloads.value[recordId]?.copy(
+                        status = if (isDone) job.status else "DOWNLOADING",
+                        progressPct = progressPct,
+                        progressDetail = "Status: ${job.status}",
+                        error = if (job.status == "FAILED") (job.error?.message ?: "yt-dlp exited with non-zero status") else null,
+                        endedAt = if (isDone) System.currentTimeMillis() else null
+                    )
+
+                    if (updated != null) {
+                        historyStore.update(updated)
+                        if (isDone) {
+                            _activeDownloads.update { it - recordId }
+                            completed = true
+                        } else {
+                            _activeDownloads.update { it + (recordId to updated) }
+                        }
+                    } else {
+                        completed = true
+                    }
+                }
+                is BridgeResult.HttpError, is BridgeResult.NetworkError -> {
+                    consecutiveErrors++
+                    if (consecutiveErrors >= 10) {
+                        // Bridge lost or job disappeared
+                        val failed = _activeDownloads.value[recordId]?.copy(
+                            status = "FAILED",
+                            error = "Lost connection to bridge monitoring job $jobId",
+                            endedAt = System.currentTimeMillis()
+                        )
+                        if (failed != null) {
                             historyStore.update(failed)
                             _activeDownloads.update { it - recordId }
-                            return
                         }
-                    }
-                    is BridgeResult.NetworkError -> {
-                        // Bridge network hiccup, retry next loop
+                        completed = true
                     }
                 }
             }
-        } catch (e: CancellationException) {
-            // Coroutine cancelled
         }
     }
 }

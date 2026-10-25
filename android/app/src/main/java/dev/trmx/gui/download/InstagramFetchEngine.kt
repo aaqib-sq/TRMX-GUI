@@ -11,8 +11,6 @@ package dev.trmx.gui.download
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonArray
@@ -22,6 +20,9 @@ import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.regex.Pattern
 
 data class ProfileFetchResult(
@@ -35,8 +36,8 @@ data class ProfileFetchResult(
  * Queries public endpoints with standard browser headers to retrieve profile metadata,
  * posts, reels, and stories without requiring any login or user account.
  *
- * Degrades gracefully when Instagram rate-limits or blocks unauthenticated requests,
- * always preserving the ability to download directly through the bridge / yt-dlp.
+ * All HTML entities (such as &#x909;) are decoded strictly at the parse layer
+ * so titles and captions never display raw encoded escape sequences.
  */
 class InstagramFetchEngine(private val http: OkHttpClient) {
 
@@ -96,7 +97,7 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
                 id = shortcode,
                 shortcode = link.shortcode,
                 type = itemType,
-                title = "Instagram ${itemType.name.lowercase().replaceFirstChar { it.uppercase() }}: $shortcode",
+                title = HtmlDecoder.decode("Instagram ${itemType.name.lowercase().replaceFirstChar { it.uppercase() }}: $shortcode"),
                 url = canonical,
                 isVideo = (link.type == InstagramUrlType.REEL),
                 isAvailable = true,
@@ -122,8 +123,8 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         val data = root["data"]?.jsonObject ?: throw IOException("No data object")
         val user = data["user"]?.jsonObject ?: throw IOException("User not found")
 
-        val fullName = user["full_name"]?.jsonPrimitive?.content ?: username
-        val bio = user["biography"]?.jsonPrimitive?.content ?: ""
+        val rawFullName = user["full_name"]?.jsonPrimitive?.content ?: username
+        val rawBio = user["biography"]?.jsonPrimitive?.content ?: ""
         val avatarUrl = user["profile_pic_url_hd"]?.jsonPrimitive?.content
             ?: user["profile_pic_url"]?.jsonPrimitive?.content
         val isPrivate = user["is_private"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -136,10 +137,11 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         val followingCount = user["edge_follow"]?.jsonObject?.get("count")
             ?.jsonPrimitive?.longOrNull ?: 0L
 
+        // Decode HTML entities at parse layer
         val profile = InstagramProfile(
             username = username,
-            fullName = fullName.ifBlank { username },
-            biography = bio,
+            fullName = HtmlDecoder.decode(rawFullName).ifBlank { username },
+            biography = HtmlDecoder.decode(rawBio),
             avatarUrl = avatarUrl,
             postsCount = postsCount,
             followersCount = followersCount,
@@ -195,13 +197,18 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         val isVideo = node["is_video"]?.jsonPrimitive?.booleanOrNull ?: false
         val displayUrl = node["display_url"]?.jsonPrimitive?.content
         val videoUrl = node["video_url"]?.jsonPrimitive?.content
-        val caption = node["edge_media_to_caption"]?.jsonObject?.get("edges")?.jsonArray
+        val rawCaption = node["edge_media_to_caption"]?.jsonObject?.get("edges")?.jsonArray
             ?.firstOrNull()?.jsonObject?.get("node")?.jsonObject?.get("text")
             ?.jsonPrimitive?.content ?: ""
+        val caption = HtmlDecoder.decode(rawCaption)
         val timestamp = node["taken_at_timestamp"]?.jsonPrimitive?.longOrNull
         val dim = node["dimensions"]?.jsonObject
         val width = dim?.get("width")?.jsonPrimitive?.content?.toIntOrNull()
         val height = dim?.get("height")?.jsonPrimitive?.content?.toIntOrNull()
+
+        val likes = node["edge_liked_by"]?.jsonObject?.get("count")?.jsonPrimitive?.longOrNull
+            ?: node["edge_media_preview_like"]?.jsonObject?.get("count")?.jsonPrimitive?.longOrNull
+        val comments = node["edge_media_to_comment"]?.jsonObject?.get("count")?.jsonPrimitive?.longOrNull
 
         // Carousel items (GraphSidecar)
         val sidecarEdges = node["edge_sidecar_to_children"]?.jsonObject?.get("edges")?.jsonArray
@@ -218,13 +225,14 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
                         id = cId,
                         shortcode = shortcode,
                         type = if (cIsVideo) InstagramItemType.VIDEO else InstagramItemType.PHOTO,
-                        title = "Slide #${index + 1}",
+                        title = HtmlDecoder.decode("Slide #${index + 1}"),
                         caption = caption,
                         url = "https://www.instagram.com/p/$shortcode/",
                         previewUrl = cDisplay,
                         directMediaUrl = cVideo ?: cDisplay,
                         isVideo = cIsVideo,
-                        isAvailable = true
+                        isAvailable = true,
+                        formattedDate = timestamp?.let { formatTimestamp(it) }
                     )
                 )
             }
@@ -237,17 +245,19 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
             else -> InstagramItemType.PHOTO
         }
 
+        val title = when (itemType) {
+            InstagramItemType.REEL -> "Reel: $shortcode"
+            InstagramItemType.CAROUSEL -> "Carousel (${carouselChildren.size} items)"
+            InstagramItemType.VIDEO -> "Video: $shortcode"
+            InstagramItemType.PHOTO -> "Photo: $shortcode"
+            else -> "Post: $shortcode"
+        }
+
         return InstagramItem(
             id = id,
             shortcode = shortcode,
             type = itemType,
-            title = when (itemType) {
-                InstagramItemType.REEL -> "Reel: $shortcode"
-                InstagramItemType.CAROUSEL -> "Carousel (${carouselChildren.size} items)"
-                InstagramItemType.VIDEO -> "Video: $shortcode"
-                InstagramItemType.PHOTO -> "Photo: $shortcode"
-                else -> "Post: $shortcode"
-            },
+            title = HtmlDecoder.decode(title),
             caption = caption,
             url = "https://www.instagram.com/p/$shortcode/",
             previewUrl = displayUrl,
@@ -256,6 +266,9 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
             height = height,
             isVideo = isVideo,
             timestamp = timestamp,
+            formattedDate = timestamp?.let { formatTimestamp(it) },
+            likesCount = likes,
+            commentsCount = comments,
             carouselItems = carouselChildren,
             isAvailable = true
         )
@@ -294,10 +307,14 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
 
         val isPrivate = html.contains("This Account is Private") || html.contains("\"is_private\":true")
 
+        // Decode HTML entities at parse layer
+        val decodedFullName = HtmlDecoder.decode(rawTitle.substringBefore("(@").trim().ifBlank { username })
+        val decodedBio = HtmlDecoder.decode(rawDesc)
+
         val profile = InstagramProfile(
             username = username,
-            fullName = rawTitle.substringBefore("(@").trim().ifBlank { username },
-            biography = rawDesc,
+            fullName = decodedFullName,
+            biography = decodedBio,
             avatarUrl = avatarUrl,
             postsCount = posts,
             followersCount = followers,
@@ -337,13 +354,30 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         val html = response.body?.string() ?: throw IOException("Empty HTML response")
 
         val titleMatch = Pattern.compile("""<meta\s+property="og:title"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
-        val title = if (titleMatch.find()) titleMatch.group(1) else "Instagram Media"
+        val rawTitle = if (titleMatch.find()) titleMatch.group(1) else "Instagram Media"
+        val decodedTitle = HtmlDecoder.decode(rawTitle)
+
+        val descMatch = Pattern.compile("""<meta\s+property="og:description"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
+        val rawDesc = if (descMatch.find()) descMatch.group(1) else ""
+        val decodedDesc = HtmlDecoder.decode(rawDesc)
 
         val imageMatch = Pattern.compile("""<meta\s+property="og:image"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
         val previewUrl = if (imageMatch.find()) imageMatch.group(1) else null
 
         val videoMatch = Pattern.compile("""<meta\s+property="og:video"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
         val videoUrl = if (videoMatch.find()) videoMatch.group(1) else null
+
+        // Try extracting likes and comments from description
+        var likes: Long? = null
+        var comments: Long? = null
+        val likesMatcher = Pattern.compile("""([\d,.]+[KMkm]?)\s+likes?""", Pattern.CASE_INSENSITIVE).matcher(rawDesc)
+        if (likesMatcher.find()) {
+            likes = parseCount(likesMatcher.group(1))
+        }
+        val commentsMatcher = Pattern.compile("""([\d,.]+[KMkm]?)\s+comments?""", Pattern.CASE_INSENSITIVE).matcher(rawDesc)
+        if (commentsMatcher.find()) {
+            comments = parseCount(commentsMatcher.group(1))
+        }
 
         val isVideo = (videoUrl != null) || (link.type == InstagramUrlType.REEL)
         val itemType = when {
@@ -360,13 +394,16 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
             id = shortcode,
             shortcode = link.shortcode,
             type = itemType,
-            title = "$title ($shortcode)",
-            caption = title,
+            title = decodedTitle,
+            caption = if (decodedDesc.isNotBlank()) decodedDesc else decodedTitle,
             url = url,
             previewUrl = previewUrl,
             directMediaUrl = videoUrl ?: previewUrl,
             isVideo = isVideo,
-            isAvailable = true
+            isAvailable = true,
+            likesCount = likes,
+            commentsCount = comments,
+            formattedDate = SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date())
         )
     }
 
@@ -401,6 +438,13 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
             items = listOf(directItem),
             blockedNotice = reason
         )
+    }
+
+    private fun formatTimestamp(epochSec: Long): String {
+        return runCatching {
+            val date = Date(epochSec * 1000L)
+            SimpleDateFormat("MMM d, yyyy", Locale.US).format(date)
+        }.getOrDefault("")
     }
 
     private fun parseCount(raw: String): Long {
