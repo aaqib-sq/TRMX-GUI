@@ -10,7 +10,7 @@ package dev.trmx.gui.ui
  * - Mode: Video mode / Audio (MP3) mode toggle
  * - Quality: video Original / 1080p / 720p / 480p; MP3 320 / 192 / 128 kbps
  * - Reel cover image saved alongside video downloads toggle
- * - Download folder display (~/downloads)
+ * - Download folder display (~/storage/downloads)
  * - Progress display for active jobs
  * - Download history with retry and clear
  */
@@ -428,7 +428,7 @@ fun DownloaderScreen(
                                 color = P.TextPrimary
                             )
                             Text(
-                                text = "Save reel cover thumbnail in ~/downloads beside video",
+                                text = "Save reel cover thumbnail in ~/storage/downloads beside video",
                                 fontSize = 11.sp,
                                 color = P.TextMuted
                             )
@@ -447,7 +447,7 @@ fun DownloaderScreen(
                     }
                 }
 
-                // 4. Download Folder Location (~/downloads)
+                // 4. Download Folder Location (~/storage/downloads)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -459,14 +459,14 @@ fun DownloaderScreen(
                     Spacer(Modifier.width(Sp.s))
                     Column {
                         Text(
-                            text = "Download Folder: ~/downloads",
+                            text = "Download Folder: ${DownloadEngine.DOWNLOAD_DIR}",
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             color = P.TextPrimary
                         )
                         Text(
-                            text = "Saved to Termux on-device storage",
+                            text = "Saved to shared Downloads (/sdcard/Download)",
                             fontSize = 11.sp,
                             color = P.TextMuted
                         )

@@ -1,0 +1,6 @@
+<!DOCTYPE html><html><head>
+<meta property="og:title" content="Reel by testuser">
+<meta property="og:description" content="Watch this reel">
+<meta property="og:image" content="https://cdn.example.com/thumbnail.jpg">
+</head><body>
+</body></html>

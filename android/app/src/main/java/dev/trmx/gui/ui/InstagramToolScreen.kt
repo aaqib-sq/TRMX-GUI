@@ -102,6 +102,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.trmx.gui.download.DownloadViewModel
 import dev.trmx.gui.download.InstagramItem
 import dev.trmx.gui.download.InstagramItemType
+import dev.trmx.gui.download.InstagramPreviewGate
 import dev.trmx.gui.download.InstagramProfile
 import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -337,7 +338,8 @@ fun InstagramToolScreen(
 
         // ---- MANDATORY PLAYABLE PREVIEW OVERLAY ----------------------------
         activePreviewItem?.let { previewItem ->
-            if (previewItem.isVideo || previewItem.directMediaUrl?.contains(".mp4") == true || previewItem.type == InstagramItemType.REEL || previewItem.type == InstagramItemType.VIDEO) {
+            val decision = InstagramPreviewGate.evaluate(previewItem)
+            if (decision.canOpen && decision.isVideoOverlay) {
                 PlayableVideoPreviewOverlay(
                     item = previewItem,
                     onClose = viewModel::closePreview,
@@ -346,7 +348,7 @@ fun InstagramToolScreen(
                         onOpenDownloader(previewItem)
                     }
                 )
-            } else {
+            } else if (decision.canOpen && !decision.isVideoOverlay) {
                 FullPhotoPreviewOverlay(
                     item = previewItem,
                     onClose = viewModel::closePreview,
@@ -678,7 +680,7 @@ fun PlayableVideoPreviewOverlay(
     var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
     var mediaPlayerRef by remember { mutableStateOf<MediaPlayer?>(null) }
 
-    val mediaUri = item.directMediaUrl ?: item.previewUrl ?: item.url
+    val mediaUri = item.directMediaUrl ?: ""
 
     // Position poller while video plays
     LaunchedEffect(isPlaying) {

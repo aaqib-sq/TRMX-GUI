@@ -141,8 +141,13 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openPreview(item: InstagramItem) {
-        if (!item.hasResolvedMedia) return
-        _activePreviewItem.value = item
+        val decision = InstagramPreviewGate.evaluate(item)
+        if (decision.notice != null) {
+            _notice.value = decision.notice
+        }
+        if (decision.canOpen) {
+            _activePreviewItem.value = item
+        }
     }
 
     fun closePreview() {
@@ -372,7 +377,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                         caption = HtmlDecoder.decode(title),
                         url = url,
                         previewUrl = thumbnail,
-                        directMediaUrl = thumbnail,
+                        directMediaUrl = if (isVideo) null else thumbnail,
                         durationSeconds = duration,
                         isVideo = isVideo,
                         isAvailable = true

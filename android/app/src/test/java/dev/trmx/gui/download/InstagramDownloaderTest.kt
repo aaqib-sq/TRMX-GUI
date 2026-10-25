@@ -284,7 +284,8 @@ class InstagramDownloaderTest {
         assertTrue(argv.contains("-f"))
         assertTrue(argv.contains(VideoQuality.P1080.ytdlpFormat))
         assertTrue(argv.contains("-P"))
-        assertTrue(argv.contains("~/downloads"))
+        assertTrue(argv.contains(DownloadEngine.DOWNLOAD_DIR))
+        assertEquals("~/storage/downloads", DownloadEngine.DOWNLOAD_DIR)
         assertEquals("https://www.instagram.com/reel/C8XYZ123/", argv.last())
     }
 
@@ -369,7 +370,7 @@ class InstagramDownloaderTest {
             itemType = "POST",
             mediaMode = "VIDEO",
             quality = "1080p",
-            targetPath = "~/downloads/DF123",
+            targetPath = "${DownloadEngine.DOWNLOAD_DIR}/DF123",
             status = "COMPLETED",
             progressPct = 100f,
             createdAt = 1000L
@@ -390,9 +391,9 @@ class InstagramDownloaderTest {
         val storeDir = tempFolder.newFolder("history_order")
         val store = DownloadHistoryStore(storeDir)
 
-        val r1 = DownloadRecord("id-1", "https://x.com/1", "Old", "POST", "VIDEO", "1080p", "~/downloads", "COMPLETED", createdAt = 1000L)
-        val r2 = DownloadRecord("id-2", "https://x.com/2", "New", "REEL", "VIDEO", "1080p", "~/downloads", "COMPLETED", createdAt = 2000L)
-        val r3 = DownloadRecord("id-3", "https://x.com/3", "Newest", "STORY", "MP3", "320 kbps", "~/downloads", "COMPLETED", createdAt = 3000L)
+        val r1 = DownloadRecord("id-1", "https://x.com/1", "Old", "POST", "VIDEO", "1080p", DownloadEngine.DOWNLOAD_DIR, "COMPLETED", createdAt = 1000L)
+        val r2 = DownloadRecord("id-2", "https://x.com/2", "New", "REEL", "VIDEO", "1080p", DownloadEngine.DOWNLOAD_DIR, "COMPLETED", createdAt = 2000L)
+        val r3 = DownloadRecord("id-3", "https://x.com/3", "Newest", "STORY", "MP3", "320 kbps", DownloadEngine.DOWNLOAD_DIR, "COMPLETED", createdAt = 3000L)
 
         store.add(r1)
         store.add(r2)
@@ -407,7 +408,7 @@ class InstagramDownloaderTest {
         val storeDir = tempFolder.newFolder("history_update")
         val store = DownloadHistoryStore(storeDir)
 
-        val r = DownloadRecord("id-1", "https://x.com/1", "Title", "POST", "VIDEO", "1080p", "~/downloads", "DOWNLOADING", progressPct = 20f)
+        val r = DownloadRecord("id-1", "https://x.com/1", "Title", "POST", "VIDEO", "1080p", DownloadEngine.DOWNLOAD_DIR, "DOWNLOADING", progressPct = 20f)
         store.add(r)
 
         val updated = r.copy(status = "COMPLETED", progressPct = 100f, progressDetail = "Done")
@@ -429,7 +430,7 @@ class InstagramDownloaderTest {
             itemType = "POST",
             mediaMode = "VIDEO",
             quality = "1080p",
-            targetPath = "~/downloads/DF123",
+            targetPath = "${DownloadEngine.DOWNLOAD_DIR}/DF123",
             status = "FAILED",
             error = "Bridge unreachable",
             endedAt = 5000L
@@ -455,8 +456,8 @@ class InstagramDownloaderTest {
         val storeDir = tempFolder.newFolder("history_clear")
         val store = DownloadHistoryStore(storeDir)
 
-        store.add(DownloadRecord("1", "url", "t1", "POST", "VIDEO", "1080p", "~/downloads", "COMPLETED"))
-        store.add(DownloadRecord("2", "url", "t2", "POST", "VIDEO", "1080p", "~/downloads", "COMPLETED"))
+        store.add(DownloadRecord("1", "url", "t1", "POST", "VIDEO", "1080p", DownloadEngine.DOWNLOAD_DIR, "COMPLETED"))
+        store.add(DownloadRecord("2", "url", "t2", "POST", "VIDEO", "1080p", DownloadEngine.DOWNLOAD_DIR, "COMPLETED"))
         assertEquals(2, store.list().size)
 
         store.clear()
@@ -1011,5 +1012,150 @@ class InstagramDownloaderTest {
         assertEquals("https://scontent.cdninstagram.com/avatar_hd.jpg", profilePicItem.directMediaUrl)
         assertTrue(profilePicItem.isDownloadable)
         assertFalse(profilePicItem.isMediaItem)
+    }
+
+    // ------------------------------------------------------------------------
+    // 10. Fix Round v6 Tests: Shared Downloads Folder & Preview Gate
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `output dir is the shared dir and never private downloads`() {
+        assertEquals("~/storage/downloads", DownloadEngine.DOWNLOAD_DIR)
+        assertFalse(DownloadEngine.DOWNLOAD_DIR == "~/downloads")
+        val argv = DownloadEngine.buildYtdlpArgv(
+            url = "https://www.instagram.com/reel/De4SK5FT0Ps/",
+            mode = MediaMode.VIDEO,
+            videoQuality = VideoQuality.ORIGINAL,
+            audioQuality = AudioQuality.KBPS320
+        )
+        assertTrue(argv.contains("-P"))
+        val pIndex = argv.indexOf("-P")
+        assertTrue(pIndex >= 0 && pIndex < argv.size - 1)
+        assertEquals("~/storage/downloads", argv[pIndex + 1])
+        assertFalse(argv.contains("~/downloads"))
+    }
+
+    @Test
+    fun `missing shared storage stops download with setup instruction and does not fall back`() = runBlocking {
+        val item = InstagramItem(
+            id = "test1",
+            type = InstagramItemType.REEL,
+            title = "Test Reel",
+            url = "https://www.instagram.com/reel/De4SK5FT0Ps/",
+            directMediaUrl = "https://cdn.example.com/video.mp4",
+            isVideo = true
+        )
+        val engine = DownloadEngine(
+            clientProvider = { throw AssertionError("Should not be called") },
+            historyStore = DownloadHistoryStore(tempFolder.newFolder()),
+            scope = this,
+            storageChecker = { false }
+        )
+
+        var caught = false
+        try {
+            engine.startDownload(
+                item = item,
+                mode = MediaMode.VIDEO,
+                videoQuality = VideoQuality.ORIGINAL,
+                audioQuality = AudioQuality.KBPS320
+            )
+        } catch (e: IllegalStateException) {
+            caught = true
+            assertTrue(e.message!!.contains("termux-setup-storage"))
+            assertTrue(e.message!!.contains("~/storage/downloads"))
+        }
+        assertTrue("Must fail when shared storage is not set up", caught)
+    }
+
+    @Test
+    fun `no og video in html ensures directMediaUrl is null and never thumbnail`() = runBlocking {
+        val htmlWithoutOgVideo = """<!DOCTYPE html><html><head>
+<meta property="og:title" content="Reel by testuser">
+<meta property="og:description" content="Watch this reel">
+<meta property="og:image" content="https://cdn.example.com/thumbnail.jpg">
+</head><body>
+</body></html>"""
+
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(htmlWithoutOgVideo.toResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val engine = InstagramFetchEngine(http = client)
+        val parsed = InstagramUrlParser.parse("https://www.instagram.com/reel/De4SK5FT0Ps/")
+        val item = engine.fetchSingleItem(parsed)
+
+        assertEquals(InstagramItemType.REEL, item.type)
+        assertEquals("https://cdn.example.com/thumbnail.jpg", item.previewUrl)
+        assertNull("directMediaUrl must be null when og:video is absent (never thumbnail)", item.directMediaUrl)
+        assertTrue(item.isVideo)
+    }
+
+    @Test
+    fun `video or reel item without direct video URL does not open preview and sets notice`() {
+        val reelWithoutDirectVideo = InstagramItem(
+            id = "reel_123",
+            shortcode = "De4SK5FT0Ps",
+            type = InstagramItemType.REEL,
+            title = "Reel without direct video",
+            url = "https://www.instagram.com/reel/De4SK5FT0Ps/",
+            previewUrl = "https://cdn.example.com/thumbnail.jpg",
+            directMediaUrl = null,
+            isVideo = true
+        )
+
+        val decision = InstagramPreviewGate.evaluate(reelWithoutDirectVideo)
+        assertFalse("Preview must NOT open without direct video URL", decision.canOpen)
+        assertFalse("Video overlay must NOT be selected", decision.isVideoOverlay)
+        assertEquals(
+            "Video preview needs a direct video link — download the video to watch it.",
+            decision.notice
+        )
+    }
+
+    @Test
+    fun `photo item preview still works via previewUrl`() {
+        val photoItem = InstagramItem(
+            id = "photo_123",
+            shortcode = "DF123",
+            type = InstagramItemType.PHOTO,
+            title = "Photo Post",
+            url = "https://www.instagram.com/p/DF123/",
+            previewUrl = "https://cdn.example.com/photo.jpg",
+            directMediaUrl = null,
+            isVideo = false
+        )
+
+        val decision = InstagramPreviewGate.evaluate(photoItem)
+        assertTrue("Photo preview must open with previewUrl", decision.canOpen)
+        assertFalse("Photo preview must NOT use video overlay", decision.isVideoOverlay)
+        assertNull("Photo preview must not set an error notice", decision.notice)
+    }
+
+    @Test
+    fun `video item with direct video URL opens video preview overlay without notice`() {
+        val videoItem = InstagramItem(
+            id = "video_123",
+            shortcode = "De4SK5FT0Ps",
+            type = InstagramItemType.REEL,
+            title = "Reel with direct video",
+            url = "https://www.instagram.com/reel/De4SK5FT0Ps/",
+            previewUrl = "https://cdn.example.com/thumbnail.jpg",
+            directMediaUrl = "https://cdn.example.com/video.mp4",
+            isVideo = true
+        )
+
+        val decision = InstagramPreviewGate.evaluate(videoItem)
+        assertTrue("Video preview must open with direct video URL", decision.canOpen)
+        assertTrue("Must use video overlay", decision.isVideoOverlay)
+        assertNull("Must not set an error notice", decision.notice)
     }
 }

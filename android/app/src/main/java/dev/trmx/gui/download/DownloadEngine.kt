@@ -26,17 +26,26 @@ import java.util.UUID
 
 /**
  * Downloads Instagram media by coordinating with the Termux bridge and yt-dlp.
- * Employs the app's established download directory convention (`~/downloads`),
+ * Employs the app's established shared download directory convention (`~/storage/downloads`),
  * tracks download progress, and persists all history locally on-device.
  */
 class DownloadEngine(
     private val clientProvider: () -> BridgeClient,
     private val historyStore: DownloadHistoryStore,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val storageChecker: suspend (BridgeClient) -> Boolean = { client ->
+        when (client.statFile(DOWNLOAD_DIR)) {
+            is BridgeResult.Success -> true
+            is BridgeResult.HttpError -> false
+            is BridgeResult.NetworkError -> true
+        }
+    }
 ) {
 
     companion object {
-        const val DOWNLOAD_DIR = "~/downloads"
+        const val DOWNLOAD_DIR = "~/storage/downloads"
+        const val STORAGE_SETUP_ERROR_MESSAGE =
+            "Shared storage not set up (~/storage/downloads missing). Run termux-setup-storage in Termux and allow the storage permission, then retry."
         const val MAX_JOB_NAME_CHARS = 200
 
         /**
@@ -131,6 +140,10 @@ class DownloadEngine(
         if (item.type == InstagramItemType.HIGHLIGHT && item.directMediaUrl.isNullOrBlank()) {
             throw IllegalArgumentException("Cannot download highlight: direct media URL is not resolved. Instagram highlights require login.")
         }
+        val client = clientProvider()
+        if (!storageChecker(client)) {
+            throw IllegalStateException(STORAGE_SETUP_ERROR_MESSAGE)
+        }
         val recordId = UUID.randomUUID().toString()
         val qualityLabel = when {
             option == DownloadOption.COVER_IMAGE -> "Cover Image"
@@ -167,6 +180,18 @@ class DownloadEngine(
     }
 
     suspend fun retryDownload(recordId: String) = withContext(Dispatchers.IO) {
+        val client = clientProvider()
+        if (!storageChecker(client)) {
+            val failed = historyStore.byId(recordId)?.copy(
+                status = "FAILED",
+                error = STORAGE_SETUP_ERROR_MESSAGE,
+                endedAt = System.currentTimeMillis()
+            )
+            if (failed != null) {
+                historyStore.update(failed)
+            }
+            throw IllegalStateException(STORAGE_SETUP_ERROR_MESSAGE)
+        }
         val retried = historyStore.retry(recordId) ?: return@withContext
         val mode = if (retried.mediaMode == "MP3") MediaMode.MP3 else MediaMode.VIDEO
         val vQuality = VideoQuality.fromLabel(retried.quality)
@@ -205,6 +230,17 @@ class DownloadEngine(
         option: DownloadOption
     ) = withContext(Dispatchers.IO) {
         val client = clientProvider()
+
+        if (!storageChecker(client)) {
+            val failed = initialRecord.copy(
+                status = "FAILED",
+                error = STORAGE_SETUP_ERROR_MESSAGE,
+                endedAt = System.currentTimeMillis()
+            )
+            historyStore.update(failed)
+            _activeDownloads.update { it - initialRecord.id }
+            return@withContext
+        }
 
         // Strict bridge job name "<type>:<shortcode>", hard-capped at 200 chars.
         // NEVER uses item.title or item.caption.
