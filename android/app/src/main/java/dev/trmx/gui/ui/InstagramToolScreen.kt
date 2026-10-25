@@ -1,11 +1,12 @@
 package dev.trmx.gui.ui
 
 /*
- * Instagram Tool Screen — replicates verified fastdl.app site behavior:
- * 1. Dedicated tool page (Story Saver, Reels Downloader, Photo, Video, IGTV, Carousel, Stories Viewer)
+ * Instagram Tool Screen:
+ * 1. Dedicated tool page (Reels Downloader, Photo, Video, IGTV, Carousel)
  * 2. Link input + action button + "downloading… please wait" loading state
- * 3. Profile result: header (avatar, handle, name, bio, counts), tabs (POSTS, STORIES, HIGHLIGHTS, REELS)
- *    Vertical card grid: preview thumbnail with play indicator, truncated decoded caption, ONE Download button
+ * 3. Profile result: header (avatar, handle, name, bio, counts, private badge)
+ *    Notice line: "Posts, stories and highlights can't be shown without an account. Link downloads still work."
+ *    "Download profile photo" button
  * 4. Playable video preview overlay (MANDATORY): play/pause, time readout + scrubber, volume, fullscreen,
  *    more options, and download button in overlay. Photo preview overlay with download button.
  * 5. Specific-item result: still cover thumbnail with play control, date + likes + comments, ONE Download button.
@@ -60,13 +61,11 @@ import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.FullscreenExit
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -75,9 +74,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -103,13 +99,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.trmx.gui.download.DownloadOption
-import dev.trmx.gui.download.DownloadTab
 import dev.trmx.gui.download.DownloadViewModel
 import dev.trmx.gui.download.InstagramItem
 import dev.trmx.gui.download.InstagramItemType
 import dev.trmx.gui.download.InstagramProfile
-import dev.trmx.gui.download.InstagramTabHelper
 import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.ui.Tokens.Palette as P
 import dev.trmx.gui.ui.Tokens.Radius as R
@@ -130,11 +123,9 @@ fun InstagramToolScreen(
     val profile by viewModel.profile.collectAsStateWithLifecycle()
     val singleItem by viewModel.singleItem.collectAsStateWithLifecycle()
     val items by viewModel.items.collectAsStateWithLifecycle()
-    val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val activePreviewItem by viewModel.activePreviewItem.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
-    val postsLoadError by viewModel.postsLoadError.collectAsStateWithLifecycle()
 
     BackHandler {
         if (activePreviewItem != null) {
@@ -278,63 +269,39 @@ fun InstagramToolScreen(
             profile?.let { prof ->
                 ProfileHeaderCard(profile = prof)
 
-                ProfileTabs(selectedTab = selectedTab, onSelectTab = viewModel::setTab)
+                Text(
+                    text = "Posts, stories and highlights can't be shown without an account. Link downloads still work.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = P.TextMuted,
+                    modifier = Modifier.padding(horizontal = Sp.xs)
+                )
 
-                if (prof.isPrivate) {
-                    PrivateProfileNotice()
-                } else {
-                    when (selectedTab) {
-                        DownloadTab.POSTS -> {
-                            val postItems = items.filter { it.isMediaItem }
-                            if (postItems.isEmpty()) {
-                                EmptyTabNotice(InstagramTabHelper.getPostsEmptyMessage(prof.postsCount, postsLoadError))
-                            } else {
-                                VerticalCardsGrid(
-                                    items = postItems,
-                                    onPreview = viewModel::openPreview,
-                                    onDownload = onOpenDownloader
-                                )
-                            }
-                        }
-                        DownloadTab.STORIES -> {
-                            val storyItems = items.filter { it.type == InstagramItemType.STORY }
-                            AnonymousStoriesBanner()
-                            if (storyItems.isEmpty()) {
-                                EmptyTabNotice("Stories could not be loaded without login. Public stories may require an active session.")
-                            } else {
-                                VerticalCardsGrid(
-                                    items = storyItems,
-                                    onPreview = viewModel::openPreview,
-                                    onDownload = onOpenDownloader
-                                )
-                            }
-                        }
-                        DownloadTab.HIGHLIGHTS -> {
-                            val highlightItems = items.filter { it.type == InstagramItemType.HIGHLIGHT && it.hasResolvedMedia }
-                            if (highlightItems.isEmpty()) {
-                                EmptyTabNotice("Highlights could not be loaded without login. Public highlights may require an active session.")
-                            } else {
-                                VerticalCardsGrid(
-                                    items = highlightItems,
-                                    onPreview = viewModel::openPreview,
-                                    onDownload = onOpenDownloader
-                                )
-                            }
-                        }
-                        DownloadTab.REELS -> {
-                            val reelItems = items.filter { it.type == InstagramItemType.REEL }
-                            if (reelItems.isEmpty()) {
-                                val hasAnyMedia = items.any { it.isMediaItem }
-                                EmptyTabNotice(InstagramTabHelper.getReelsEmptyMessage(prof.postsCount, hasAnyMedia, postsLoadError))
-                            } else {
-                                VerticalCardsGrid(
-                                    items = reelItems,
-                                    onPreview = viewModel::openPreview,
-                                    onDownload = onOpenDownloader
-                                )
-                            }
-                        }
-                    }
+                val enginePic = items.firstOrNull { it.type == InstagramItemType.PROFILE_PIC }
+                val avatarDirect = prof.fullSizeAvatarUrl ?: prof.avatarUrl
+                val profilePicItem = enginePic?.let { pic ->
+                    if (pic.url.isNotBlank() && !pic.url.contains("instagram.com/")) pic
+                    else pic.copy(url = pic.directMediaUrl ?: avatarDirect ?: pic.url)
+                } ?: InstagramItem(
+                    id = "profile_pic_${prof.username}",
+                    type = InstagramItemType.PROFILE_PIC,
+                    title = "@${prof.username}",
+                    url = avatarDirect ?: "https://www.instagram.com/${prof.username}/",
+                    previewUrl = avatarDirect,
+                    directMediaUrl = avatarDirect,
+                    isVideo = false,
+                    isAvailable = true
+                )
+
+                // Hide when no avatar media resolved (e.g. private profile with no avatar
+                // URL): a button with nowhere to download from would only fail in Downloader.
+                if (profilePicItem.hasResolvedMedia) {
+                    TrmxButton(
+                        label = "Download profile photo",
+                        leading = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        onClick = { onOpenDownloader(profilePicItem) },
+                        kind = TrmxButtonKind.Primary,
+                        modifier = Modifier.fillMaxWidth().height(44.dp)
+                    )
                 }
             }
 
@@ -488,141 +455,6 @@ private fun formatCount(count: Long): String = when {
     count >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", count / 1_000_000.0)
     count >= 1_000 -> String.format(java.util.Locale.US, "%.1fK", count / 1_000.0)
     else -> count.toString()
-}
-
-@Composable
-private fun ProfileTabs(
-    selectedTab: DownloadTab,
-    onSelectTab: (DownloadTab) -> Unit
-) {
-    val tabs = DownloadTab.entries
-    TabRow(
-        selectedTabIndex = tabs.indexOf(selectedTab),
-        containerColor = Color.Transparent,
-        contentColor = P.Accent,
-        divider = { HorizontalDivider(color = P.Border) },
-        indicator = { tabPositions ->
-            val index = tabs.indexOf(selectedTab)
-            if (index in tabPositions.indices) {
-                Box(
-                    modifier = Modifier
-                        .tabIndicatorOffset(tabPositions[index])
-                        .height(2.dp)
-                        .background(P.Accent)
-                )
-            }
-        }
-    ) {
-        tabs.forEach { tab ->
-            Tab(
-                selected = selectedTab == tab,
-                onClick = { onSelectTab(tab) },
-                text = {
-                    Text(
-                        tab.name,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (selectedTab == tab) FontWeight.Bold else FontWeight.Normal,
-                        color = if (selectedTab == tab) P.TextPrimary else P.TextMuted
-                    )
-                }
-            )
-        }
-    }
-}
-
-// ============================================================================
-// GRID OF VERTICAL CARDS (VERIFIED PROFILE RESULT SPEC)
-// ============================================================================
-
-@Composable
-private fun VerticalCardsGrid(
-    items: List<InstagramItem>,
-    onPreview: (InstagramItem) -> Unit,
-    onDownload: (InstagramItem) -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-        val chunked = items.chunked(2)
-        for (pair in chunked) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(Sp.s)
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    VerticalCardItem(item = pair[0], onPreview = { onPreview(pair[0]) }, onDownload = { onDownload(pair[0]) })
-                }
-                if (pair.size > 1) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        VerticalCardItem(item = pair[1], onPreview = { onPreview(pair[1]) }, onDownload = { onDownload(pair[1]) })
-                    }
-                } else {
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VerticalCardItem(
-    item: InstagramItem,
-    onPreview: () -> Unit,
-    onDownload: () -> Unit
-) {
-    TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.s) {
-        Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-            // Preview thumbnail with play indicator if video
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
-                    .clip(RoundedCornerShape(R.s))
-                    .background(P.SurfaceHigh)
-                    .clickable(enabled = item.hasResolvedMedia, onClick = onPreview),
-                contentAlignment = Alignment.Center
-            ) {
-                RemoteImage(
-                    url = item.previewUrl ?: item.directMediaUrl,
-                    contentDescription = item.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    fallbackText = if (item.type == InstagramItemType.PROFILE_PIC) item.title else null
-                )
-
-                if ((item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) && item.hasResolvedMedia) {
-                    Surface(
-                        shape = CircleShape,
-                        color = Color(0xAA000000),
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = "Play preview", tint = P.TextPrimary, modifier = Modifier.size(20.dp))
-                        }
-                    }
-                }
-            }
-
-            // Truncated caption underneath
-            Text(
-                text = item.caption.ifBlank { item.title },
-                style = MaterialTheme.typography.bodySmall,
-                color = P.TextSecondary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                fontSize = 12.sp
-            )
-
-            // ONE Download button below the caption (NO selectors here!)
-            val canDownload = item.isDownloadable
-            TrmxButton(
-                label = if (canDownload) "Download" else "Unavailable",
-                leading = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(14.dp)) },
-                onClick = onDownload,
-                enabled = canDownload,
-                kind = TrmxButtonKind.Secondary,
-                modifier = Modifier.fillMaxWidth().height(36.dp)
-            )
-        }
-    }
 }
 
 // ============================================================================
@@ -1177,68 +1009,4 @@ private fun formatTimeMs(timeMs: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return String.format(java.util.Locale.US, "%d:%02d", minutes, seconds)
-}
-
-// ============================================================================
-// NOTICES
-// ============================================================================
-
-@Composable
-private fun PrivateProfileNotice() {
-    TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Lock, contentDescription = null, tint = P.Danger, modifier = Modifier.size(24.dp))
-            Spacer(Modifier.width(Sp.m))
-            Column {
-                Text(
-                    text = "This profile is private",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = P.TextPrimary,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Stories and media are unreachable. TRMX respects privacy and never prompts for credentials.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = P.TextMuted
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AnonymousStoriesBanner() {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(R.m),
-        color = P.SurfaceHigh,
-        border = BorderStroke(1.dp, P.Border)
-    ) {
-        Row(
-            modifier = Modifier.padding(Sp.s),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Outlined.VisibilityOff, contentDescription = null, tint = P.Accent, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(Sp.s))
-            Text(
-                text = "Anonymous Story Viewer · Viewed without login and without recording views",
-                style = MaterialTheme.typography.labelSmall,
-                color = P.TextSecondary
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmptyTabNotice(message: String) {
-    TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.l) {
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = P.TextMuted,
-                textAlign = TextAlign.Center
-            )
-        }
-    }
 }

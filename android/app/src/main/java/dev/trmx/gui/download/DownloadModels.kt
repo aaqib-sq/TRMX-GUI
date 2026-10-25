@@ -76,14 +76,6 @@ enum class InstagramItemType {
     PROFILE_PIC
 }
 
-/** Profile tabs matching reference: POSTS / STORIES / HIGHLIGHTS / REELS. */
-enum class DownloadTab {
-    POSTS,
-    STORIES,
-    HIGHLIGHTS,
-    REELS
-}
-
 /** Download target action variant. */
 enum class DownloadOption {
     MEDIA,          // Standard video/photo download
@@ -102,12 +94,6 @@ enum class InstagramTool(
     val placeholder: String,
     val actionButtonLabel: String
 ) {
-    STORY_SAVER(
-        title = "Story Saver",
-        description = "Download stories from public Instagram profiles",
-        placeholder = "Paste story link or @username…",
-        actionButtonLabel = "Fetch Stories"
-    ),
     REELS_DOWNLOADER(
         title = "Reels Downloader",
         description = "Download Instagram reels in full quality",
@@ -137,12 +123,6 @@ enum class InstagramTool(
         description = "Download multi-slide posts and albums",
         placeholder = "Paste carousel link (e.g. instagram.com/p/…)…",
         actionButtonLabel = "Fetch Carousel"
-    ),
-    STORIES_VIEWER(
-        title = "Stories Viewer",
-        description = "View public stories anonymously without login",
-        placeholder = "Enter public @username or profile link…",
-        actionButtonLabel = "View Stories"
     )
 }
 

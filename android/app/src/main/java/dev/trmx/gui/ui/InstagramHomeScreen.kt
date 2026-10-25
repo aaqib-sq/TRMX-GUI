@@ -1,14 +1,12 @@
 package dev.trmx.gui.ui
 
 /*
- * InstagramHomeScreen (PART A) — Dedicated sub-screen housing the 7 Instagram tools:
- * 1. Story Saver
- * 2. Reels Downloader
- * 3. Photo Downloader
- * 4. Video Downloader
- * 5. IGTV Downloader
- * 6. Carousel Downloader
- * 7. Stories Viewer
+ * InstagramHomeScreen (PART A) — Dedicated sub-screen housing the 5 Instagram tools:
+ * 1. Reels Downloader
+ * 2. Photo Downloader
+ * 3. Video Downloader
+ * 4. IGTV Downloader
+ * 5. Carousel Downloader
  *
  * Reached exclusively by tapping the "Instagram" card on the RunScreen homepage.
  * Top bar back arrow returns to homepage.
@@ -30,14 +28,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.ViewCarousel
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -69,13 +65,13 @@ fun InstagramHomeScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            text = "Anonymous media & story tools for public profiles · No login required",
+            text = "Public link downloads · No login required",
             style = MaterialTheme.typography.bodySmall,
             color = P.TextSecondary,
             modifier = Modifier.padding(bottom = 4.dp),
         )
 
-        // 7 individual tool cards
+        // 5 individual tool cards
         InstagramTool.entries.forEach { tool ->
             InstagramToolCard(
                 tool = tool,
@@ -150,11 +146,9 @@ fun InstagramToolCard(
 }
 
 fun toolIcon(tool: InstagramTool): ImageVector = when (tool) {
-    InstagramTool.STORY_SAVER -> Icons.Outlined.AutoStories
     InstagramTool.REELS_DOWNLOADER -> Icons.Outlined.Movie
     InstagramTool.PHOTO_DOWNLOADER -> Icons.Outlined.Image
     InstagramTool.VIDEO_DOWNLOADER -> Icons.Outlined.VideoLibrary
     InstagramTool.IGTV_DOWNLOADER -> Icons.Outlined.Tv
     InstagramTool.CAROUSEL_DOWNLOADER -> Icons.Outlined.ViewCarousel
-    InstagramTool.STORIES_VIEWER -> Icons.Outlined.Visibility
 }

@@ -956,4 +956,60 @@ class InstagramDownloaderTest {
         val reelsEmptyZero = InstagramTabHelper.getReelsEmptyMessage(postsCount = 0L, hasMediaItems = false, postsLoadError = null)
         assertEquals("No public reels found.", reelsEmptyZero)
     }
+
+    // ------------------------------------------------------------------------
+    // 10. Instagram Final Scope & Tool Trim Tests (v5-final)
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `InstagramTool contains exactly the 5 approved tools in exact order`() {
+        val tools = InstagramTool.entries
+        assertEquals(5, tools.size)
+        assertEquals(InstagramTool.REELS_DOWNLOADER, tools[0])
+        assertEquals(InstagramTool.PHOTO_DOWNLOADER, tools[1])
+        assertEquals(InstagramTool.VIDEO_DOWNLOADER, tools[2])
+        assertEquals(InstagramTool.IGTV_DOWNLOADER, tools[3])
+        assertEquals(InstagramTool.CAROUSEL_DOWNLOADER, tools[4])
+
+        val names = tools.map { it.name }
+        assertFalse("STORY_SAVER must be removed", names.contains("STORY_SAVER"))
+        assertFalse("STORIES_VIEWER must be removed", names.contains("STORIES_VIEWER"))
+    }
+
+    @Test
+    fun `InstagramTool retained entries have accurate labels and descriptions`() {
+        assertEquals("Reels Downloader", InstagramTool.REELS_DOWNLOADER.title)
+        assertEquals("Photo Downloader", InstagramTool.PHOTO_DOWNLOADER.title)
+        assertEquals("Video Downloader", InstagramTool.VIDEO_DOWNLOADER.title)
+        assertEquals("IGTV Downloader", InstagramTool.IGTV_DOWNLOADER.title)
+        assertEquals("Carousel Downloader", InstagramTool.CAROUSEL_DOWNLOADER.title)
+    }
+
+    @Test
+    fun `profile photo item preserves direct CDN URL and profile pic type`() {
+        val profile = InstagramProfile(
+            username = "natgeo",
+            fullName = "National Geographic",
+            avatarUrl = "https://scontent.cdninstagram.com/avatar_thumb.jpg",
+            fullSizeAvatarUrl = "https://scontent.cdninstagram.com/avatar_hd.jpg"
+        )
+        val directAvatar = profile.fullSizeAvatarUrl ?: profile.avatarUrl
+        val profilePicItem = InstagramItem(
+            id = "profile_pic_${profile.username}",
+            type = InstagramItemType.PROFILE_PIC,
+            title = "@${profile.username}",
+            url = directAvatar ?: "https://www.instagram.com/${profile.username}/",
+            previewUrl = directAvatar,
+            directMediaUrl = directAvatar,
+            isVideo = false,
+            isAvailable = true
+        )
+
+        assertEquals(InstagramItemType.PROFILE_PIC, profilePicItem.type)
+        assertEquals("@natgeo", profilePicItem.title)
+        assertEquals("https://scontent.cdninstagram.com/avatar_hd.jpg", profilePicItem.url)
+        assertEquals("https://scontent.cdninstagram.com/avatar_hd.jpg", profilePicItem.directMediaUrl)
+        assertTrue(profilePicItem.isDownloadable)
+        assertFalse(profilePicItem.isMediaItem)
+    }
 }

@@ -72,9 +72,6 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private val _items = MutableStateFlow<List<InstagramItem>>(emptyList())
     val items: StateFlow<List<InstagramItem>> = _items.asStateFlow()
 
-    private val _selectedTab = MutableStateFlow(DownloadTab.POSTS)
-    val selectedTab: StateFlow<DownloadTab> = _selectedTab.asStateFlow()
-
     private val _postsLoadError = MutableStateFlow<String?>(null)
     val postsLoadError: StateFlow<String?> = _postsLoadError.asStateFlow()
 
@@ -141,10 +138,6 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _items.value = emptyList()
         _parsedLink.value = null
         _postsLoadError.value = null
-    }
-
-    fun setTab(tab: DownloadTab) {
-        _selectedTab.value = tab
     }
 
     fun openPreview(item: InstagramItem) {
@@ -223,7 +216,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             try {
                 when {
-                    tool == InstagramTool.STORIES_VIEWER || tool == InstagramTool.STORY_SAVER && parsed.type == InstagramUrlType.PROFILE || parsed.type == InstagramUrlType.PROFILE -> {
+                    parsed.type == InstagramUrlType.PROFILE -> {
                         val result = fetchEngine.fetchProfile(parsed.username ?: query)
                         _profile.value = result.profile
                         _items.value = result.items
