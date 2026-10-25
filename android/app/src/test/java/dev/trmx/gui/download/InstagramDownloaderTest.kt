@@ -716,6 +716,7 @@ class InstagramDownloaderTest {
                                 "node": {
                                     "id": "111",
                                     "shortcode": "SHORT1",
+                                    "__typename": "GraphClips",
                                     "is_video": true,
                                     "display_url": "https://cdn.example.com/thumb1.jpg?oh=abc&amp;oe=123",
                                     "video_url": "https://cdn.example.com/video1.mp4",

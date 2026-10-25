@@ -588,7 +588,7 @@ class InstagramFetchEngine(
         }
 
         // 2. Also search for public highlights in the HTML
-        val highlightPattern = Pattern.compile(""""highlight:(\d+)"""")
+        val highlightPattern = Pattern.compile("highlight:(\\d+)")
         val highlightMatcher = highlightPattern.matcher(html)
         while (highlightMatcher.find()) {
             val hId = highlightMatcher.group(1)
