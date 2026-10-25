@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+            <html>
+            <head>
+                <meta property="og:title" content="Artist Name (@artist) • Instagram photos">
+                <meta property="og:description" content="10K Followers, 150 Following, 42 Posts">
+                <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Person",
+                    "name": "Artist Name",
+                    "description": "Musician, producer, and sound designer &#x26; creator."
+                }
+                </script>
+            </head>
+            <body></body>
+            </html>

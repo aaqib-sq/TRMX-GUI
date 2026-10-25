@@ -1,0 +1,17 @@
+{
+                "data": {
+                    "user": {
+                        "full_name": "Nejam Nejam Side",
+                        "biography": "",
+                        "profile_pic_url_hd": "https://scontent.cdninstagram.com/avatar.jpg",
+                        "is_private": false,
+                        "is_verified": false,
+                        "edge_owner_to_timeline_media": {
+                            "count": 29,
+                            "edges": []
+                        },
+                        "edge_followed_by": { "count": 366 },
+                        "edge_follow": { "count": 376 }
+                    }
+                }
+            }
