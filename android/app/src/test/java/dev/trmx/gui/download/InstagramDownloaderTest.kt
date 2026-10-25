@@ -760,4 +760,200 @@ class InstagramDownloaderTest {
         assertNotNull(highlight)
         assertEquals("1789999999", highlight?.shortcode)
     }
+
+    // ------------------------------------------------------------------------
+    // 9. Round v4 Fixes: Fallback triggers on media items, highlight validation, honest empty-states
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `Route-3 fallback decision triggers when ONLY highlight placeholders exist`() = runBlocking {
+        var fallbackAttempted = false
+        val mockItems = listOf(
+            InstagramItem(
+                id = "ytdlp_123",
+                shortcode = "Cytdlp123",
+                type = InstagramItemType.POST,
+                title = "Post: Cytdlp123",
+                url = "https://www.instagram.com/p/Cytdlp123/",
+                isVideo = false
+            )
+        )
+
+        val htmlWithHighlightOnly = """<!DOCTYPE html><html><head>
+<meta property="og:title" content="Test User (@testuser)">
+<meta property="og:description" content="100 Followers, 50 Following, 29 Posts">
+</head><body>
+<a href="/stories/highlights/1789999999/">highlight:1789999999</a>
+</body></html>"""
+
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(htmlWithHighlightOnly.toResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val engine = InstagramFetchEngine(
+            http = client,
+            ytdlpRunner = { username ->
+                fallbackAttempted = true
+                assertEquals("testuser", username)
+                mockItems
+            }
+        )
+
+        val result = engine.fetchProfile("testuser")
+
+        assertEquals(29L, result.profile.postsCount)
+        assertTrue("Route 3 fallback must trigger when ONLY highlight placeholders exist", fallbackAttempted)
+        assertTrue("Result items must contain the media item from Route 3", result.items.any { it.shortcode == "Cytdlp123" })
+        assertNull("postsLoadError must be null when Route 3 fallback succeeds", result.postsLoadError)
+    }
+
+    @Test
+    fun `postsLoadError is set when postsCount greater than 0 with only placeholders`() = runBlocking {
+        val htmlWithHighlightOnly = """<!DOCTYPE html><html><head>
+<meta property="og:title" content="Test User (@testuser)">
+<meta property="og:description" content="100 Followers, 50 Following, 29 Posts">
+</head><body>
+<a href="/stories/highlights/1789999999/">highlight:1789999999</a>
+</body></html>"""
+
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(htmlWithHighlightOnly.toResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val engine = InstagramFetchEngine(
+            http = client,
+            ytdlpRunner = { _ -> emptyList() }
+        )
+
+        val result = engine.fetchProfile("testuser")
+
+        assertEquals(29L, result.profile.postsCount)
+        assertNotNull("postsLoadError must be populated when postsCount > 0 and only placeholders exist", result.postsLoadError)
+        assertTrue(result.postsLoadError!!.contains("Could not load public posts"))
+        assertTrue("Highlight placeholder may exist in items", result.items.any { it.type == InstagramItemType.HIGHLIGHT })
+        assertFalse("No media items should be present", result.items.any { it.isMediaItem })
+    }
+
+    @Test
+    fun `short or ambiguous highlight matches are dropped while realistic long IDs kept`() {
+        val engine = InstagramFetchEngine(OkHttpClient())
+        val html = """<!DOCTYPE html><html><head>
+<meta property="og:title" content="Test User (@testuser)">
+<meta property="og:description" content="100 Followers, 50 Following, 10 Posts">
+</head><body>
+<a href="/stories/highlights/245/">highlight:245</a>
+<a href="/stories/highlights/1789999999/">highlight:1789999999</a>
+<span>highlight:abc</span>
+<span>highlight:99</span>
+</body></html>"""
+
+        val items = engine.parseTimelineFromHtml(html, "testuser")
+
+        // Short ID "245" (from device report) must be dropped
+        assertNull("Short highlight ID 245 must be dropped", items.find { it.shortcode == "245" })
+        assertNull("Non-numeric highlight token must be dropped", items.find { it.shortcode == "abc" })
+        assertNull("Short highlight ID 99 must be dropped", items.find { it.shortcode == "99" })
+
+        // Realistic long highlight ID must be kept
+        val longHighlight = items.find { it.shortcode == "1789999999" }
+        assertNotNull("Realistic long highlight ID must be kept", longHighlight)
+        assertEquals(InstagramItemType.HIGHLIGHT, longHighlight?.type)
+
+        // Helper checks
+        assertFalse(InstagramFetchEngine.isValidHighlightId("245"))
+        assertFalse(InstagramFetchEngine.isValidHighlightId("99"))
+        assertFalse(InstagramFetchEngine.isValidHighlightId("abc"))
+        assertFalse(InstagramFetchEngine.isValidHighlightId(null))
+        assertFalse(InstagramFetchEngine.isValidHighlightId(""))
+        assertTrue(InstagramFetchEngine.isValidHighlightId("1789999999"))
+        assertTrue(InstagramFetchEngine.isValidHighlightId("17987654321012345"))
+    }
+
+    @Test
+    fun `a highlight without resolved media exposes no Download path`() = runBlocking {
+        val unresolvedHighlight = InstagramItem(
+            id = "highlight_1789999999",
+            shortcode = "1789999999",
+            type = InstagramItemType.HIGHLIGHT,
+            title = "Highlight #1789999999",
+            url = "https://www.instagram.com/stories/highlights/1789999999/",
+            previewUrl = null,
+            directMediaUrl = null,
+            isVideo = false,
+            isAvailable = false
+        )
+
+        assertFalse("Highlight without media must not have resolved media", unresolvedHighlight.hasResolvedMedia)
+        assertFalse("Highlight without media must not be downloadable", unresolvedHighlight.isDownloadable)
+
+        val engine = DownloadEngine(
+            clientProvider = { throw AssertionError("Should not be called") },
+            historyStore = DownloadHistoryStore(tempFolder.newFolder()),
+            scope = this
+        )
+
+        var caughtException = false
+        try {
+            engine.startDownload(
+                item = unresolvedHighlight,
+                mode = MediaMode.VIDEO,
+                videoQuality = VideoQuality.ORIGINAL,
+                audioQuality = AudioQuality.KBPS320
+            )
+        } catch (e: IllegalArgumentException) {
+            caughtException = true
+            assertTrue(e.message!!.contains("Cannot download highlight"))
+        }
+        assertTrue("DownloadEngine must reject download of highlight without resolved media", caughtException)
+
+        // Resolved highlight test
+        val resolvedHighlight = unresolvedHighlight.copy(
+            directMediaUrl = "https://cdn.example.com/highlight_video.mp4",
+            previewUrl = "https://cdn.example.com/highlight_cover.jpg",
+            isAvailable = true
+        )
+        assertTrue(resolvedHighlight.hasResolvedMedia)
+        assertTrue(resolvedHighlight.isDownloadable)
+    }
+
+    @Test
+    fun `REELS and POSTS empty-states use failure reason when media fetch failed`() {
+        val failureReason = "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed to retrieve timeline items without login."
+
+        // Case 1: postsCount > 0 and media fetch failed (zero media items)
+        val postsEmptyMsg = InstagramTabHelper.getPostsEmptyMessage(postsCount = 221L, postsLoadError = failureReason)
+        assertEquals(failureReason, postsEmptyMsg)
+        assertFalse("Must not claim 'No public posts found' when fetch failed", postsEmptyMsg.contains("No public posts found"))
+
+        val reelsEmptyMsg = InstagramTabHelper.getReelsEmptyMessage(postsCount = 221L, hasMediaItems = false, postsLoadError = failureReason)
+        assertEquals(failureReason, reelsEmptyMsg)
+        assertFalse("Must not claim 'No public reels found' when fetch failed", reelsEmptyMsg.contains("No public reels found"))
+
+        // Case 2: postsCount > 0 and media was found (e.g. photos exist), but zero reels
+        val reelsEmptyWithMedia = InstagramTabHelper.getReelsEmptyMessage(postsCount = 221L, hasMediaItems = true, postsLoadError = null)
+        assertEquals("No public reels found.", reelsEmptyWithMedia)
+
+        // Case 3: postsCount == 0 (honest empty profile)
+        val postsEmptyZero = InstagramTabHelper.getPostsEmptyMessage(postsCount = 0L, postsLoadError = null)
+        assertEquals("No public posts found for this profile.", postsEmptyZero)
+
+        val reelsEmptyZero = InstagramTabHelper.getReelsEmptyMessage(postsCount = 0L, hasMediaItems = false, postsLoadError = null)
+        assertEquals("No public reels found.", reelsEmptyZero)
+    }
 }

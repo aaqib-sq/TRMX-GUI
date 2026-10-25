@@ -35,6 +35,28 @@ data class ProfileFetchResult(
 )
 
 /**
+ * Tab empty-state helpers ensuring truthful UI reporting.
+ * Empty-states must never claim "No public posts/reels found" when retrieval actually failed.
+ */
+object InstagramTabHelper {
+    fun getPostsEmptyMessage(postsCount: Long, postsLoadError: String?): String {
+        return if (postsCount > 0) {
+            postsLoadError ?: "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed to retrieve timeline items without login."
+        } else {
+            "No public posts found for this profile."
+        }
+    }
+
+    fun getReelsEmptyMessage(postsCount: Long, hasMediaItems: Boolean, postsLoadError: String?): String {
+        return if (postsCount > 0 && !hasMediaItems) {
+            postsLoadError ?: "Could not load public reels. All retrieval routes failed to retrieve timeline items without login."
+        } else {
+            "No public reels found."
+        }
+    }
+}
+
+/**
  * Public, unauthenticated Instagram fetcher.
  * Queries public endpoints with standard browser headers to retrieve profile metadata,
  * posts, reels, and stories without requiring any login or user account.
@@ -79,6 +101,16 @@ class InstagramFetchEngine(
             if (raw.isNullOrBlank()) return null
             return HtmlDecoder.decode(raw).trim()
         }
+
+        /**
+         * Validates whether a string is a plausible real Instagram highlight reel ID.
+         * Real highlight reel IDs are long numeric identifiers (typically 8 to 20 digits).
+         * Short numbers (such as "245") or ambiguous non-numeric tokens are dropped.
+         */
+        fun isValidHighlightId(id: String?): Boolean {
+            if (id.isNullOrBlank()) return false
+            return id.length in 8..20 && id.all { it.isDigit() }
+        }
     }
 
     suspend fun fetchProfile(username: String): ProfileFetchResult = withContext(Dispatchers.IO) {
@@ -96,7 +128,7 @@ class InstagramFetchEngine(
             items.addAll(apiResult.items)
         }
 
-        val hasTimelineItemsFromApi = items.any { it.type != InstagramItemType.PROFILE_PIC }
+        val hasMediaItemsFromApi = items.any { it.isMediaItem }
 
         // If private, never attempt login workarounds
         if (profile?.isPrivate == true) {
@@ -106,7 +138,7 @@ class InstagramFetchEngine(
         // --------------------------------------------------------------------
         // Route 2: Profile-page embedded JSON timeline data
         // --------------------------------------------------------------------
-        if (!hasTimelineItemsFromApi) {
+        if (!hasMediaItemsFromApi) {
             val htmlResult = runCatching { fetchProfileViaHtml(username) }.getOrNull()
             if (htmlResult != null) {
                 if (profile == null) {
@@ -138,12 +170,12 @@ class InstagramFetchEngine(
         }
 
         val currentPostsCount = profile?.postsCount ?: 0L
-        val hasTimelineItems = items.any { it.type != InstagramItemType.PROFILE_PIC }
+        val hasMediaItems = items.any { it.isMediaItem }
 
         // --------------------------------------------------------------------
         // Route 3: yt-dlp flat-playlist via bridge fallback
         // --------------------------------------------------------------------
-        if (!hasTimelineItems && currentPostsCount > 0L && ytdlpRunner != null) {
+        if (!hasMediaItems && currentPostsCount > 0L && ytdlpRunner != null) {
             val ytdlpItems = runCatching { ytdlpRunner.invoke(username) }.getOrNull()
             if (!ytdlpItems.isNullOrEmpty()) {
                 val existingIds = items.map { it.id }.toSet()
@@ -164,8 +196,8 @@ class InstagramFetchEngine(
         }
 
         // Final verification for posts/reels: never show false empty when postsCount > 0
-        val finalHasTimelineItems = items.any { it.type != InstagramItemType.PROFILE_PIC }
-        if (profile.postsCount > 0L && !finalHasTimelineItems && !profile.isPrivate) {
+        val finalHasMediaItems = items.any { it.isMediaItem }
+        if (profile.postsCount > 0L && !finalHasMediaItems && !profile.isPrivate) {
             postsLoadError = "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed to retrieve timeline items without login."
         }
 
@@ -588,10 +620,11 @@ class InstagramFetchEngine(
         }
 
         // 2. Also search for public highlights in the HTML
-        val highlightPattern = Pattern.compile("highlight:(\\d+)")
+        val highlightPattern = Pattern.compile("""(?:highlight:|/stories/highlights/)(\d+)""")
         val highlightMatcher = highlightPattern.matcher(html)
         while (highlightMatcher.find()) {
             val hId = highlightMatcher.group(1)
+            if (!isValidHighlightId(hId)) continue
             if (seenCodes.add("highlight_$hId")) {
                 items.add(
                     InstagramItem(
@@ -602,7 +635,8 @@ class InstagramFetchEngine(
                         caption = "@$username story highlight",
                         url = "https://www.instagram.com/stories/highlights/$hId/",
                         isVideo = false,
-                        isAvailable = true
+                        isAvailable = false,
+                        errorMessage = "Highlight media requires login and could not be resolved from public page data."
                     )
                 )
             }

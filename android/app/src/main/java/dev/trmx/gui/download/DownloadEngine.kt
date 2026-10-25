@@ -128,6 +128,9 @@ class DownloadEngine(
         saveCover: Boolean = false,
         option: DownloadOption = DownloadOption.MEDIA
     ): DownloadRecord = withContext(Dispatchers.IO) {
+        if (item.type == InstagramItemType.HIGHLIGHT && item.directMediaUrl.isNullOrBlank()) {
+            throw IllegalArgumentException("Cannot download highlight: direct media URL is not resolved. Instagram highlights require login.")
+        }
         val recordId = UUID.randomUUID().toString()
         val qualityLabel = when {
             option == DownloadOption.COVER_IMAGE -> "Cover Image"
@@ -214,7 +217,12 @@ class DownloadEngine(
         val shortcode = item.shortcode ?: item.id
         val jobName = buildJobName(typeName, shortcode)
 
-        val argv = buildYtdlpArgv(item.url, mode, videoQuality, audioQuality, saveCover, option)
+        val downloadUrl = if (item.type == InstagramItemType.HIGHLIGHT && !item.directMediaUrl.isNullOrBlank()) {
+            item.directMediaUrl
+        } else {
+            item.url
+        }
+        val argv = buildYtdlpArgv(downloadUrl, mode, videoQuality, audioQuality, saveCover, option)
         val submitResult = client.submitJob(
             SubmitRequest(
                 name = jobName,

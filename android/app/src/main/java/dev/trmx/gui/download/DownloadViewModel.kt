@@ -148,6 +148,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openPreview(item: InstagramItem) {
+        if (!item.hasResolvedMedia) return
         _activePreviewItem.value = item
     }
 
@@ -250,6 +251,10 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         option: DownloadOption = DownloadOption.MEDIA,
         onStarted: (() -> Unit)? = null
     ) {
+        if (item.type == InstagramItemType.HIGHLIGHT && !item.isDownloadable) {
+            _error.value = "Cannot download highlight: media could not be resolved without login."
+            return
+        }
         viewModelScope.launch {
             try {
                 val record = downloadEngine.startDownload(

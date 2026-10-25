@@ -109,6 +109,7 @@ import dev.trmx.gui.download.DownloadViewModel
 import dev.trmx.gui.download.InstagramItem
 import dev.trmx.gui.download.InstagramItemType
 import dev.trmx.gui.download.InstagramProfile
+import dev.trmx.gui.download.InstagramTabHelper
 import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.ui.Tokens.Palette as P
 import dev.trmx.gui.ui.Tokens.Radius as R
@@ -284,13 +285,9 @@ fun InstagramToolScreen(
                 } else {
                     when (selectedTab) {
                         DownloadTab.POSTS -> {
-                            val postItems = items.filter { it.type != InstagramItemType.PROFILE_PIC }
+                            val postItems = items.filter { it.isMediaItem }
                             if (postItems.isEmpty()) {
-                                if (prof.postsCount > 0) {
-                                    EmptyTabNotice(postsLoadError ?: "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed.")
-                                } else {
-                                    EmptyTabNotice("No public posts found for this profile.")
-                                }
+                                EmptyTabNotice(InstagramTabHelper.getPostsEmptyMessage(prof.postsCount, postsLoadError))
                             } else {
                                 VerticalCardsGrid(
                                     items = postItems,
@@ -313,7 +310,7 @@ fun InstagramToolScreen(
                             }
                         }
                         DownloadTab.HIGHLIGHTS -> {
-                            val highlightItems = items.filter { it.type == InstagramItemType.HIGHLIGHT }
+                            val highlightItems = items.filter { it.type == InstagramItemType.HIGHLIGHT && it.hasResolvedMedia }
                             if (highlightItems.isEmpty()) {
                                 EmptyTabNotice("Highlights could not be loaded without login. Public highlights may require an active session.")
                             } else {
@@ -327,12 +324,8 @@ fun InstagramToolScreen(
                         DownloadTab.REELS -> {
                             val reelItems = items.filter { it.type == InstagramItemType.REEL }
                             if (reelItems.isEmpty()) {
-                                val postItems = items.filter { it.type != InstagramItemType.PROFILE_PIC }
-                                if (prof.postsCount > 0 && postItems.isEmpty()) {
-                                    EmptyTabNotice(postsLoadError ?: "Could not load public reels. All retrieval routes failed.")
-                                } else {
-                                    EmptyTabNotice("No public reels found.")
-                                }
+                                val hasAnyMedia = items.any { it.isMediaItem }
+                                EmptyTabNotice(InstagramTabHelper.getReelsEmptyMessage(prof.postsCount, hasAnyMedia, postsLoadError))
                             } else {
                                 VerticalCardsGrid(
                                     items = reelItems,
@@ -584,7 +577,7 @@ private fun VerticalCardItem(
                     .aspectRatio(1f)
                     .clip(RoundedCornerShape(R.s))
                     .background(P.SurfaceHigh)
-                    .clickable(onClick = onPreview),
+                    .clickable(enabled = item.hasResolvedMedia, onClick = onPreview),
                 contentAlignment = Alignment.Center
             ) {
                 RemoteImage(
@@ -595,7 +588,7 @@ private fun VerticalCardItem(
                     fallbackText = if (item.type == InstagramItemType.PROFILE_PIC) item.title else null
                 )
 
-                if (item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) {
+                if ((item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) && item.hasResolvedMedia) {
                     Surface(
                         shape = CircleShape,
                         color = Color(0xAA000000),
@@ -619,10 +612,12 @@ private fun VerticalCardItem(
             )
 
             // ONE Download button below the caption (NO selectors here!)
+            val canDownload = item.isDownloadable
             TrmxButton(
-                label = "Download",
+                label = if (canDownload) "Download" else "Unavailable",
                 leading = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(14.dp)) },
                 onClick = onDownload,
+                enabled = canDownload,
                 kind = TrmxButtonKind.Secondary,
                 modifier = Modifier.fillMaxWidth().height(36.dp)
             )
@@ -649,7 +644,7 @@ private fun SpecificItemCard(
                     .aspectRatio(1.2f)
                     .clip(RoundedCornerShape(R.m))
                     .background(P.SurfaceHigh)
-                    .clickable(onClick = onPreview),
+                    .clickable(enabled = item.hasResolvedMedia, onClick = onPreview),
                 contentAlignment = Alignment.Center
             ) {
                 RemoteImage(
@@ -660,7 +655,7 @@ private fun SpecificItemCard(
                     fallbackText = if (item.type == InstagramItemType.PROFILE_PIC) item.title else null
                 )
 
-                if (item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) {
+                if ((item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) && item.hasResolvedMedia) {
                     Surface(
                         shape = CircleShape,
                         color = Color(0xBB000000),
@@ -721,10 +716,12 @@ private fun SpecificItemCard(
             }
 
             // ONE Download button (NO selectors here, opens Downloader!)
+            val canDownload = item.isDownloadable
             TrmxButton(
-                label = "Download",
+                label = if (canDownload) "Download" else "Unavailable",
                 leading = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp)) },
                 onClick = onDownload,
+                enabled = canDownload,
                 kind = TrmxButtonKind.Primary,
                 modifier = Modifier.fillMaxWidth().height(46.dp)
             )

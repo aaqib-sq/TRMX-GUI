@@ -61,12 +61,20 @@ object InstagramUrlParser {
         val highlightMatch = HIGHLIGHT_REGEX.find(cleanUrl)
         if (highlightMatch != null) {
             val id = highlightMatch.groupValues[1]
-            return ParsedInstagramLink(
-                originalInput = trimmed,
-                type = InstagramUrlType.HIGHLIGHT,
-                highlightId = id,
-                canonicalUrl = "https://www.instagram.com/stories/highlights/$id/"
-            )
+            if (InstagramFetchEngine.isValidHighlightId(id)) {
+                return ParsedInstagramLink(
+                    originalInput = trimmed,
+                    type = InstagramUrlType.HIGHLIGHT,
+                    highlightId = id,
+                    canonicalUrl = "https://www.instagram.com/stories/highlights/$id/"
+                )
+            } else {
+                return ParsedInstagramLink(
+                    originalInput = trimmed,
+                    type = InstagramUrlType.UNKNOWN,
+                    error = "Invalid highlight ID: $id (highlight IDs must be numeric)"
+                )
+            }
         }
 
         // 2. Story with specific media ID: /stories/username/123456789/

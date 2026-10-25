@@ -181,7 +181,41 @@ data class InstagramItem(
     val likesCount: Long? = null,
     val commentsCount: Long? = null,
     val formattedDate: String? = null
-)
+) {
+    /**
+     * Whether this item represents real timeline media (post, photo, video, reel, carousel, igtv).
+     * Profile pictures, highlight placeholders, and stories do NOT count as media items.
+     */
+    val isMediaItem: Boolean
+        get() = when (type) {
+            InstagramItemType.POST,
+            InstagramItemType.PHOTO,
+            InstagramItemType.VIDEO,
+            InstagramItemType.REEL,
+            InstagramItemType.CAROUSEL,
+            InstagramItemType.IGTV -> true
+            InstagramItemType.PROFILE_PIC,
+            InstagramItemType.HIGHLIGHT,
+            InstagramItemType.STORY -> false
+        }
+
+    /**
+     * Whether real media (preview thumbnail or direct playable/downloadable URL) has been resolved.
+     */
+    val hasResolvedMedia: Boolean
+        get() = !previewUrl.isNullOrBlank() || !directMediaUrl.isNullOrBlank()
+
+    /**
+     * Whether this item can be downloaded.
+     * Highlights without resolved direct media URLs cannot be downloaded without login.
+     */
+    val isDownloadable: Boolean
+        get() = when (type) {
+            InstagramItemType.HIGHLIGHT -> !directMediaUrl.isNullOrBlank()
+            InstagramItemType.STORY -> !directMediaUrl.isNullOrBlank() || isAvailable
+            else -> isAvailable
+        }
+}
 
 /** Persistent on-device record of a past or running download. */
 @Serializable
