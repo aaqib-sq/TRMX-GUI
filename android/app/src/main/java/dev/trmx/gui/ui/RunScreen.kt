@@ -38,15 +38,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.Tv
-import androidx.compose.material.icons.outlined.VideoLibrary
-import androidx.compose.material.icons.outlined.ViewCarousel
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Icon
@@ -69,7 +63,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.ui.Tokens.Palette as P
 import dev.trmx.gui.ui.Tokens.Radius as R
 import dev.trmx.gui.ui.Tokens.Space as Sp
@@ -79,7 +72,7 @@ fun RunScreen(
     onRunCommand: (String) -> Unit,
     onGoToKill: () -> Unit,
     onOpenDownloader: () -> Unit,
-    onOpenInstagramTool: (InstagramTool) -> Unit,
+    onOpenInstagram: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var commandInput by remember { mutableStateOf("") }
@@ -294,118 +287,72 @@ fun RunScreen(
             }
         }
 
-        // ---- PART B: Instagram Section (Homepage) -------------------------
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // ---- Instagram Entry Card (PART A) -------------------------------
+        TrmxCard(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = 16.dp,
+            onClick = onOpenInstagram,
+        ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    "Instagram",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = P.TextPrimary,
-                )
-                Spacer(Modifier.width(8.dp))
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = P.SurfaceHigh,
+                    modifier = Modifier.size(44.dp),
                 ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Outlined.AutoStories,
+                            contentDescription = null,
+                            tint = P.TextPrimary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(14.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Instagram",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = P.TextPrimary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = P.SurfaceHigh,
+                        ) {
+                            Text(
+                                "7 tools",
+                                fontSize = 11.sp,
+                                color = P.TextSecondary,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                     Text(
-                        "7 tools",
+                        "Stories, Reels, Photos, Videos, IGTV, Carousels · No login",
                         fontSize = 12.sp,
                         color = P.TextSecondary,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
 
-            Text(
-                "Anonymous media & story tools for public profiles · No login required",
-                style = MaterialTheme.typography.bodySmall,
-                color = P.TextMuted,
-            )
-
-            // 7 SEPARATE per-tool entries:
-            InstagramTool.entries.forEach { tool ->
-                InstagramToolCard(
-                    tool = tool,
-                    onClick = { onOpenInstagramTool(tool) }
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = P.TextMuted,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }
 
         Spacer(Modifier.height(Sp.m))
     }
-}
-
-@Composable
-private fun InstagramToolCard(
-    tool: InstagramTool,
-    onClick: () -> Unit
-) {
-    TrmxCard(
-        modifier = Modifier.fillMaxWidth(),
-        contentPadding = 14.dp,
-        onClick = onClick,
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = P.SurfaceHigh,
-                modifier = Modifier.size(42.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        toolIcon(tool),
-                        contentDescription = null,
-                        tint = P.TextPrimary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            }
-
-            Spacer(Modifier.width(14.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    tool.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = P.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    tool.description,
-                    fontSize = 12.sp,
-                    color = P.TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Spacer(Modifier.width(8.dp))
-
-            Icon(
-                Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint = P.TextMuted,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-    }
-}
-
-private fun toolIcon(tool: InstagramTool): ImageVector = when (tool) {
-    InstagramTool.STORY_SAVER -> Icons.Outlined.AutoStories
-    InstagramTool.REELS_DOWNLOADER -> Icons.Outlined.Movie
-    InstagramTool.PHOTO_DOWNLOADER -> Icons.Outlined.Image
-    InstagramTool.VIDEO_DOWNLOADER -> Icons.Outlined.VideoLibrary
-    InstagramTool.IGTV_DOWNLOADER -> Icons.Outlined.Tv
-    InstagramTool.CAROUSEL_DOWNLOADER -> Icons.Outlined.ViewCarousel
-    InstagramTool.STORIES_VIEWER -> Icons.Outlined.Visibility
 }

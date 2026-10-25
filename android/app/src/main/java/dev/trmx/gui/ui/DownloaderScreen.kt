@@ -117,13 +117,6 @@ fun DownloaderScreen(
             .padding(horizontal = Sp.m, vertical = Sp.s),
         verticalArrangement = Arrangement.spacedBy(Sp.m)
     ) {
-        // ---- Top App Bar ---------------------------------------------------
-        TrmxTopBar(
-            title = "Downloader",
-            subtitle = "Video & MP3 engine · Quality selection · History",
-            onBack = onBack
-        )
-
         // ---- Error & Notice Banners ----------------------------------------
         error?.let { err ->
             TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {

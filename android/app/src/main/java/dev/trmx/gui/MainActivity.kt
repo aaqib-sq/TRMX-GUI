@@ -69,6 +69,7 @@ import dev.trmx.gui.model.ToolExample
 import dev.trmx.gui.ui.ActivityScreen
 import dev.trmx.gui.ui.ConnectScreen
 import dev.trmx.gui.ui.DownloaderScreen
+import dev.trmx.gui.ui.InstagramHomeScreen
 import dev.trmx.gui.ui.InstagramToolScreen
 import dev.trmx.gui.ui.JobDetailScreen
 import dev.trmx.gui.ui.KillScreen
@@ -138,6 +139,7 @@ fun AppRoot(
     var screen by remember { mutableStateOf(Screen.RUN) }
     var showSettings by remember { mutableStateOf(false) }
     var showKillerDebug by remember { mutableStateOf(false) }
+    var isInstagramHomeOpen by remember { mutableStateOf(false) }
     var selectedInstagramTool by remember { mutableStateOf<InstagramTool?>(null) }
     var isDownloaderOpen by remember { mutableStateOf(false) }
     var stagedDownloadItem by remember { mutableStateOf<InstagramItem?>(null) }
@@ -250,16 +252,18 @@ fun AppRoot(
                 )
             } else {
                 // ---- Main Shell (3 Tabs: Run, Kill, Activity) ------------
-                val isInstagramSubScreen = screen == Screen.RUN && selectedInstagramTool != null
+                val isToolSubScreen = screen == Screen.RUN && selectedInstagramTool != null
+                val isInstagramHomeSubScreen = screen == Screen.RUN && isInstagramHomeOpen && selectedInstagramTool == null
                 val isDownloaderSubScreen = screen == Screen.RUN && isDownloaderOpen
 
-                BackHandler(enabled = screen != Screen.RUN || isDownloaderSubScreen || isInstagramSubScreen) {
+                BackHandler(enabled = screen != Screen.RUN || isDownloaderSubScreen || isToolSubScreen || isInstagramHomeSubScreen) {
                     when {
                         isDownloaderSubScreen -> {
                             isDownloaderOpen = false
                             stagedDownloadItem = null
                         }
-                        isInstagramSubScreen -> selectedInstagramTool = null
+                        isToolSubScreen -> selectedInstagramTool = null
+                        isInstagramHomeSubScreen -> isInstagramHomeOpen = false
                         else -> screen = Screen.RUN
                     }
                 }
@@ -276,14 +280,16 @@ fun AppRoot(
                                 screen == Screen.KILL -> "App Killer"
                                 screen == Screen.ACTIVITY -> "Activity"
                                 isDownloaderSubScreen -> "Downloader"
-                                isInstagramSubScreen -> selectedInstagramTool!!.title
+                                isToolSubScreen -> selectedInstagramTool!!.title
+                                isInstagramHomeSubScreen -> "Instagram"
                                 else -> "TRMX"
                             },
                             subtitle = when {
                                 screen == Screen.KILL -> "Automated force-stop"
                                 screen == Screen.ACTIVITY -> "Jobs & live output"
                                 isDownloaderSubScreen -> "Video & MP3 download engine"
-                                isInstagramSubScreen -> selectedInstagramTool!!.description
+                                isToolSubScreen -> selectedInstagramTool!!.description
+                                isInstagramHomeSubScreen -> "7 tools · Media & stories · No login required"
                                 else -> if (connected) "Connected · 127.0.0.1:8080" else "Bridge unreachable"
                             },
                             onBack = when {
@@ -293,8 +299,11 @@ fun AppRoot(
                                         stagedDownloadItem = null
                                     }
                                 }
-                                isInstagramSubScreen -> {
+                                isToolSubScreen -> {
                                     { selectedInstagramTool = null }
+                                }
+                                isInstagramHomeSubScreen -> {
+                                    { isInstagramHomeOpen = false }
                                 }
                                 else -> null
                             },
@@ -327,12 +336,12 @@ fun AppRoot(
                             NavigationBarItem(
                                 selected = screen == Screen.RUN,
                                 onClick = {
-                                    screen = Screen.RUN
-                                    // return to homepage if switching to Run
                                     if (screen != Screen.RUN) {
                                         isDownloaderOpen = false
                                         selectedInstagramTool = null
+                                        isInstagramHomeOpen = false
                                     }
+                                    screen = Screen.RUN
                                 },
                                 icon = {
                                     Icon(
@@ -414,6 +423,13 @@ fun AppRoot(
                                         modifier = Modifier.padding(padding),
                                     )
                                 }
+                                isInstagramHomeOpen -> {
+                                    InstagramHomeScreen(
+                                        onOpenTool = { tool -> selectedInstagramTool = tool },
+                                        onBack = { isInstagramHomeOpen = false },
+                                        modifier = Modifier.padding(padding),
+                                    )
+                                }
                                 else -> {
                                     RunScreen(
                                         onRunCommand = vm::runCommandLine,
@@ -422,8 +438,8 @@ fun AppRoot(
                                             stagedDownloadItem = null
                                             isDownloaderOpen = true
                                         },
-                                        onOpenInstagramTool = { tool ->
-                                            selectedInstagramTool = tool
+                                        onOpenInstagram = {
+                                            isInstagramHomeOpen = true
                                         },
                                         modifier = Modifier.padding(padding),
                                     )

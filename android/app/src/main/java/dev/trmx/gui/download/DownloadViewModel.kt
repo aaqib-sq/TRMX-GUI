@@ -11,12 +11,21 @@ package dev.trmx.gui.download
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.trmx.gui.model.SubmitRequest
 import dev.trmx.gui.net.BridgeClient
+import dev.trmx.gui.net.BridgeResult
+import dev.trmx.gui.net.SseClient
 import dev.trmx.gui.store.TokenStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -24,15 +33,24 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     private val store = TokenStore(application)
 
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
+
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
     private fun client() = BridgeClient(store.bridgeBaseUrl, store.token, http)
+    private fun sseClient() = SseClient(store.bridgeBaseUrl, store.token, http)
 
     private val historyStore = DownloadHistoryStore(application.filesDir)
-    private val fetchEngine = InstagramFetchEngine(http)
+    private val fetchEngine = InstagramFetchEngine(
+        http = http,
+        ytdlpRunner = { username -> runYtdlpProfileListing(username) }
+    )
     private val downloadEngine = DownloadEngine(::client, historyStore, viewModelScope)
 
     // UI state for Instagram Tools
@@ -56,6 +74,9 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     private val _selectedTab = MutableStateFlow(DownloadTab.POSTS)
     val selectedTab: StateFlow<DownloadTab> = _selectedTab.asStateFlow()
+
+    private val _postsLoadError = MutableStateFlow<String?>(null)
+    val postsLoadError: StateFlow<String?> = _postsLoadError.asStateFlow()
 
     // Overlay Preview State: playable video player overlay or full photo preview overlay
     private val _activePreviewItem = MutableStateFlow<InstagramItem?>(null)
@@ -119,6 +140,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _singleItem.value = null
         _items.value = emptyList()
         _parsedLink.value = null
+        _postsLoadError.value = null
     }
 
     fun setTab(tab: DownloadTab) {
@@ -195,6 +217,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _profile.value = null
         _singleItem.value = null
         _items.value = emptyList()
+        _postsLoadError.value = null
 
         viewModelScope.launch {
             try {
@@ -203,6 +226,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                         val result = fetchEngine.fetchProfile(parsed.username ?: query)
                         _profile.value = result.profile
                         _items.value = result.items
+                        _postsLoadError.value = result.postsLoadError
                         if (result.blockedNotice != null) {
                             _notice.value = result.blockedNotice
                         }
@@ -277,5 +301,88 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                 _error.value = "Failed to retry download: ${e.message}"
             }
         }
+    }
+
+    /**
+     * Route 3 fallback: flat-playlist listing via the existing bridge.
+     * Uses strict job name "profile:<shortcode>" capped at 200 characters.
+     */
+    private suspend fun runYtdlpProfileListing(username: String): List<InstagramItem> = withContext(Dispatchers.IO) {
+        val client = client()
+        val jobName = DownloadEngine.buildJobName("profile", username)
+        val profileUrl = "https://www.instagram.com/$username/"
+        val argv = listOf(
+            "yt-dlp",
+            "--newline",
+            "--flat-playlist",
+            "-j",
+            profileUrl
+        )
+
+        val submitResult = client.submitJob(
+            SubmitRequest(
+                name = jobName,
+                type = "argv",
+                argv = argv,
+                cwd = DownloadEngine.DOWNLOAD_DIR,
+                confirm = true
+            )
+        )
+
+        val jobId = when (submitResult) {
+            is BridgeResult.Success -> submitResult.data.response.job_id
+            else -> return@withContext emptyList()
+        }
+
+        val items = mutableListOf<InstagramItem>()
+        val outputLines = mutableListOf<String>()
+
+        try {
+            sseClient()
+                .stream("/v1/jobs/$jobId/output?from_seq=1&follow=1&stream=stdout")
+                .collect { frame ->
+                    if (frame.event == "stdout" && frame.data.isNotBlank()) {
+                        val text = runCatching {
+                            json.parseToJsonElement(frame.data).jsonObject["text"]?.jsonPrimitive?.content
+                        }.getOrNull() ?: frame.data
+                        outputLines.add(text)
+                    }
+                }
+        } catch (_: Exception) {
+            // Ignore stream read errors and parse what was collected
+        }
+
+        for (line in outputLines) {
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue
+            runCatching {
+                val obj = json.parseToJsonElement(trimmed).jsonObject
+                val id = obj["id"]?.jsonPrimitive?.content ?: return@runCatching
+                val title = obj["title"]?.jsonPrimitive?.content ?: "Post: $id"
+                val url = obj["url"]?.jsonPrimitive?.content ?: "https://www.instagram.com/p/$id/"
+                val thumbnail = obj["thumbnail"]?.jsonPrimitive?.content
+                val duration = obj["duration"]?.jsonPrimitive?.longOrNull
+                val isVideo = (duration != null && duration > 0) || url.contains("/reel/")
+                val itemType = if (url.contains("/reel/")) InstagramItemType.REEL else if (isVideo) InstagramItemType.VIDEO else InstagramItemType.POST
+
+                items.add(
+                    InstagramItem(
+                        id = id,
+                        shortcode = id,
+                        type = itemType,
+                        title = HtmlDecoder.decode(title),
+                        caption = HtmlDecoder.decode(title),
+                        url = url,
+                        previewUrl = thumbnail,
+                        directMediaUrl = thumbnail,
+                        durationSeconds = duration,
+                        isVideo = isVideo,
+                        isAvailable = true
+                    )
+                )
+            }
+        }
+
+        items
     }
 }

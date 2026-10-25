@@ -1,6 +1,12 @@
 package dev.trmx.gui.download
 
 import dev.trmx.gui.job.SubmitValidator
+import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -497,5 +503,260 @@ class InstagramDownloaderTest {
             cwd = DownloadEngine.DOWNLOAD_DIR
         )
         assertTrue("Expected 0 validation errors for reel download, got: $errors", errors.isEmpty())
+    }
+
+    // ------------------------------------------------------------------------
+    // 8. Round v3 Fixes: Bio separation, fallback chain, and avatar entities
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `decodes HTML entities in avatar URLs properly`() {
+        val rawAvatar = "https://scontent.cdninstagram.com/v/t51.2885-19/123_n.jpg?_nc_cat=1&amp;oh=00_AYB&amp;oe=66F&amp;edm=AP_V10E"
+        val expected = "https://scontent.cdninstagram.com/v/t51.2885-19/123_n.jpg?_nc_cat=1&oh=00_AYB&oe=66F&edm=AP_V10E"
+        val cleaned = InstagramFetchEngine.cleanUrl(rawAvatar)
+        assertEquals(expected, cleaned)
+        assertFalse(cleaned!!.contains("&amp;"))
+    }
+
+    @Test
+    fun `HTML path biography separation - og description counts line must not become biography`() {
+        val engine = InstagramFetchEngine(OkHttpClient())
+
+        // Case A: Page has og:description counts line and NO real bio in JSON -> biography must be empty string
+        val htmlWithoutBio = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta property="og:title" content="Nejam Nejam Side (@alinizam9873) • Instagram photos and videos">
+                <meta property="og:description" content="366 Followers, 376 Following, 29 Posts - See Instagram photos and videos from Nejam Nejam Side (@alinizam9873)">
+                <meta property="og:image" content="https://scontent.cdninstagram.com/v/t51.2885-19/avatar.jpg?oh=abc&amp;oe=xyz">
+            </head>
+            <body></body>
+            </html>
+        """.trimIndent()
+
+        val parsedA = engine.parseProfileHtml(htmlWithoutBio, "alinizam9873")
+        assertEquals("Nejam Nejam Side", parsedA.profile.fullName)
+        assertEquals(366L, parsedA.profile.followersCount)
+        assertEquals(376L, parsedA.profile.followingCount)
+        assertEquals(29L, parsedA.profile.postsCount)
+        assertEquals("", parsedA.profile.biography) // og:description counts line NEVER becomes biography
+        assertFalse(parsedA.profile.biography.contains("Followers"))
+        assertEquals("https://scontent.cdninstagram.com/v/t51.2885-19/avatar.jpg?oh=abc&oe=xyz", parsedA.profile.avatarUrl)
+
+        // Case B: Page has og:description counts line AND real biography in page JSON -> biography must be the real biography
+        val htmlWithBio = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta property="og:title" content="Artist Name (@artist) • Instagram photos">
+                <meta property="og:description" content="10K Followers, 150 Following, 42 Posts">
+                <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Person",
+                    "name": "Artist Name",
+                    "description": "Musician, producer, and sound designer &#x26; creator."
+                }
+                </script>
+            </head>
+            <body></body>
+            </html>
+        """.trimIndent()
+
+        val parsedB = engine.parseProfileHtml(htmlWithBio, "artist")
+        assertEquals(10000L, parsedB.profile.followersCount)
+        assertEquals(150L, parsedB.profile.followingCount)
+        assertEquals(42L, parsedB.profile.postsCount)
+        assertEquals("Musician, producer, and sound designer & creator.", parsedB.profile.biography)
+        assertFalse(parsedB.profile.biography.contains("Followers"))
+    }
+
+    @Test
+    fun `item fallback chain - when API edges empty and postsCount greater than 0, ytdlp fallback is attempted`() = runBlocking {
+        var fallbackAttempted = false
+        val mockItems = listOf(
+            InstagramItem(
+                id = "item_123",
+                shortcode = "Cxyz123",
+                type = InstagramItemType.REEL,
+                title = "Reel: Cxyz123",
+                url = "https://www.instagram.com/p/Cxyz123/",
+                isVideo = true
+            )
+        )
+
+        val apiJson = """
+            {
+                "data": {
+                    "user": {
+                        "full_name": "Nejam Nejam Side",
+                        "biography": "Musician",
+                        "profile_pic_url_hd": "https://scontent.cdninstagram.com/avatar.jpg?oh=1&amp;oe=2",
+                        "is_private": false,
+                        "is_verified": false,
+                        "edge_owner_to_timeline_media": {
+                            "count": 29,
+                            "edges": []
+                        },
+                        "edge_followed_by": { "count": 366 },
+                        "edge_follow": { "count": 376 }
+                    }
+                }
+            }
+        """.trimIndent()
+
+        val htmlPage = """
+            <!DOCTYPE html><html><head>
+            <meta property="og:title" content="Nejam Nejam Side (@alinizam9873)">
+            <meta property="og:description" content="366 Followers, 376 Following, 29 Posts">
+            </head><body></body></html>
+        """.trimIndent()
+
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val (code, contentType, bodyText) = if (url.contains("web_profile_info")) {
+                    Triple(200, "application/json", apiJson)
+                } else {
+                    Triple(200, "text/html", htmlPage)
+                }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(code)
+                    .message("OK")
+                    .body(bodyText.toResponseBody(contentType.toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val engine = InstagramFetchEngine(
+            http = client,
+            ytdlpRunner = { username ->
+                fallbackAttempted = true
+                assertEquals("alinizam9873", username)
+                mockItems
+            }
+        )
+
+        val result = engine.fetchProfile("alinizam9873")
+
+        assertEquals(29L, result.profile.postsCount)
+        assertTrue("Fallback ytdlp listing must be attempted when API edges are empty", fallbackAttempted)
+        assertTrue("Items must contain fallback items", result.items.any { it.shortcode == "Cxyz123" })
+        assertNull("postsLoadError must be null when fallback succeeds", result.postsLoadError)
+        assertEquals("https://scontent.cdninstagram.com/avatar.jpg?oh=1&oe=2", result.profile.avatarUrl)
+    }
+
+    @Test
+    fun `item fallback chain - when all 3 routes fail while postsCount greater than 0, postsLoadError is populated`() = runBlocking {
+        val apiJson = """
+            {
+                "data": {
+                    "user": {
+                        "full_name": "Nejam Nejam Side",
+                        "biography": "",
+                        "profile_pic_url_hd": "https://scontent.cdninstagram.com/avatar.jpg",
+                        "is_private": false,
+                        "is_verified": false,
+                        "edge_owner_to_timeline_media": {
+                            "count": 29,
+                            "edges": []
+                        },
+                        "edge_followed_by": { "count": 366 },
+                        "edge_follow": { "count": 376 }
+                    }
+                }
+            }
+        """.trimIndent()
+
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(apiJson.toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val engine = InstagramFetchEngine(
+            http = client,
+            ytdlpRunner = { username ->
+                // Simulate bridge failure
+                emptyList()
+            }
+        )
+
+        val result = engine.fetchProfile("alinizam9873")
+
+        assertEquals(29L, result.profile.postsCount)
+        assertNotNull("postsLoadError must be populated with failure reason when all routes fail", result.postsLoadError)
+        assertTrue(result.postsLoadError!!.contains("Could not load public posts"))
+    }
+
+    @Test
+    fun `embedded JSON timeline parser - extracts media nodes and highlights from HTML`() {
+        val engine = InstagramFetchEngine(OkHttpClient())
+
+        val html = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta property="og:title" content="Test User (@testuser)">
+                <meta property="og:description" content="100 Followers, 50 Following, 2 Posts">
+                <script type="application/json">
+                {
+                    "xdt_api__v1__profile_timeline": {
+                        "edges": [
+                            {
+                                "node": {
+                                    "id": "111",
+                                    "shortcode": "SHORT1",
+                                    "is_video": true,
+                                    "display_url": "https://cdn.example.com/thumb1.jpg?oh=abc&amp;oe=123",
+                                    "video_url": "https://cdn.example.com/video1.mp4",
+                                    "edge_media_to_caption": { "edges": [{ "node": { "text": "Reel &#x22;Awesome&#x22;" } }] }
+                                }
+                            },
+                            {
+                                "node": {
+                                    "id": "222",
+                                    "shortcode": "SHORT2",
+                                    "is_video": false,
+                                    "display_url": "https://cdn.example.com/photo2.jpg",
+                                    "edge_media_to_caption": { "edges": [{ "node": { "text": "Photo caption" } }] }
+                                }
+                            }
+                        ]
+                    }
+                }
+                </script>
+            </head>
+            <body>
+                <a href="/stories/highlights/1789999999/">highlight:1789999999</a>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val items = engine.parseTimelineFromHtml(html, "testuser")
+        assertEquals(3, items.size)
+
+        val reel = items.find { it.shortcode == "SHORT1" }
+        assertNotNull(reel)
+        assertEquals(InstagramItemType.REEL, reel?.type)
+        assertEquals("Reel \"Awesome\"", reel?.caption)
+        assertEquals("https://cdn.example.com/thumb1.jpg?oh=abc&oe=123", reel?.previewUrl)
+
+        val photo = items.find { it.shortcode == "SHORT2" }
+        assertNotNull(photo)
+        assertEquals(InstagramItemType.PHOTO, photo?.type)
+
+        val highlight = items.find { it.type == InstagramItemType.HIGHLIGHT }
+        assertNotNull(highlight)
+        assertEquals("1789999999", highlight?.shortcode)
     }
 }

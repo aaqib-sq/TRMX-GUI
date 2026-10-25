@@ -11,6 +11,8 @@ package dev.trmx.gui.download
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonArray
@@ -28,7 +30,8 @@ import java.util.regex.Pattern
 data class ProfileFetchResult(
     val profile: InstagramProfile,
     val items: List<InstagramItem>,
-    val blockedNotice: String? = null
+    val blockedNotice: String? = null,
+    val postsLoadError: String? = null
 )
 
 /**
@@ -36,10 +39,18 @@ data class ProfileFetchResult(
  * Queries public endpoints with standard browser headers to retrieve profile metadata,
  * posts, reels, and stories without requiring any login or user account.
  *
- * All HTML entities (such as &#x909;) are decoded strictly at the parse layer
- * so titles and captions never display raw encoded escape sequences.
+ * Implements the 3-route resolution order (PART B):
+ * 1. web_profile_info timeline edges, when present
+ * 2. Profile-page embedded JSON timeline data
+ * 3. yt-dlp flat-playlist listing via existing bridge as fallback
+ *
+ * All HTML entities (such as &#x909; and &amp;) are decoded strictly at the parse layer
+ * so titles, captions, and avatar URLs never display raw encoded escape sequences.
  */
-class InstagramFetchEngine(private val http: OkHttpClient) {
+class InstagramFetchEngine(
+    private val http: OkHttpClient,
+    val ytdlpRunner: (suspend (username: String) -> List<InstagramItem>)? = null
+) {
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -63,20 +74,113 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         "X-Requested-With" to "XMLHttpRequest"
     )
 
+    companion object {
+        fun cleanUrl(raw: String?): String? {
+            if (raw.isNullOrBlank()) return null
+            return HtmlDecoder.decode(raw).trim()
+        }
+    }
+
     suspend fun fetchProfile(username: String): ProfileFetchResult = withContext(Dispatchers.IO) {
-        // Step 1: Attempt web_profile_info public API
-        runCatching {
-            fetchProfileViaApi(username)
-        }.getOrElse { apiError ->
-            // Step 2: Fallback to scraping public HTML page
-            runCatching {
-                fetchProfileViaHtml(username)
-            }.getOrElse { htmlError ->
-                // Step 3: Graceful degradation — create a fallback public profile
-                // allowing direct yt-dlp downloads without ever crashing or asking for login.
-                createGracefulProfileFallback(username, "Instagram public web gateway is rate-limited. Direct yt-dlp download is ready.")
+        var profile: InstagramProfile? = null
+        val items = mutableListOf<InstagramItem>()
+        var blockedNotice: String? = null
+        var postsLoadError: String? = null
+
+        // --------------------------------------------------------------------
+        // Route 1: web_profile_info public API
+        // --------------------------------------------------------------------
+        val apiResult = runCatching { fetchProfileViaApi(username) }.getOrNull()
+        if (apiResult != null) {
+            profile = apiResult.profile
+            items.addAll(apiResult.items)
+        }
+
+        val hasTimelineItemsFromApi = items.any { it.type != InstagramItemType.PROFILE_PIC }
+
+        // If private, never attempt login workarounds
+        if (profile?.isPrivate == true) {
+            return@withContext ProfileFetchResult(profile, items)
+        }
+
+        // --------------------------------------------------------------------
+        // Route 2: Profile-page embedded JSON timeline data
+        // --------------------------------------------------------------------
+        if (!hasTimelineItemsFromApi) {
+            val htmlResult = runCatching { fetchProfileViaHtml(username) }.getOrNull()
+            if (htmlResult != null) {
+                if (profile == null) {
+                    profile = htmlResult.profile
+                } else {
+                    // Enrich metadata from HTML if API was missing parts
+                    if (profile.biography.isBlank() && htmlResult.profile.biography.isNotBlank()) {
+                        profile = profile.copy(biography = htmlResult.profile.biography)
+                    }
+                    if (profile.avatarUrl.isNullOrBlank() && !htmlResult.profile.avatarUrl.isNullOrBlank()) {
+                        profile = profile.copy(
+                            avatarUrl = htmlResult.profile.avatarUrl,
+                            fullSizeAvatarUrl = htmlResult.profile.avatarUrl
+                        )
+                    }
+                    if (profile.postsCount == 0L && htmlResult.profile.postsCount > 0L) {
+                        profile = profile.copy(postsCount = htmlResult.profile.postsCount)
+                    }
+                }
+
+                val htmlTimelineItems = htmlResult.items.filter { it.type != InstagramItemType.PROFILE_PIC }
+                val existingIds = items.map { it.id }.toSet()
+                for (item in htmlTimelineItems) {
+                    if (item.id !in existingIds) {
+                        items.add(item)
+                    }
+                }
             }
         }
+
+        val currentPostsCount = profile?.postsCount ?: 0L
+        val hasTimelineItems = items.any { it.type != InstagramItemType.PROFILE_PIC }
+
+        // --------------------------------------------------------------------
+        // Route 3: yt-dlp flat-playlist via bridge fallback
+        // --------------------------------------------------------------------
+        if (!hasTimelineItems && currentPostsCount > 0L && ytdlpRunner != null) {
+            val ytdlpItems = runCatching { ytdlpRunner.invoke(username) }.getOrNull()
+            if (!ytdlpItems.isNullOrEmpty()) {
+                val existingIds = items.map { it.id }.toSet()
+                for (item in ytdlpItems) {
+                    if (item.id !in existingIds) {
+                        items.add(item)
+                    }
+                }
+            }
+        }
+
+        // Graceful fallback if neither API nor HTML could fetch profile metadata
+        if (profile == null) {
+            val fallback = createGracefulProfileFallback(username, "Instagram public web gateway is rate-limited. Direct yt-dlp download is ready.")
+            profile = fallback.profile
+            items.addAll(fallback.items)
+            blockedNotice = fallback.blockedNotice
+        }
+
+        // Final verification for posts/reels: never show false empty when postsCount > 0
+        val finalHasTimelineItems = items.any { it.type != InstagramItemType.PROFILE_PIC }
+        if (profile.postsCount > 0L && !finalHasTimelineItems && !profile.isPrivate) {
+            postsLoadError = "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed to retrieve timeline items without login."
+        }
+
+        // Ensure avatar entities decoded
+        profile = profile.copy(
+            avatarUrl = cleanUrl(profile.avatarUrl),
+            fullSizeAvatarUrl = cleanUrl(profile.fullSizeAvatarUrl)
+        )
+
+        ProfileFetchResult(
+            profile = profile,
+            items = items,
+            blockedNotice = blockedNotice,
+            postsLoadError = postsLoadError
+        )
     }
 
     suspend fun fetchSingleItem(link: ParsedInstagramLink): InstagramItem = withContext(Dispatchers.IO) {
@@ -106,7 +210,7 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         }
     }
 
-    private fun fetchProfileViaApi(username: String): ProfileFetchResult {
+    fun fetchProfileViaApi(username: String): ProfileFetchResult {
         val url = "https://www.instagram.com/api/v1/users/web_profile_info/?username=$username"
         val request = Request.Builder()
             .url(url)
@@ -125,8 +229,10 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
 
         val rawFullName = user["full_name"]?.jsonPrimitive?.content ?: username
         val rawBio = user["biography"]?.jsonPrimitive?.content ?: ""
-        val avatarUrl = user["profile_pic_url_hd"]?.jsonPrimitive?.content
-            ?: user["profile_pic_url"]?.jsonPrimitive?.content
+        val avatarUrl = cleanUrl(
+            user["profile_pic_url_hd"]?.jsonPrimitive?.content
+                ?: user["profile_pic_url"]?.jsonPrimitive?.content
+        )
         val isPrivate = user["is_private"]?.jsonPrimitive?.booleanOrNull ?: false
         val isVerified = user["is_verified"]?.jsonPrimitive?.booleanOrNull ?: false
 
@@ -190,25 +296,34 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         return ProfileFetchResult(profile, items)
     }
 
-    private fun parseMediaNode(node: JsonObject, username: String): InstagramItem? {
-        val id = node["id"]?.jsonPrimitive?.content ?: return null
-        val shortcode = node["shortcode"]?.jsonPrimitive?.content ?: id
+    fun parseMediaNode(node: JsonObject, username: String): InstagramItem? {
+        val id = node["id"]?.jsonPrimitive?.content ?: node["pk"]?.jsonPrimitive?.content ?: return null
+        val shortcode = node["shortcode"]?.jsonPrimitive?.content ?: node["code"]?.jsonPrimitive?.content ?: id
         val typename = node["__typename"]?.jsonPrimitive?.content ?: ""
         val isVideo = node["is_video"]?.jsonPrimitive?.booleanOrNull ?: false
-        val displayUrl = node["display_url"]?.jsonPrimitive?.content
-        val videoUrl = node["video_url"]?.jsonPrimitive?.content
+        val displayUrl = cleanUrl(
+            node["display_url"]?.jsonPrimitive?.content
+                ?: node["display_uri"]?.jsonPrimitive?.content
+                ?: node["thumbnail_src"]?.jsonPrimitive?.content
+        )
+        val videoUrl = cleanUrl(node["video_url"]?.jsonPrimitive?.content)
         val rawCaption = node["edge_media_to_caption"]?.jsonObject?.get("edges")?.jsonArray
             ?.firstOrNull()?.jsonObject?.get("node")?.jsonObject?.get("text")
-            ?.jsonPrimitive?.content ?: ""
+            ?.jsonPrimitive?.content
+            ?: node["caption"]?.jsonObject?.get("text")?.jsonPrimitive?.content
+            ?: ""
         val caption = HtmlDecoder.decode(rawCaption)
         val timestamp = node["taken_at_timestamp"]?.jsonPrimitive?.longOrNull
+            ?: node["taken_at"]?.jsonPrimitive?.longOrNull
         val dim = node["dimensions"]?.jsonObject
         val width = dim?.get("width")?.jsonPrimitive?.content?.toIntOrNull()
         val height = dim?.get("height")?.jsonPrimitive?.content?.toIntOrNull()
 
         val likes = node["edge_liked_by"]?.jsonObject?.get("count")?.jsonPrimitive?.longOrNull
             ?: node["edge_media_preview_like"]?.jsonObject?.get("count")?.jsonPrimitive?.longOrNull
+            ?: node["like_count"]?.jsonPrimitive?.longOrNull
         val comments = node["edge_media_to_comment"]?.jsonObject?.get("count")?.jsonPrimitive?.longOrNull
+            ?: node["comment_count"]?.jsonPrimitive?.longOrNull
 
         // Carousel items (GraphSidecar)
         val sidecarEdges = node["edge_sidecar_to_children"]?.jsonObject?.get("edges")?.jsonArray
@@ -217,8 +332,8 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
             for ((index, sidecarEdge) in sidecarEdges.withIndex()) {
                 val childNode = sidecarEdge.jsonObject["node"]?.jsonObject ?: continue
                 val cId = childNode["id"]?.jsonPrimitive?.content ?: "${id}_$index"
-                val cDisplay = childNode["display_url"]?.jsonPrimitive?.content
-                val cVideo = childNode["video_url"]?.jsonPrimitive?.content
+                val cDisplay = cleanUrl(childNode["display_url"]?.jsonPrimitive?.content)
+                val cVideo = cleanUrl(childNode["video_url"]?.jsonPrimitive?.content)
                 val cIsVideo = childNode["is_video"]?.jsonPrimitive?.booleanOrNull ?: false
                 carouselChildren.add(
                     InstagramItem(
@@ -274,7 +389,7 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         )
     }
 
-    private fun fetchProfileViaHtml(username: String): ProfileFetchResult {
+    fun fetchProfileViaHtml(username: String): ProfileFetchResult {
         val url = "https://www.instagram.com/$username/"
         val request = Request.Builder()
             .url(url)
@@ -283,7 +398,10 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
 
         val response = http.newCall(request).execute()
         val html = response.body?.string() ?: throw IOException("Empty HTML response")
+        return parseProfileHtml(html, username, url)
+    }
 
+    fun parseProfileHtml(html: String, username: String, url: String = "https://www.instagram.com/$username/"): ProfileFetchResult {
         val titleMatch = Pattern.compile("""<meta\s+property="og:title"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
         val rawTitle = if (titleMatch.find()) titleMatch.group(1) else username
 
@@ -291,13 +409,14 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         val rawDesc = if (descMatch.find()) descMatch.group(1) else ""
 
         val imageMatch = Pattern.compile("""<meta\s+property="og:image"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
-        val avatarUrl = if (imageMatch.find()) imageMatch.group(1) else null
+        val rawAvatarUrl = if (imageMatch.find()) imageMatch.group(1) else null
+        val avatarUrl = cleanUrl(rawAvatarUrl)
 
-        // Parse followers/posts from og:description (e.g. "12K Followers, 300 Following, 45 Posts")
+        // Parse followers/following/posts STRICTLY from og:description (e.g. "12K Followers, 300 Following, 45 Posts")
         var followers = 0L
         var following = 0L
         var posts = 0L
-        val statsPattern = Pattern.compile("""([\d,.]+[KMkm]?)\s+Followers,\s+([\d,.]+[KMkm]?)\s+Following,\s+([\d,.]+[KMkm]?)\s+Posts""")
+        val statsPattern = Pattern.compile("""([\d,.]+[KMkm]?)\s+Followers,\s+([\d,.]+[KMkm]?)\s+Following,\s+([\d,.]+[KMkm]?)\s+Posts""", Pattern.CASE_INSENSITIVE)
         val statsMatcher = statsPattern.matcher(rawDesc)
         if (statsMatcher.find()) {
             followers = parseCount(statsMatcher.group(1))
@@ -309,12 +428,14 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
 
         // Decode HTML entities at parse layer
         val decodedFullName = HtmlDecoder.decode(rawTitle.substringBefore("(@").trim().ifBlank { username })
-        val decodedBio = HtmlDecoder.decode(rawDesc)
+
+        // Parse REAL biography from page JSON — og:description is ONLY for counts, NEVER for biography!
+        val realBio = extractBiographyFromHtml(html)
 
         val profile = InstagramProfile(
             username = username,
             fullName = decodedFullName,
-            biography = decodedBio,
+            biography = realBio,
             avatarUrl = avatarUrl,
             postsCount = posts,
             followersCount = followers,
@@ -341,7 +462,197 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
             )
         }
 
+        // Parse embedded JSON timeline data
+        if (!isPrivate) {
+            val timelineItems = parseTimelineFromHtml(html, username)
+            items.addAll(timelineItems)
+        }
+
         return ProfileFetchResult(profile, items)
+    }
+
+    /**
+     * Extracts the real biography from page JSON.
+     * og:description is strictly excluded — counts lines never become biography.
+     */
+    fun extractBiographyFromHtml(html: String): String {
+        // 1. Try ld+json description
+        val ldPattern = Pattern.compile("""<script\s+type="application/ld\+json"[^>]*>(.*?)</script>""", Pattern.DOTALL)
+        val ldMatcher = ldPattern.matcher(html)
+        while (ldMatcher.find()) {
+            val ldBody = ldMatcher.group(1).trim()
+            runCatching {
+                val ldJson = json.parseToJsonElement(ldBody).jsonObject
+                val desc = ldJson["description"]?.jsonPrimitive?.content
+                    ?: ldJson["mainEntity"]?.jsonObject?.get("description")?.jsonPrimitive?.content
+                if (!desc.isNullOrBlank() && !isCountsLine(desc)) {
+                    return HtmlDecoder.decode(desc).trim()
+                }
+            }
+        }
+
+        // 2. Try embedded "biography":"..."
+        val bioPattern = Pattern.compile(""""biography"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"""")
+        val bioMatcher = bioPattern.matcher(html)
+        if (bioMatcher.find()) {
+            val rawBio = bioMatcher.group(1)
+            val unescaped = unescapeJsonString(rawBio)
+            if (unescaped.isNotBlank() && !isCountsLine(unescaped)) {
+                return HtmlDecoder.decode(unescaped).trim()
+            }
+        }
+
+        // 3. Try "biography_with_entities"
+        val bioEntitiesPattern = Pattern.compile(""""biography_with_entities"\s*:\s*\{\s*"raw_text"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"""")
+        val bioEntitiesMatcher = bioEntitiesPattern.matcher(html)
+        if (bioEntitiesMatcher.find()) {
+            val rawBio = bioEntitiesMatcher.group(1)
+            val unescaped = unescapeJsonString(rawBio)
+            if (unescaped.isNotBlank() && !isCountsLine(unescaped)) {
+                return HtmlDecoder.decode(unescaped).trim()
+            }
+        }
+
+        return ""
+    }
+
+    private fun isCountsLine(text: String): Boolean {
+        return text.contains("Followers", ignoreCase = true) &&
+                text.contains("Following", ignoreCase = true) &&
+                text.contains("Posts", ignoreCase = true)
+    }
+
+    private fun unescapeJsonString(raw: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < raw.length) {
+            val c = raw[i]
+            if (c == '\\' && i + 1 < raw.length) {
+                when (val next = raw[i + 1]) {
+                    'n' -> { sb.append('\n'); i += 2 }
+                    'r' -> { sb.append('\r'); i += 2 }
+                    't' -> { sb.append('\t'); i += 2 }
+                    '\"' -> { sb.append('\"'); i += 2 }
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '/' -> { sb.append('/'); i += 2 }
+                    'u' -> {
+                        if (i + 6 <= raw.length) {
+                            val hex = raw.substring(i + 2, i + 6)
+                            val code = hex.toIntOrNull(16)
+                            if (code != null) {
+                                sb.append(code.toChar())
+                                i += 6
+                            } else {
+                                sb.append(c)
+                                i++
+                            }
+                        } else {
+                            sb.append(c)
+                            i++
+                        }
+                    }
+                    else -> {
+                        sb.append(next)
+                        i += 2
+                    }
+                }
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Parses embedded timeline media and highlight reels from the profile HTML page JSON.
+     */
+    fun parseTimelineFromHtml(html: String, username: String): List<InstagramItem> {
+        val items = mutableListOf<InstagramItem>()
+        val seenCodes = mutableSetOf<String>()
+
+        // 1. Look for application/json script tags
+        val scriptPattern = Pattern.compile("""<script\s+type="application/json"[^>]*>(.*?)</script>""", Pattern.DOTALL)
+        val scriptMatcher = scriptPattern.matcher(html)
+        while (scriptMatcher.find()) {
+            val body = scriptMatcher.group(1).trim()
+            if (body.contains("\"edge_owner_to_timeline_media\"") ||
+                body.contains("\"xdt_api__v1__profile_timeline\"") ||
+                body.contains("\"xdt_api__v1__clips_user_connection\"") ||
+                body.contains("\"shortcode\"")) {
+                runCatching {
+                    val root = json.parseToJsonElement(body)
+                    findAndCollectMedia(root, username, items, seenCodes)
+                }
+            }
+        }
+
+        // 2. Also search for public highlights in the HTML
+        val highlightPattern = Pattern.compile(""""highlight:(\d+)"""")
+        val highlightMatcher = highlightPattern.matcher(html)
+        while (highlightMatcher.find()) {
+            val hId = highlightMatcher.group(1)
+            if (seenCodes.add("highlight_$hId")) {
+                items.add(
+                    InstagramItem(
+                        id = "highlight_$hId",
+                        shortcode = hId,
+                        type = InstagramItemType.HIGHLIGHT,
+                        title = "Highlight #$hId",
+                        caption = "@$username story highlight",
+                        url = "https://www.instagram.com/stories/highlights/$hId/",
+                        isVideo = false,
+                        isAvailable = true
+                    )
+                )
+            }
+        }
+
+        return items
+    }
+
+    private fun findAndCollectMedia(
+        element: JsonElement,
+        username: String,
+        items: MutableList<InstagramItem>,
+        seenCodes: MutableSet<String>
+    ) {
+        when (element) {
+            is JsonObject -> {
+                // If it's an edge container
+                val timelineEdges = element["edge_owner_to_timeline_media"]?.jsonObject?.get("edges")?.jsonArray
+                    ?: element["xdt_api__v1__profile_timeline"]?.jsonObject?.get("edges")?.jsonArray
+                    ?: element["xdt_api__v1__clips_user_connection"]?.jsonObject?.get("edges")?.jsonArray
+
+                if (timelineEdges != null) {
+                    for (edge in timelineEdges) {
+                        val node = edge.jsonObject["node"]?.jsonObject ?: edge.jsonObject
+                        val parsed = parseMediaNode(node, username)
+                        if (parsed != null && seenCodes.add(parsed.shortcode ?: parsed.id)) {
+                            items.add(parsed)
+                        }
+                    }
+                }
+
+                // If element looks like a media node itself
+                if (element.containsKey("shortcode") && (element.containsKey("display_url") || element.containsKey("display_uri") || element.containsKey("id"))) {
+                    val parsed = parseMediaNode(element, username)
+                    if (parsed != null && seenCodes.add(parsed.shortcode ?: parsed.id)) {
+                        items.add(parsed)
+                    }
+                }
+
+                for ((_, v) in element) {
+                    findAndCollectMedia(v, username, items, seenCodes)
+                }
+            }
+            is JsonArray -> {
+                for (item in element) {
+                    findAndCollectMedia(item, username, items, seenCodes)
+                }
+            }
+            else -> {}
+        }
     }
 
     private fun fetchItemViaHtml(url: String, link: ParsedInstagramLink): InstagramItem {
@@ -362,10 +673,10 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         val decodedDesc = HtmlDecoder.decode(rawDesc)
 
         val imageMatch = Pattern.compile("""<meta\s+property="og:image"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
-        val previewUrl = if (imageMatch.find()) imageMatch.group(1) else null
+        val previewUrl = cleanUrl(if (imageMatch.find()) imageMatch.group(1) else null)
 
         val videoMatch = Pattern.compile("""<meta\s+property="og:video"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
-        val videoUrl = if (videoMatch.find()) videoMatch.group(1) else null
+        val videoUrl = cleanUrl(if (videoMatch.find()) videoMatch.group(1) else null)
 
         // Try extracting likes and comments from description
         var likes: Long? = null
@@ -407,7 +718,7 @@ class InstagramFetchEngine(private val http: OkHttpClient) {
         )
     }
 
-    private fun createGracefulProfileFallback(username: String, reason: String): ProfileFetchResult {
+    fun createGracefulProfileFallback(username: String, reason: String): ProfileFetchResult {
         val profile = InstagramProfile(
             username = username,
             fullName = username,

@@ -133,6 +133,7 @@ fun InstagramToolScreen(
     val activePreviewItem by viewModel.activePreviewItem.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val postsLoadError by viewModel.postsLoadError.collectAsStateWithLifecycle()
 
     BackHandler {
         if (activePreviewItem != null) {
@@ -150,13 +151,6 @@ fun InstagramToolScreen(
                 .padding(horizontal = Sp.m, vertical = Sp.s),
             verticalArrangement = Arrangement.spacedBy(Sp.m)
         ) {
-            // ---- Top Header ------------------------------------------------
-            TrmxTopBar(
-                title = tool.title,
-                subtitle = tool.description,
-                onBack = onBack
-            )
-
             // ---- Link Input Card -------------------------------------------
             TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {
                 Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
@@ -292,7 +286,11 @@ fun InstagramToolScreen(
                         DownloadTab.POSTS -> {
                             val postItems = items.filter { it.type != InstagramItemType.PROFILE_PIC }
                             if (postItems.isEmpty()) {
-                                EmptyTabNotice("No public posts found for this profile.")
+                                if (prof.postsCount > 0) {
+                                    EmptyTabNotice(postsLoadError ?: "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed.")
+                                } else {
+                                    EmptyTabNotice("No public posts found for this profile.")
+                                }
                             } else {
                                 VerticalCardsGrid(
                                     items = postItems,
@@ -305,7 +303,7 @@ fun InstagramToolScreen(
                             val storyItems = items.filter { it.type == InstagramItemType.STORY }
                             AnonymousStoriesBanner()
                             if (storyItems.isEmpty()) {
-                                EmptyTabNotice("No active public stories at this moment.")
+                                EmptyTabNotice("Stories could not be loaded without login. Public stories may require an active session.")
                             } else {
                                 VerticalCardsGrid(
                                     items = storyItems,
@@ -317,7 +315,7 @@ fun InstagramToolScreen(
                         DownloadTab.HIGHLIGHTS -> {
                             val highlightItems = items.filter { it.type == InstagramItemType.HIGHLIGHT }
                             if (highlightItems.isEmpty()) {
-                                EmptyTabNotice("No public highlights found.")
+                                EmptyTabNotice("Highlights could not be loaded without login. Public highlights may require an active session.")
                             } else {
                                 VerticalCardsGrid(
                                     items = highlightItems,
@@ -329,7 +327,12 @@ fun InstagramToolScreen(
                         DownloadTab.REELS -> {
                             val reelItems = items.filter { it.type == InstagramItemType.REEL }
                             if (reelItems.isEmpty()) {
-                                EmptyTabNotice("No public reels found.")
+                                val postItems = items.filter { it.type != InstagramItemType.PROFILE_PIC }
+                                if (prof.postsCount > 0 && postItems.isEmpty()) {
+                                    EmptyTabNotice(postsLoadError ?: "Could not load public reels. All retrieval routes failed.")
+                                } else {
+                                    EmptyTabNotice("No public reels found.")
+                                }
                             } else {
                                 VerticalCardsGrid(
                                     items = reelItems,
@@ -420,7 +423,8 @@ private fun ProfileHeaderCard(profile: InstagramProfile) {
                         url = profile.avatarUrl,
                         contentDescription = profile.username,
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        contentScale = ContentScale.Crop,
+                        fallbackText = profile.fullName.ifBlank { profile.username }
                     )
                 }
 
@@ -587,7 +591,8 @@ private fun VerticalCardItem(
                     url = item.previewUrl ?: item.directMediaUrl,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Crop,
+                    fallbackText = if (item.type == InstagramItemType.PROFILE_PIC) item.title else null
                 )
 
                 if (item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) {
@@ -651,7 +656,8 @@ private fun SpecificItemCard(
                     url = item.previewUrl ?: item.directMediaUrl,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Crop,
+                    fallbackText = if (item.type == InstagramItemType.PROFILE_PIC) item.title else null
                 )
 
                 if (item.isVideo || item.type == InstagramItemType.REEL || item.type == InstagramItemType.VIDEO) {
