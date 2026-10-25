@@ -273,7 +273,7 @@ class DownloadEngine(
                             "FAILED", "CANCELLED" -> {
                                 val failed = (historyStore.byId(recordId) ?: return).copy(
                                     status = "FAILED",
-                                    error = job.error ?: "Download terminated (${job.status})",
+                                    error = job.error?.message?.takeIf { it.isNotBlank() } ?: "Download terminated (${job.status})",
                                     endedAt = System.currentTimeMillis()
                                 )
                                 historyStore.update(failed)
