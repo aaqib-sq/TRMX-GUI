@@ -270,7 +270,7 @@ class DownloadEngine(
             when (val res = client.getJob(jobId)) {
                 is BridgeResult.Success -> {
                     consecutiveErrors = 0
-                    val job = res.data.job
+                    val job = res.data
                     val isDone = job.status in listOf("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT")
 
                     val progressPct = when (job.status) {
