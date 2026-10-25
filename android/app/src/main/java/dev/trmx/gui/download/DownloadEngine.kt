@@ -33,8 +33,12 @@ class DownloadEngine(
     private val clientProvider: () -> BridgeClient,
     private val historyStore: DownloadHistoryStore,
     private val scope: CoroutineScope,
-    private val storageChecker: suspend (BridgeClient) -> Boolean = { client ->
-        when (client.statFile(DOWNLOAD_DIR)) {
+    // No-arg checker: the client is obtained lazily INSIDE the default checker, so a
+    // caller that injects its own checker (e.g. tests) never pays for a client it
+    // does not use. (v6 called clientProvider() before the checker, which broke the
+    // missing-storage test whose provider deliberately throws if called.)
+    private val storageChecker: suspend () -> Boolean = {
+        when (clientProvider().statFile(DOWNLOAD_DIR)) {
             is BridgeResult.Success -> true
             is BridgeResult.HttpError -> false
             is BridgeResult.NetworkError -> true
@@ -140,8 +144,7 @@ class DownloadEngine(
         if (item.type == InstagramItemType.HIGHLIGHT && item.directMediaUrl.isNullOrBlank()) {
             throw IllegalArgumentException("Cannot download highlight: direct media URL is not resolved. Instagram highlights require login.")
         }
-        val client = clientProvider()
-        if (!storageChecker(client)) {
+        if (!storageChecker()) {
             throw IllegalStateException(STORAGE_SETUP_ERROR_MESSAGE)
         }
         val recordId = UUID.randomUUID().toString()
@@ -180,8 +183,7 @@ class DownloadEngine(
     }
 
     suspend fun retryDownload(recordId: String) = withContext(Dispatchers.IO) {
-        val client = clientProvider()
-        if (!storageChecker(client)) {
+        if (!storageChecker()) {
             val failed = historyStore.byId(recordId)?.copy(
                 status = "FAILED",
                 error = STORAGE_SETUP_ERROR_MESSAGE,
@@ -231,7 +233,7 @@ class DownloadEngine(
     ) = withContext(Dispatchers.IO) {
         val client = clientProvider()
 
-        if (!storageChecker(client)) {
+        if (!storageChecker()) {
             val failed = initialRecord.copy(
                 status = "FAILED",
                 error = STORAGE_SETUP_ERROR_MESSAGE,
