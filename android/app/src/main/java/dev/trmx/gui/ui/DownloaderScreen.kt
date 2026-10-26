@@ -62,6 +62,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -510,7 +511,7 @@ fun DownloaderScreen(
                 TrmxButton(
                     label = when {
                         isStagedPhoto -> "Start Download Photo"
-                        isStagedCarousel -> "Start Download All Slides (${stagedItem.carouselItems.size})"
+                        isStagedCarousel -> "Start Download All Slides (${stagedItem?.carouselItems?.size ?: 0})"
                         mediaMode == MediaMode.MP3 -> "Start Download MP3 (${audioQuality.label})"
                         else -> "Start Download Video (${videoQuality.label})"
                     },
