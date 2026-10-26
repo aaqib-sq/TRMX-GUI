@@ -30,10 +30,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Movie
-import androidx.compose.material.icons.outlined.Tv
-import androidx.compose.material.icons.outlined.VideoLibrary
-import androidx.compose.material.icons.outlined.ViewCarousel
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -146,9 +142,5 @@ fun InstagramToolCard(
 }
 
 fun toolIcon(tool: InstagramTool): ImageVector = when (tool) {
-    InstagramTool.REELS_DOWNLOADER -> Icons.Outlined.Movie
     InstagramTool.PHOTO_DOWNLOADER -> Icons.Outlined.Image
-    InstagramTool.VIDEO_DOWNLOADER -> Icons.Outlined.VideoLibrary
-    InstagramTool.IGTV_DOWNLOADER -> Icons.Outlined.Tv
-    InstagramTool.CAROUSEL_DOWNLOADER -> Icons.Outlined.ViewCarousel
 }

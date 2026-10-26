@@ -698,6 +698,12 @@ class InstagramFetchEngine(
         val response = http.newCall(request).execute()
         val html = response.body?.string() ?: throw IOException("Empty HTML response")
 
+        val embedded = parseTimelineFromHtml(html, link.username ?: link.shortcode ?: "")
+        val matched = embedded.find { it.shortcode == link.shortcode } ?: embedded.firstOrNull()
+        if (matched != null) {
+            return matched
+        }
+
         val titleMatch = Pattern.compile("""<meta\s+property="og:title"\s+content="([^"]*)"""", Pattern.CASE_INSENSITIVE).matcher(html)
         val rawTitle = if (titleMatch.find()) titleMatch.group(1) else "Instagram Media"
         val decodedTitle = HtmlDecoder.decode(rawTitle)
@@ -743,7 +749,7 @@ class InstagramFetchEngine(
             caption = if (decodedDesc.isNotBlank()) decodedDesc else decodedTitle,
             url = url,
             previewUrl = previewUrl,
-            directMediaUrl = videoUrl,
+            directMediaUrl = if (isVideo) videoUrl else previewUrl,
             isVideo = isVideo,
             isAvailable = true,
             likesCount = likes,

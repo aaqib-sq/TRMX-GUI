@@ -20,14 +20,19 @@ data class PreviewGateDecision(
 object InstagramPreviewGate {
     const val VIDEO_NEED_DIRECT_LINK_NOTICE =
         "Video preview needs a direct video link — download the video to watch it."
+    const val PHOTO_UNRESOLVED_NOTICE =
+        "Photo could not be loaded — try the link again."
+
+    fun isVideoItem(item: InstagramItem): Boolean =
+        item.isVideo ||
+        item.type == InstagramItemType.REEL ||
+        item.type == InstagramItemType.VIDEO ||
+        item.type == InstagramItemType.IGTV
 
     fun evaluate(item: InstagramItem): PreviewGateDecision {
-        val isVideoItem = item.isVideo ||
-            item.type == InstagramItemType.REEL ||
-            item.type == InstagramItemType.VIDEO ||
-            item.type == InstagramItemType.IGTV
+        val isVideo = isVideoItem(item)
 
-        return if (isVideoItem) {
+        return if (isVideo) {
             if (item.directMediaUrl.isNullOrBlank()) {
                 PreviewGateDecision(
                     canOpen = false,
@@ -53,7 +58,7 @@ object InstagramPreviewGate {
                 PreviewGateDecision(
                     canOpen = false,
                     isVideoOverlay = false,
-                    notice = null
+                    notice = PHOTO_UNRESOLVED_NOTICE
                 )
             }
         }

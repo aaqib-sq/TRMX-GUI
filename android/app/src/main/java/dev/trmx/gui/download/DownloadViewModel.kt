@@ -140,6 +140,11 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _postsLoadError.value = null
     }
 
+    // Box-only clear for screen-dispose: the fetched result stays, only the link box empties.
+    fun clearInputOnly() {
+        _inputUrl.value = ""
+    }
+
     fun openPreview(item: InstagramItem) {
         val decision = InstagramPreviewGate.evaluate(item)
         if (decision.notice != null) {
@@ -156,6 +161,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     fun stageItemForDownload(item: InstagramItem) {
         _stagedItem.value = item
+        _directDownloadUrl.value = ""
         _error.value = null
     }
 
@@ -244,15 +250,45 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    companion object {
+        fun resolveDownloadOption(item: InstagramItem): DownloadOption = when {
+            item.type == InstagramItemType.PHOTO && !item.directMediaUrl.isNullOrBlank() -> DownloadOption.PHOTO
+            item.type == InstagramItemType.CAROUSEL -> DownloadOption.CAROUSEL_ALL
+            else -> DownloadOption.MEDIA
+        }
+    }
+
+    fun resolveDownloadOption(item: InstagramItem): DownloadOption =
+        Companion.resolveDownloadOption(item)
+
     fun startDownload(
         item: InstagramItem,
-        option: DownloadOption = DownloadOption.MEDIA,
+        option: DownloadOption? = null,
         onStarted: (() -> Unit)? = null
     ) {
+        val effectiveOption = option ?: resolveDownloadOption(item)
+
         if (item.type == InstagramItemType.HIGHLIGHT && !item.isDownloadable) {
             _error.value = "Cannot download highlight: media could not be resolved without login."
             return
         }
+        if (effectiveOption == DownloadOption.PHOTO && item.directMediaUrl.isNullOrBlank()) {
+            _error.value = "Cannot download photo: direct media URL is not resolved."
+            return
+        }
+        if (effectiveOption == DownloadOption.CAROUSEL_ALL) {
+            val total = item.carouselItems.size
+            val resolved = item.carouselItems.mapNotNull { it.directMediaUrl?.trim()?.takeIf { u -> u.isNotBlank() } }
+            val skipped = total - resolved.size
+            if (resolved.isEmpty()) {
+                _error.value = "Cannot download carousel: no child slide has a direct media URL."
+                return
+            }
+            if (skipped > 0) {
+                _notice.value = "Downloading ${resolved.size} slides ($skipped skipped without direct URL)."
+            }
+        }
+
         viewModelScope.launch {
             try {
                 val record = downloadEngine.startDownload(
@@ -261,9 +297,11 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                     videoQuality = _videoQuality.value,
                     audioQuality = _audioQuality.value,
                     saveCover = _saveCoverAlongsideVideo.value,
-                    option = option
+                    option = effectiveOption
                 )
-                _notice.value = "Download started: ${record.title}"
+                if (effectiveOption != DownloadOption.CAROUSEL_ALL || item.carouselItems.size == item.carouselItems.count { !it.directMediaUrl.isNullOrBlank() }) {
+                    _notice.value = "Download started: ${record.title}"
+                }
                 refreshHistory()
                 onStarted?.invoke()
             } catch (e: Exception) {

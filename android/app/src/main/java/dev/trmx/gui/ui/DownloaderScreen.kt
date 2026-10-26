@@ -107,6 +107,15 @@ fun DownloaderScreen(
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
 
+    LaunchedEffect(stagedItem) {
+        if (stagedItem != null) {
+            viewModel.onDirectDownloadUrlChange("")
+        }
+    }
+
+    val isStagedPhoto = stagedItem?.type == InstagramItemType.PHOTO && !stagedItem.directMediaUrl.isNullOrBlank()
+    val isStagedCarousel = stagedItem?.type == InstagramItemType.CAROUSEL
+
     BackHandler { onBack() }
 
     Column(
@@ -191,7 +200,7 @@ fun DownloaderScreen(
                                 url = stagedItem.previewUrl ?: stagedItem.directMediaUrl,
                                 contentDescription = stagedItem.title,
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                                contentScale = if (isStagedPhoto) ContentScale.Fit else ContentScale.Crop
                             )
                         }
 
@@ -287,163 +296,187 @@ fun DownloaderScreen(
                     color = P.TextPrimary
                 )
 
-                // 1. Mode: Video mode / Audio (MP3) mode toggle
-                Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-                    Text(
-                        text = "Format / Mode",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = P.TextMuted
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(Sp.s)
-                    ) {
-                        FilterChip(
-                            selected = mediaMode == MediaMode.VIDEO,
-                            onClick = { viewModel.setMediaMode(MediaMode.VIDEO) },
-                            label = { Text("Video (MP4)") },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.VideoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = P.Accent,
-                                selectedLabelColor = P.OnAccent,
-                                selectedLeadingIconColor = P.OnAccent,
-                                containerColor = P.SurfaceHigh,
-                                labelColor = P.TextSecondary,
-                                iconColor = P.TextMuted
-                            ),
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
+                if (!isStagedPhoto) {
+                    // 1. Mode: Video mode / Audio (MP3) mode toggle
+                    Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+                        Text(
+                            text = "Format / Mode",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = P.TextMuted
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(Sp.s)
+                        ) {
+                            FilterChip(
                                 selected = mediaMode == MediaMode.VIDEO,
-                                borderColor = P.BorderStrong,
-                                selectedBorderColor = P.Accent
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
+                                onClick = { viewModel.setMediaMode(MediaMode.VIDEO) },
+                                label = { Text("Video (MP4)") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.VideoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = P.Accent,
+                                    selectedLabelColor = P.OnAccent,
+                                    selectedLeadingIconColor = P.OnAccent,
+                                    containerColor = P.SurfaceHigh,
+                                    labelColor = P.TextSecondary,
+                                    iconColor = P.TextMuted
+                                ),
+                                border = FilterChipDefaults.filterChipBorder(
+                                    enabled = true,
+                                    selected = mediaMode == MediaMode.VIDEO,
+                                    borderColor = P.BorderStrong,
+                                    selectedBorderColor = P.Accent
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
 
-                        FilterChip(
-                            selected = mediaMode == MediaMode.MP3,
-                            onClick = { viewModel.setMediaMode(MediaMode.MP3) },
-                            label = { Text("Audio (MP3)") },
-                            leadingIcon = {
-                                Icon(Icons.Outlined.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp))
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = P.Accent,
-                                selectedLabelColor = P.OnAccent,
-                                selectedLeadingIconColor = P.OnAccent,
-                                containerColor = P.SurfaceHigh,
-                                labelColor = P.TextSecondary,
-                                iconColor = P.TextMuted
-                            ),
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
+                            FilterChip(
                                 selected = mediaMode == MediaMode.MP3,
-                                borderColor = P.BorderStrong,
-                                selectedBorderColor = P.Accent
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
+                                onClick = { viewModel.setMediaMode(MediaMode.MP3) },
+                                label = { Text("Audio (MP3)") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = P.Accent,
+                                    selectedLabelColor = P.OnAccent,
+                                    selectedLeadingIconColor = P.OnAccent,
+                                    containerColor = P.SurfaceHigh,
+                                    labelColor = P.TextSecondary,
+                                    iconColor = P.TextMuted
+                                ),
+                                border = FilterChipDefaults.filterChipBorder(
+                                    enabled = true,
+                                    selected = mediaMode == MediaMode.MP3,
+                                    borderColor = P.BorderStrong,
+                                    selectedBorderColor = P.Accent
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
-                }
 
-                // 2. Quality selection
-                Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
-                    Text(
-                        text = if (mediaMode == MediaMode.VIDEO) "Video Quality (Resolution)" else "Audio Bitrate",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = P.TextMuted
-                    )
+                    // 2. Quality selection
+                    Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
+                        Text(
+                            text = if (mediaMode == MediaMode.VIDEO) "Video Quality (Resolution)" else "Audio Bitrate",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = P.TextMuted
+                        )
 
+                        if (mediaMode == MediaMode.VIDEO) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(Sp.s)
+                            ) {
+                                VideoQuality.entries.forEach { q ->
+                                    FilterChip(
+                                        selected = videoQuality == q,
+                                        onClick = { viewModel.setVideoQuality(q) },
+                                        label = { Text(q.label) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = P.SurfaceHigh,
+                                            selectedLabelColor = P.TextPrimary,
+                                            containerColor = P.FieldFill,
+                                            labelColor = P.TextMuted
+                                        ),
+                                        border = FilterChipDefaults.filterChipBorder(
+                                            enabled = true,
+                                            selected = videoQuality == q,
+                                            borderColor = P.Border,
+                                            selectedBorderColor = P.Accent
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(Sp.s)
+                            ) {
+                                AudioQuality.entries.forEach { q ->
+                                    FilterChip(
+                                        selected = audioQuality == q,
+                                        onClick = { viewModel.setAudioQuality(q) },
+                                        label = { Text(q.label) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = P.SurfaceHigh,
+                                            selectedLabelColor = P.TextPrimary,
+                                            containerColor = P.FieldFill,
+                                            labelColor = P.TextMuted
+                                        ),
+                                        border = FilterChipDefaults.filterChipBorder(
+                                            enabled = true,
+                                            selected = audioQuality == q,
+                                            borderColor = P.Border,
+                                            selectedBorderColor = P.Accent
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Reel cover image saved alongside video downloads
                     if (mediaMode == MediaMode.VIDEO) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(Sp.s)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            VideoQuality.entries.forEach { q ->
-                                FilterChip(
-                                    selected = videoQuality == q,
-                                    onClick = { viewModel.setVideoQuality(q) },
-                                    label = { Text(q.label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = P.SurfaceHigh,
-                                        selectedLabelColor = P.TextPrimary,
-                                        containerColor = P.FieldFill,
-                                        labelColor = P.TextMuted
-                                    ),
-                                    border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
-                                        selected = videoQuality == q,
-                                        borderColor = P.Border,
-                                        selectedBorderColor = P.Accent
-                                    )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Save Cover Image",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = P.TextPrimary
+                                )
+                                Text(
+                                    text = "Save reel cover thumbnail in ~/storage/downloads beside video",
+                                    fontSize = 11.sp,
+                                    color = P.TextMuted
                                 )
                             }
-                        }
-                    } else {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(Sp.s)
-                        ) {
-                            AudioQuality.entries.forEach { q ->
-                                FilterChip(
-                                    selected = audioQuality == q,
-                                    onClick = { viewModel.setAudioQuality(q) },
-                                    label = { Text(q.label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = P.SurfaceHigh,
-                                        selectedLabelColor = P.TextPrimary,
-                                        containerColor = P.FieldFill,
-                                        labelColor = P.TextMuted
-                                    ),
-                                    border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
-                                        selected = audioQuality == q,
-                                        borderColor = P.Border,
-                                        selectedBorderColor = P.Accent
-                                    )
+
+                            Switch(
+                                checked = saveCover,
+                                onCheckedChange = viewModel::setSaveCoverAlongsideVideo,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = P.Accent,
+                                    checkedTrackColor = P.BorderStrong,
+                                    uncheckedThumbColor = P.TextMuted,
+                                    uncheckedTrackColor = P.SurfaceHigh
                                 )
-                            }
+                            )
                         }
                     }
-                }
-
-                // 3. Reel cover image saved alongside video downloads
-                if (mediaMode == MediaMode.VIDEO) {
+                } else {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(P.FieldFill, RoundedCornerShape(R.s))
+                            .padding(horizontal = Sp.m, vertical = Sp.s),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column {
                             Text(
-                                text = "Save Cover Image",
-                                style = MaterialTheme.typography.labelMedium,
+                                text = "Format: Photo (Full Resolution)",
+                                style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.Bold,
                                 color = P.TextPrimary
                             )
                             Text(
-                                text = "Save reel cover thumbnail in ~/storage/downloads beside video",
+                                text = "Direct image download without video or audio re-encoding",
                                 fontSize = 11.sp,
                                 color = P.TextMuted
                             )
                         }
-
-                        Switch(
-                            checked = saveCover,
-                            onCheckedChange = viewModel::setSaveCoverAlongsideVideo,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = P.Accent,
-                                checkedTrackColor = P.BorderStrong,
-                                uncheckedThumbColor = P.TextMuted,
-                                uncheckedTrackColor = P.SurfaceHigh
-                            )
-                        )
                     }
                 }
 
@@ -475,14 +508,21 @@ fun DownloaderScreen(
 
                 // 5. Start Download Primary Button
                 TrmxButton(
-                    label = if (mediaMode == MediaMode.MP3)
-                        "Start Download MP3 (${audioQuality.label})"
-                    else
-                        "Start Download Video (${videoQuality.label})",
+                    label = when {
+                        isStagedPhoto -> "Start Download Photo"
+                        isStagedCarousel -> "Start Download All Slides (${stagedItem.carouselItems.size})"
+                        mediaMode == MediaMode.MP3 -> "Start Download MP3 (${audioQuality.label})"
+                        else -> "Start Download Video (${videoQuality.label})"
+                    },
                     leading = { Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     onClick = {
                         if (stagedItem != null) {
-                            viewModel.startDownload(stagedItem)
+                            val option = when {
+                                isStagedPhoto -> DownloadOption.PHOTO
+                                isStagedCarousel -> DownloadOption.CAROUSEL_ALL
+                                else -> null
+                            }
+                            viewModel.startDownload(stagedItem, option)
                         } else {
                             viewModel.startDirectDownload()
                         }

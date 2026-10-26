@@ -9,9 +9,11 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -339,17 +341,26 @@ class InstagramDownloaderTest {
     }
 
     @Test
-    fun `synthesizes carousel all items download argv in full hd`() {
+    fun `carousel-all argv contains each resolved child direct URL and no format or merge flags`() {
+        val childUrls = listOf(
+            "https://cdn.example.com/slide1.jpg",
+            "https://cdn.example.com/slide2.jpg"
+        )
         val argv = DownloadEngine.buildYtdlpArgv(
-            url = "https://www.instagram.com/p/DF123abc/",
-            mode = MediaMode.VIDEO,
-            videoQuality = VideoQuality.P1080,
-            audioQuality = AudioQuality.KBPS320,
-            saveCover = false,
+            url = "",
+            urls = childUrls,
             option = DownloadOption.CAROUSEL_ALL
         )
-        assertTrue(argv.contains("--yes-playlist"))
-        assertTrue(argv.contains("bestvideo[height<=1080]+bestaudio/best[height<=1080]"))
+        assertTrue(argv.contains("https://cdn.example.com/slide1.jpg"))
+        assertTrue(argv.contains("https://cdn.example.com/slide2.jpg"))
+        assertFalse(argv.contains("-f"))
+        assertFalse(argv.contains("--merge-output-format"))
+        assertFalse(argv.contains("-x"))
+        assertFalse(argv.contains("--yes-playlist"))
+        assertEquals(
+            listOf("yt-dlp", "--newline", "-P", DownloadEngine.DOWNLOAD_DIR, "https://cdn.example.com/slide1.jpg", "https://cdn.example.com/slide2.jpg"),
+            argv
+        )
     }
 
     // ------------------------------------------------------------------------
@@ -963,27 +974,27 @@ class InstagramDownloaderTest {
     // ------------------------------------------------------------------------
 
     @Test
-    fun `InstagramTool contains exactly the 5 approved tools in exact order`() {
+    fun `InstagramTool contains exactly 1 tool PHOTO_DOWNLOADER`() {
         val tools = InstagramTool.entries
-        assertEquals(5, tools.size)
-        assertEquals(InstagramTool.REELS_DOWNLOADER, tools[0])
-        assertEquals(InstagramTool.PHOTO_DOWNLOADER, tools[1])
-        assertEquals(InstagramTool.VIDEO_DOWNLOADER, tools[2])
-        assertEquals(InstagramTool.IGTV_DOWNLOADER, tools[3])
-        assertEquals(InstagramTool.CAROUSEL_DOWNLOADER, tools[4])
+        assertEquals(1, tools.size)
+        assertEquals(InstagramTool.PHOTO_DOWNLOADER, tools[0])
 
         val names = tools.map { it.name }
+        assertFalse("REELS_DOWNLOADER must be removed", names.contains("REELS_DOWNLOADER"))
+        assertFalse("VIDEO_DOWNLOADER must be removed", names.contains("VIDEO_DOWNLOADER"))
+        assertFalse("IGTV_DOWNLOADER must be removed", names.contains("IGTV_DOWNLOADER"))
+        assertFalse("CAROUSEL_DOWNLOADER must be removed", names.contains("CAROUSEL_DOWNLOADER"))
         assertFalse("STORY_SAVER must be removed", names.contains("STORY_SAVER"))
         assertFalse("STORIES_VIEWER must be removed", names.contains("STORIES_VIEWER"))
     }
 
     @Test
     fun `InstagramTool retained entries have accurate labels and descriptions`() {
-        assertEquals("Reels Downloader", InstagramTool.REELS_DOWNLOADER.title)
-        assertEquals("Photo Downloader", InstagramTool.PHOTO_DOWNLOADER.title)
-        assertEquals("Video Downloader", InstagramTool.VIDEO_DOWNLOADER.title)
-        assertEquals("IGTV Downloader", InstagramTool.IGTV_DOWNLOADER.title)
-        assertEquals("Carousel Downloader", InstagramTool.CAROUSEL_DOWNLOADER.title)
+        val tool = InstagramTool.PHOTO_DOWNLOADER
+        assertEquals("Photo Downloader", tool.title)
+        assertTrue(tool.description.contains("single photos", ignoreCase = true) && tool.description.contains("carousel slides", ignoreCase = true))
+        assertEquals("Paste photo or carousel link (instagram.com/p/…) or a handle…", tool.placeholder)
+        assertEquals("Fetch Photo", tool.actionButtonLabel)
     }
 
     @Test
@@ -1157,5 +1168,97 @@ class InstagramDownloaderTest {
         assertTrue("Video preview must open with direct video URL", decision.canOpen)
         assertTrue("Must use video overlay", decision.isVideoOverlay)
         assertNull("Must not set an error notice", decision.notice)
+    }
+
+    // ------------------------------------------------------------------------
+    // 12. Photo Download & Redirect Scope Tests (v7)
+    // ------------------------------------------------------------------------
+
+    @Test
+    fun `PHOTO option argv contains direct image URL and neither -f nor --merge-output-format nor -x`() {
+        val directUrl = "https://scontent.cdninstagram.com/photo_full.jpg"
+        val argv = DownloadEngine.buildYtdlpArgv(
+            url = directUrl,
+            option = DownloadOption.PHOTO
+        )
+        assertTrue(argv.contains(directUrl))
+        assertFalse(argv.contains("-f"))
+        assertFalse(argv.contains("--merge-output-format"))
+        assertFalse(argv.contains("-x"))
+        assertFalse(argv.contains("--yes-playlist"))
+        assertEquals(listOf("yt-dlp", "--newline", "-P", DownloadEngine.DOWNLOAD_DIR, directUrl), argv)
+    }
+
+    @Test
+    fun `PHOTO option with blank directMediaUrl throws instead of falling back to post URL`() = runBlocking {
+        val storeDir = tempFolder.newFolder("engine_photo_blank_test")
+        val engine = DownloadEngine(
+            clientProvider = { throw AssertionError("client should not be reached") },
+            historyStore = DownloadHistoryStore(storeDir),
+            scope = this,
+            storageChecker = { true }
+        )
+        val postItemWithBlankDirect = InstagramItem(
+            id = "photo_post_1",
+            shortcode = "DF123",
+            type = InstagramItemType.PHOTO,
+            title = "Photo Post Without Direct URL",
+            url = "https://www.instagram.com/p/DF123/",
+            directMediaUrl = ""
+        )
+        try {
+            engine.startDownload(
+                item = postItemWithBlankDirect,
+                mode = MediaMode.VIDEO,
+                videoQuality = VideoQuality.ORIGINAL,
+                audioQuality = AudioQuality.KBPS320,
+                option = DownloadOption.PHOTO
+            )
+            fail("Expected IllegalArgumentException for blank directMediaUrl on PHOTO option")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("direct") == true || e.message?.contains("photo") == true)
+        }
+    }
+
+    @Test
+    fun `video or reel item in Photo tool does not take photo path`() {
+        val reelItem = InstagramItem(
+            id = "reel_test",
+            shortcode = "C8XYZ123",
+            type = InstagramItemType.REEL,
+            title = "Test Reel",
+            url = "https://www.instagram.com/reel/C8XYZ123/",
+            directMediaUrl = "https://cdn.example.com/video.mp4",
+            isVideo = true
+        )
+        // Gate decision seam: isVideoItem identifies video/reel so Photo tool redirects
+        assertTrue("Gate decision identifies reel as video item", InstagramPreviewGate.isVideoItem(reelItem))
+
+        // ViewModel / option routing seam: does NOT take DownloadOption.PHOTO
+        val option = DownloadViewModel.resolveDownloadOption(reelItem)
+        assertNotEquals("Reel must NOT take DownloadOption.PHOTO", DownloadOption.PHOTO, option)
+        assertEquals(DownloadOption.MEDIA, option)
+    }
+
+    @Test
+    fun `photo item with no resolved media does not silently do nothing and sets notice`() {
+        val photoItemWithoutMedia = InstagramItem(
+            id = "photo_no_media",
+            shortcode = "DF999",
+            type = InstagramItemType.PHOTO,
+            title = "Unresolved Photo",
+            url = "https://www.instagram.com/p/DF999/",
+            previewUrl = null,
+            directMediaUrl = null,
+            isVideo = false
+        )
+        val decision = InstagramPreviewGate.evaluate(photoItemWithoutMedia)
+        assertFalse("Preview must not open without resolved media", decision.canOpen)
+        assertFalse(decision.isVideoOverlay)
+        assertEquals(
+            InstagramPreviewGate.PHOTO_UNRESOLVED_NOTICE,
+            decision.notice
+        )
+        assertEquals("Photo could not be loaded — try the link again.", decision.notice)
     }
 }

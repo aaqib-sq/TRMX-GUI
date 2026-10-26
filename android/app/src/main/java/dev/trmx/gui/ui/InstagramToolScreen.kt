@@ -136,6 +136,12 @@ fun InstagramToolScreen(
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.clearInputOnly()
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize().background(P.Background)) {
         Column(
             modifier = Modifier
@@ -315,7 +321,26 @@ fun InstagramToolScreen(
                     color = P.TextSecondary
                 )
 
-                if (item.type == InstagramItemType.CAROUSEL && item.carouselItems.isNotEmpty()) {
+                val isVideoRedirect = InstagramPreviewGate.isVideoItem(item)
+
+                if (isVideoRedirect) {
+                    TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
+                            Text(
+                                text = "This link is a reel/video. Reels and videos download from the Downloader — only photos download here.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = P.TextSecondary
+                            )
+                            TrmxButton(
+                                label = "Open in Downloader",
+                                leading = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                onClick = { onOpenDownloader(item) },
+                                kind = TrmxButtonKind.Primary,
+                                modifier = Modifier.fillMaxWidth().height(44.dp)
+                            )
+                        }
+                    }
+                } else if (item.type == InstagramItemType.CAROUSEL && item.carouselItems.isNotEmpty()) {
                     // Carousel View: Replicate behavior (shows ALL its items)
                     CarouselMultiItemCard(
                         item = item,
@@ -478,14 +503,14 @@ private fun SpecificItemCard(
                     .aspectRatio(1.2f)
                     .clip(RoundedCornerShape(R.m))
                     .background(P.SurfaceHigh)
-                    .clickable(enabled = item.hasResolvedMedia, onClick = onPreview),
+                    .clickable(onClick = onPreview),
                 contentAlignment = Alignment.Center
             ) {
                 RemoteImage(
                     url = item.previewUrl ?: item.directMediaUrl,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
                     fallbackText = if (item.type == InstagramItemType.PROFILE_PIC) item.title else null
                 )
 
@@ -633,7 +658,7 @@ private fun CarouselMultiItemCard(
                                     url = slide.previewUrl ?: slide.directMediaUrl,
                                     contentDescription = slide.title,
                                     modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
+                                    contentScale = ContentScale.Fit
                                 )
                                 if (slide.isVideo) {
                                     Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = P.TextPrimary)

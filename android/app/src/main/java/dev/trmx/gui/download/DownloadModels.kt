@@ -81,12 +81,13 @@ enum class DownloadOption {
     MEDIA,          // Standard video/photo download
     AUDIO_ONLY,     // MP3 audio extract
     COVER_IMAGE,    // Thumbnail / cover image
-    CAROUSEL_ALL    // All items of a carousel
+    CAROUSEL_ALL,   // All items of a carousel
+    PHOTO           // Direct photo download
 }
 
 /**
- * Separate per-tool entries under the Instagram homepage section.
- * Each tool has a dedicated page with specialized placeholders and actions.
+ * Public Instagram photo tool entry.
+ * Covers both single photos and multi-slide carousels.
  */
 enum class InstagramTool(
     val title: String,
@@ -94,35 +95,11 @@ enum class InstagramTool(
     val placeholder: String,
     val actionButtonLabel: String
 ) {
-    REELS_DOWNLOADER(
-        title = "Reels Downloader",
-        description = "Download Instagram reels in full quality",
-        placeholder = "Paste reel link (e.g. instagram.com/reel/…)…",
-        actionButtonLabel = "Fetch Reel"
-    ),
     PHOTO_DOWNLOADER(
         title = "Photo Downloader",
-        description = "Download photos and full-resolution post images",
-        placeholder = "Paste photo link (e.g. instagram.com/p/…)…",
+        description = "Download single photos and carousel slides in full resolution",
+        placeholder = "Paste photo or carousel link (instagram.com/p/…) or a handle…",
         actionButtonLabel = "Fetch Photo"
-    ),
-    VIDEO_DOWNLOADER(
-        title = "Video Downloader",
-        description = "Download public Instagram videos and posts",
-        placeholder = "Paste video link (e.g. instagram.com/p/…)…",
-        actionButtonLabel = "Fetch Video"
-    ),
-    IGTV_DOWNLOADER(
-        title = "IGTV Downloader",
-        description = "Download long-form IGTV videos",
-        placeholder = "Paste IGTV link (e.g. instagram.com/tv/…)…",
-        actionButtonLabel = "Fetch IGTV"
-    ),
-    CAROUSEL_DOWNLOADER(
-        title = "Carousel Downloader",
-        description = "Download multi-slide posts and albums",
-        placeholder = "Paste carousel link (e.g. instagram.com/p/…)…",
-        actionButtonLabel = "Fetch Carousel"
     )
 }
 

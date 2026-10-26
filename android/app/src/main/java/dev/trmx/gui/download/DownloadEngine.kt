@@ -66,27 +66,33 @@ class DownloadEngine(
 
         fun buildYtdlpArgv(
             url: String,
-            mode: MediaMode,
-            videoQuality: VideoQuality,
-            audioQuality: AudioQuality,
+            mode: MediaMode = MediaMode.VIDEO,
+            videoQuality: VideoQuality = VideoQuality.ORIGINAL,
+            audioQuality: AudioQuality = AudioQuality.KBPS320,
             saveCover: Boolean = false,
-            option: DownloadOption = DownloadOption.MEDIA
+            option: DownloadOption = DownloadOption.MEDIA,
+            urls: List<String> = emptyList()
         ): List<String> = when (option) {
+            DownloadOption.PHOTO -> listOf(
+                "yt-dlp",
+                "--newline",
+                "-P", DOWNLOAD_DIR,
+                url
+            )
+            DownloadOption.CAROUSEL_ALL -> {
+                val targets = if (urls.isNotEmpty()) urls else if (url.isNotBlank()) listOf(url) else emptyList()
+                listOf(
+                    "yt-dlp",
+                    "--newline",
+                    "-P", DOWNLOAD_DIR
+                ) + targets
+            }
             DownloadOption.COVER_IMAGE -> listOf(
                 "yt-dlp",
                 "--newline",
                 "--skip-download",
                 "--write-thumbnail",
                 "--convert-thumbnails", "jpg",
-                "-P", DOWNLOAD_DIR,
-                url
-            )
-            DownloadOption.CAROUSEL_ALL -> listOf(
-                "yt-dlp",
-                "--newline",
-                "--yes-playlist",
-                "-f", videoQuality.ytdlpFormat,
-                "--merge-output-format", "mp4",
                 "-P", DOWNLOAD_DIR,
                 url
             )
@@ -144,17 +150,28 @@ class DownloadEngine(
         if (item.type == InstagramItemType.HIGHLIGHT && item.directMediaUrl.isNullOrBlank()) {
             throw IllegalArgumentException("Cannot download highlight: direct media URL is not resolved. Instagram highlights require login.")
         }
+        if (option == DownloadOption.PHOTO && item.directMediaUrl.isNullOrBlank()) {
+            throw IllegalArgumentException("Cannot download photo: direct media URL is blank or missing")
+        }
+        if (option == DownloadOption.CAROUSEL_ALL) {
+            val resolved = item.carouselItems.mapNotNull { it.directMediaUrl?.trim()?.takeIf { u -> u.isNotBlank() } }
+            if (resolved.isEmpty()) {
+                throw IllegalArgumentException("Cannot download carousel: no child slide has a direct media URL.")
+            }
+        }
         if (!storageChecker()) {
             throw IllegalStateException(STORAGE_SETUP_ERROR_MESSAGE)
         }
         val recordId = UUID.randomUUID().toString()
         val qualityLabel = when {
+            option == DownloadOption.PHOTO -> "Full Resolution"
             option == DownloadOption.COVER_IMAGE -> "Cover Image"
-            option == DownloadOption.CAROUSEL_ALL -> "All Slides (${videoQuality.label})"
+            option == DownloadOption.CAROUSEL_ALL -> "All Slides"
             mode == MediaMode.MP3 || option == DownloadOption.AUDIO_ONLY -> audioQuality.label
             else -> videoQuality.label
         }
         val mediaTypeLabel = when (option) {
+            DownloadOption.PHOTO -> "PHOTO"
             DownloadOption.COVER_IMAGE -> "COVER"
             DownloadOption.CAROUSEL_ALL -> "CAROUSEL"
             DownloadOption.AUDIO_ONLY -> "AUDIO"
@@ -166,7 +183,12 @@ class DownloadEngine(
             originalUrl = item.url,
             title = item.title,
             itemType = mediaTypeLabel,
-            mediaMode = if (mode == MediaMode.MP3 || option == DownloadOption.AUDIO_ONLY) "MP3" else "VIDEO",
+            mediaMode = when {
+                option == DownloadOption.PHOTO -> "PHOTO"
+                option == DownloadOption.CAROUSEL_ALL -> "CAROUSEL"
+                mode == MediaMode.MP3 || option == DownloadOption.AUDIO_ONLY -> "MP3"
+                else -> "VIDEO"
+            },
             quality = qualityLabel,
             targetPath = "$DOWNLOAD_DIR/${item.shortcode ?: item.id}",
             status = "QUEUED",
@@ -200,6 +222,7 @@ class DownloadEngine(
         val aQuality = AudioQuality.fromLabel(retried.quality)
 
         val option = when (retried.itemType) {
+            "PHOTO" -> DownloadOption.PHOTO
             "COVER" -> DownloadOption.COVER_IMAGE
             "CAROUSEL" -> DownloadOption.CAROUSEL_ALL
             "AUDIO" -> DownloadOption.AUDIO_ONLY
@@ -210,10 +233,11 @@ class DownloadEngine(
             id = retried.id,
             type = InstagramItemType.valueOf(
                 runCatching { retried.itemType }.getOrDefault("POST")
-                    .let { if (it in listOf("COVER", "CAROUSEL", "AUDIO")) "POST" else it }
+                    .let { if (it in listOf("PHOTO", "COVER", "CAROUSEL", "AUDIO")) "POST" else it }
             ),
             title = retried.title,
-            url = retried.originalUrl
+            url = retried.originalUrl,
+            directMediaUrl = if (option == DownloadOption.PHOTO) retried.originalUrl else null
         )
 
         _activeDownloads.update { it + (recordId to retried) }
@@ -247,6 +271,7 @@ class DownloadEngine(
         // Strict bridge job name "<type>:<shortcode>", hard-capped at 200 chars.
         // NEVER uses item.title or item.caption.
         val typeName = when (option) {
+            DownloadOption.PHOTO -> "photo"
             DownloadOption.COVER_IMAGE -> "cover"
             DownloadOption.CAROUSEL_ALL -> "carousel"
             DownloadOption.AUDIO_ONLY -> "audio"
@@ -255,12 +280,37 @@ class DownloadEngine(
         val shortcode = item.shortcode ?: item.id
         val jobName = buildJobName(typeName, shortcode)
 
-        val downloadUrl = if (item.type == InstagramItemType.HIGHLIGHT && !item.directMediaUrl.isNullOrBlank()) {
-            item.directMediaUrl
-        } else {
-            item.url
+        val argv = when (option) {
+            DownloadOption.PHOTO -> {
+                val direct = item.directMediaUrl?.trim()
+                if (direct.isNullOrBlank()) {
+                    throw IllegalArgumentException("Cannot download photo: direct media URL is blank or missing")
+                }
+                buildYtdlpArgv(direct, option = DownloadOption.PHOTO)
+            }
+            DownloadOption.CAROUSEL_ALL -> {
+                val childUrls = item.carouselItems
+                    .mapNotNull { it.directMediaUrl?.trim()?.takeIf { u -> u.isNotBlank() } }
+                if (childUrls.isEmpty() && item.carouselItems.isNotEmpty()) {
+                    throw IllegalArgumentException("Cannot download carousel: no child slide has a direct media URL.")
+                }
+                // Retry path: history records do not persist children, so a retried
+                // carousel has an empty child list — plain-download the post URL itself.
+                if (childUrls.isEmpty()) {
+                    buildYtdlpArgv(item.url, option = DownloadOption.CAROUSEL_ALL)
+                } else {
+                    buildYtdlpArgv("", option = DownloadOption.CAROUSEL_ALL, urls = childUrls)
+                }
+            }
+            else -> {
+                val downloadUrl = if (item.type == InstagramItemType.HIGHLIGHT && !item.directMediaUrl.isNullOrBlank()) {
+                    item.directMediaUrl
+                } else {
+                    item.url
+                }
+                buildYtdlpArgv(downloadUrl, mode, videoQuality, audioQuality, saveCover, option)
+            }
         }
-        val argv = buildYtdlpArgv(downloadUrl, mode, videoQuality, audioQuality, saveCover, option)
         val submitResult = client.submitJob(
             SubmitRequest(
                 name = jobName,
