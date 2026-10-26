@@ -1,10 +1,8 @@
 package dev.trmx.gui.ui
 
 /*
- * Downloader Screen — SEPARATE from the Instagram section (PART D).
- * Reached from:
- * 1. Tapping ANY Download button in the Instagram section (with staged item)
- * 2. Directly from the Homepage "Downloader" card
+ * Downloader Screen (PART D).
+ * Reached directly from the Homepage "Downloader" card.
  *
  * Holds ALL download choices chosen UPFRONT before download starts:
  * - Mode: Video mode / Audio (MP3) mode toggle
@@ -62,13 +60,11 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -79,11 +75,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.trmx.gui.download.AudioQuality
 import dev.trmx.gui.download.DownloadEngine
-import dev.trmx.gui.download.DownloadOption
 import dev.trmx.gui.download.DownloadRecord
 import dev.trmx.gui.download.DownloadViewModel
-import dev.trmx.gui.download.InstagramItem
-import dev.trmx.gui.download.InstagramItemType
 import dev.trmx.gui.download.MediaMode
 import dev.trmx.gui.download.VideoQuality
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -92,7 +85,6 @@ import dev.trmx.gui.ui.Tokens.Space as Sp
 
 @Composable
 fun DownloaderScreen(
-    stagedItem: InstagramItem?,
     viewModel: DownloadViewModel,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
@@ -107,15 +99,6 @@ fun DownloaderScreen(
     val history by viewModel.history.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
-
-    LaunchedEffect(stagedItem) {
-        if (stagedItem != null) {
-            viewModel.onDirectDownloadUrlChange("")
-        }
-    }
-
-    val isStagedPhoto = stagedItem?.type == InstagramItemType.PHOTO && !stagedItem.directMediaUrl.isNullOrBlank()
-    val isStagedCarousel = stagedItem?.type == InstagramItemType.CAROUSEL
 
     BackHandler { onBack() }
 
@@ -154,136 +137,59 @@ fun DownloaderScreen(
             }
         }
 
-        // ---- Staged Item Card (From Instagram section) ---------------------
-        if (stagedItem != null) {
-            TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {
-                Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(R.s),
-                            color = P.SurfaceHigh,
-                            border = BorderStroke(1.dp, P.BorderStrong)
-                        ) {
-                            Text(
-                                text = stagedItem.type.name,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = P.Accent,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = Sp.s, vertical = 2.dp)
-                            )
-                        }
+        // Direct URL Input Card
+        TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {
+            Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
+                Text(
+                    text = "Download URL",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = P.TextPrimary
+                )
 
-                        if (stagedItem.shortcode != null) {
-                            Text(
-                                text = stagedItem.shortcode,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = P.TextMuted
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(RoundedCornerShape(R.s))
-                                .background(P.SurfaceHigh)
-                        ) {
-                            RemoteImage(
-                                url = stagedItem.previewUrl ?: stagedItem.directMediaUrl,
-                                contentDescription = stagedItem.title,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = if (isStagedPhoto) ContentScale.Fit else ContentScale.Crop
-                            )
-                        }
-
-                        Spacer(Modifier.width(Sp.m))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stagedItem.title,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = P.TextPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (stagedItem.caption.isNotBlank()) {
-                                Text(
-                                    text = stagedItem.caption,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = P.TextSecondary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                OutlinedTextField(
+                    value = directUrl,
+                    onValueChange = viewModel::onDirectDownloadUrlChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = {
+                        Text(
+                            "Paste any direct video or audio link…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = P.TextMuted
+                        )
+                    },
+                    trailingIcon = {
+                        if (directUrl.isNotBlank()) {
+                            IconButton(onClick = { viewModel.onDirectDownloadUrlChange("") }) {
+                                Icon(Icons.Outlined.Clear, contentDescription = "clear", tint = P.TextMuted)
                             }
                         }
-                    }
-                }
-            }
-        } else {
-            // Direct URL Input Card (When opened from Homepage)
-            TrmxCard(modifier = Modifier.fillMaxWidth(), contentPadding = Sp.m) {
-                Column(verticalArrangement = Arrangement.spacedBy(Sp.s)) {
-                    Text(
-                        text = "Download URL",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = P.TextPrimary
-                    )
+                    },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = P.TextPrimary),
+                    shape = RoundedCornerShape(R.m),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = P.BorderStrong,
+                        unfocusedBorderColor = P.Border,
+                        focusedContainerColor = P.FieldFill,
+                        unfocusedContainerColor = P.FieldFill,
+                        cursorColor = P.Accent
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { viewModel.startDirectDownload() })
+                )
 
-                    OutlinedTextField(
-                        value = directUrl,
-                        onValueChange = viewModel::onDirectDownloadUrlChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = {
-                            Text(
-                                "Paste any direct video or audio link…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = P.TextMuted
-                            )
-                        },
-                        trailingIcon = {
-                            if (directUrl.isNotBlank()) {
-                                IconButton(onClick = { viewModel.onDirectDownloadUrlChange("") }) {
-                                    Icon(Icons.Outlined.Clear, contentDescription = "clear", tint = P.TextMuted)
-                                }
-                            }
-                        },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = P.TextPrimary),
-                        shape = RoundedCornerShape(R.m),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = P.BorderStrong,
-                            unfocusedBorderColor = P.Border,
-                            focusedContainerColor = P.FieldFill,
-                            unfocusedContainerColor = P.FieldFill,
-                            cursorColor = P.Accent
-                        ),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(onGo = { viewModel.startDirectDownload() })
-                    )
-
-                    TrmxButton(
-                        label = "Paste from Clipboard",
-                        leading = { Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                        onClick = {
-                            val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
-                            val pasted = clip?.getItemAt(0)?.text?.toString() ?: ""
-                            if (pasted.isNotBlank()) viewModel.onDirectDownloadUrlChange(pasted)
-                        },
-                        kind = TrmxButtonKind.Secondary,
-                        modifier = Modifier.fillMaxWidth().height(42.dp)
-                    )
-                }
+                TrmxButton(
+                    label = "Paste from Clipboard",
+                    leading = { Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    onClick = {
+                        val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
+                        val pasted = clip?.getItemAt(0)?.text?.toString() ?: ""
+                        if (pasted.isNotBlank()) viewModel.onDirectDownloadUrlChange(pasted)
+                    },
+                    kind = TrmxButtonKind.Secondary,
+                    modifier = Modifier.fillMaxWidth().height(42.dp)
+                )
             }
         }
 
@@ -297,8 +203,7 @@ fun DownloaderScreen(
                     color = P.TextPrimary
                 )
 
-                if (!isStagedPhoto) {
-                    // 1. Mode: Video mode / Audio (MP3) mode toggle
+                // 1. Mode: Video mode / Audio (MP3) mode toggle
                     Column(verticalArrangement = Arrangement.spacedBy(Sp.xs)) {
                         Text(
                             text = "Format / Mode",
@@ -457,28 +362,6 @@ fun DownloaderScreen(
                             )
                         }
                     }
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(P.FieldFill, RoundedCornerShape(R.s))
-                            .padding(horizontal = Sp.m, vertical = Sp.s),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Format: Photo (Full Resolution)",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                                color = P.TextPrimary
-                            )
-                            Text(
-                                text = "Direct image download without video or audio re-encoding",
-                                fontSize = 11.sp,
-                                color = P.TextMuted
-                            )
-                        }
-                    }
                 }
 
                 // 4. Download Folder Location (~/storage/downloads)
@@ -509,27 +392,11 @@ fun DownloaderScreen(
 
                 // 5. Start Download Primary Button
                 TrmxButton(
-                    label = when {
-                        isStagedPhoto -> "Start Download Photo"
-                        isStagedCarousel -> "Start Download All Slides (${stagedItem?.carouselItems?.size ?: 0})"
-                        mediaMode == MediaMode.MP3 -> "Start Download MP3 (${audioQuality.label})"
-                        else -> "Start Download Video (${videoQuality.label})"
-                    },
+                    label = if (mediaMode == MediaMode.MP3) "Start Download MP3 (${audioQuality.label})" else "Start Download Video (${videoQuality.label})",
                     leading = { Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    onClick = {
-                        if (stagedItem != null) {
-                            val option = when {
-                                isStagedPhoto -> DownloadOption.PHOTO
-                                isStagedCarousel -> DownloadOption.CAROUSEL_ALL
-                                else -> null
-                            }
-                            viewModel.startDownload(stagedItem, option)
-                        } else {
-                            viewModel.startDirectDownload()
-                        }
-                    },
+                    onClick = { viewModel.startDirectDownload() },
                     kind = TrmxButtonKind.Primary,
-                    enabled = stagedItem != null || directUrl.isNotBlank(),
+                    enabled = directUrl.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().height(48.dp)
                 )
             }

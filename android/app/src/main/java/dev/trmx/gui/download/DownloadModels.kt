@@ -85,38 +85,6 @@ enum class DownloadOption {
     PHOTO           // Direct photo download
 }
 
-/**
- * Public Instagram photo tool entry.
- * Covers both single photos and multi-slide carousels.
- */
-enum class InstagramTool(
-    val title: String,
-    val description: String,
-    val placeholder: String,
-    val actionButtonLabel: String
-) {
-    PHOTO_DOWNLOADER(
-        title = "Photo Downloader",
-        description = "Download single photos and carousel slides in full resolution",
-        placeholder = "Paste photo or carousel link (instagram.com/p/…) or a handle…",
-        actionButtonLabel = "Fetch Photo"
-    )
-}
-
-/** Public Instagram profile header metadata. */
-data class InstagramProfile(
-    val username: String,
-    val fullName: String,
-    val biography: String = "",
-    val avatarUrl: String? = null,
-    val postsCount: Long = 0,
-    val followersCount: Long = 0,
-    val followingCount: Long = 0,
-    val isPrivate: Boolean = false,
-    val isVerified: Boolean = false,
-    val fullSizeAvatarUrl: String? = null
-)
-
 /** An individual media item returned from profile or single post fetch. */
 data class InstagramItem(
     val id: String,

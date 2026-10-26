@@ -2,14 +2,8 @@ package dev.trmx.gui.download
 
 import dev.trmx.gui.job.SubmitValidator
 import kotlinx.coroutines.runBlocking
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -19,13 +13,13 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 /**
- * Unit tests for Instagram Downloader pure logic:
+ * Unit tests for Downloader pure logic:
  * - HTML entity decoding at parse layer (&#x909;, named entities, numeric entities, surrogate emoji)
  * - Strict bridge job name construction (<type>:<shortcode>, 200-char cap, never from title/caption)
- * - URL and handle parsing (profiles, posts, reels, stories with ID, story trays, highlights, IGTV)
  * - Upfront quality mapping and label resolution (Video resolutions, Audio bitrates)
  * - Video / MP3 mode selection and yt-dlp argv synthesis with cover option
  * - On-device download history store (add, update, list sorted, remove, clear, retry state machine)
+ * - Storage check and shared downloads path validation
  * - End-to-end bridge submit validation acceptance test
  */
 class InstagramDownloaderTest {
@@ -124,110 +118,7 @@ class InstagramDownloaderTest {
     }
 
     // ------------------------------------------------------------------------
-    // 3. Link and Handle Parsing Tests
-    // ------------------------------------------------------------------------
-
-    @Test
-    fun `parses standard profile URL`() {
-        val link = InstagramUrlParser.parse("https://www.instagram.com/therock/")
-        assertEquals(InstagramUrlType.PROFILE, link.type)
-        assertEquals("therock", link.username)
-        assertEquals("https://www.instagram.com/therock/", link.canonicalUrl)
-        assertNull(link.error)
-    }
-
-    @Test
-    fun `parses profile URL with tracking query parameters`() {
-        val link = InstagramUrlParser.parse("https://instagram.com/natgeo?igsh=OGQ5ZDc2ODk2ZA==")
-        assertEquals(InstagramUrlType.PROFILE, link.type)
-        assertEquals("natgeo", link.username)
-        assertEquals("https://www.instagram.com/natgeo/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses profile from at-prefixed handle`() {
-        val link = InstagramUrlParser.parse("@nasa")
-        assertEquals(InstagramUrlType.PROFILE, link.type)
-        assertEquals("nasa", link.username)
-        assertEquals("https://www.instagram.com/nasa/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses profile from raw username`() {
-        val link = InstagramUrlParser.parse("cristiano")
-        assertEquals(InstagramUrlType.PROFILE, link.type)
-        assertEquals("cristiano", link.username)
-        assertEquals("https://www.instagram.com/cristiano/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses post URL`() {
-        val link = InstagramUrlParser.parse("https://www.instagram.com/p/DF123abcXYZ/")
-        assertEquals(InstagramUrlType.POST, link.type)
-        assertEquals("DF123abcXYZ", link.shortcode)
-        assertEquals("https://www.instagram.com/p/DF123abcXYZ/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses reel URL`() {
-        val link = InstagramUrlParser.parse("https://www.instagram.com/reel/C8XYZ123/")
-        assertEquals(InstagramUrlType.REEL, link.type)
-        assertEquals("C8XYZ123", link.shortcode)
-        assertEquals("https://www.instagram.com/reel/C8XYZ123/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses reels plural URL`() {
-        val link = InstagramUrlParser.parse("https://instagram.com/reels/C8XYZ123?utm_source=ig_web_copy_link")
-        assertEquals(InstagramUrlType.REEL, link.type)
-        assertEquals("C8XYZ123", link.shortcode)
-        assertEquals("https://www.instagram.com/reel/C8XYZ123/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses story URL with specific media ID`() {
-        val link = InstagramUrlParser.parse("https://www.instagram.com/stories/therock/1234567890123456789/")
-        assertEquals(InstagramUrlType.STORY, link.type)
-        assertEquals("therock", link.username)
-        assertEquals("1234567890123456789", link.storyId)
-        assertEquals("https://www.instagram.com/stories/therock/1234567890123456789/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses story tray URL`() {
-        val link = InstagramUrlParser.parse("https://instagram.com/stories/therock/")
-        assertEquals(InstagramUrlType.STORY, link.type)
-        assertEquals("therock", link.username)
-        assertNull(link.storyId)
-        assertEquals("https://www.instagram.com/stories/therock/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses highlight URL`() {
-        val link = InstagramUrlParser.parse("https://www.instagram.com/stories/highlights/17987654321/")
-        assertEquals(InstagramUrlType.HIGHLIGHT, link.type)
-        assertEquals("17987654321", link.highlightId)
-        assertEquals("https://www.instagram.com/stories/highlights/17987654321/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `parses IGTV URL`() {
-        val link = InstagramUrlParser.parse("https://www.instagram.com/tv/CZ98765/")
-        assertEquals(InstagramUrlType.POST, link.type)
-        assertEquals("CZ98765", link.shortcode)
-        assertEquals("https://www.instagram.com/tv/CZ98765/", link.canonicalUrl)
-    }
-
-    @Test
-    fun `rejects invalid and empty inputs gracefully`() {
-        assertEquals(InstagramUrlType.UNKNOWN, InstagramUrlParser.parse("").type)
-        assertEquals(InstagramUrlType.UNKNOWN, InstagramUrlParser.parse("   ").type)
-        assertEquals(InstagramUrlType.UNKNOWN, InstagramUrlParser.parse("https://google.com").type)
-        assertEquals(InstagramUrlType.UNKNOWN, InstagramUrlParser.parse("https://instagram.com/explore/").type)
-    }
-
-    // ------------------------------------------------------------------------
-    // 4. Quality & Mode Mapping Tests
+    // 3. Quality & Mode Mapping Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -268,7 +159,7 @@ class InstagramDownloaderTest {
     }
 
     // ------------------------------------------------------------------------
-    // 5. Engine Argv Synthesis Tests
+    // 4. Engine Argv Synthesis Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -363,8 +254,23 @@ class InstagramDownloaderTest {
         )
     }
 
+    @Test
+    fun `PHOTO option argv contains direct image URL and neither -f nor --merge-output-format nor -x`() {
+        val directUrl = "https://scontent.cdninstagram.com/photo_full.jpg"
+        val argv = DownloadEngine.buildYtdlpArgv(
+            url = directUrl,
+            option = DownloadOption.PHOTO
+        )
+        assertTrue(argv.contains(directUrl))
+        assertFalse(argv.contains("-f"))
+        assertFalse(argv.contains("--merge-output-format"))
+        assertFalse(argv.contains("-x"))
+        assertFalse(argv.contains("--yes-playlist"))
+        assertEquals(listOf("yt-dlp", "--newline", "-P", DownloadEngine.DOWNLOAD_DIR, directUrl), argv)
+    }
+
     // ------------------------------------------------------------------------
-    // 6. Download History Store Tests
+    // 5. Download History Store Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -476,24 +382,22 @@ class InstagramDownloaderTest {
     }
 
     // ------------------------------------------------------------------------
-    // 7. Acceptance Test: Public Reel Download Payload (PART E.4)
+    // 6. Acceptance Test: Public Reel Download Payload (PART E.4)
     // ------------------------------------------------------------------------
 
     @Test
     fun `public reel download payload passes bridge validation end-to-end without 400`() {
         val reelUrl = "https://www.instagram.com/reel/DO5tIDME6t-/"
-        val parsed = InstagramUrlParser.parse(reelUrl)
-        assertEquals(InstagramUrlType.REEL, parsed.type)
-        assertEquals("DO5tIDME6t-", parsed.shortcode)
+        val shortcode = "DO5tIDME6t-"
 
         // 1. Build strict job name
-        val jobName = DownloadEngine.buildJobName("reel", parsed.shortcode)
+        val jobName = DownloadEngine.buildJobName("reel", shortcode)
         assertEquals("reel:DO5tIDME6t-", jobName)
         assertTrue("Job name length must be between 1 and 200 chars", jobName.length in 1..200)
 
         // 2. Build yt-dlp argv
         val argv = DownloadEngine.buildYtdlpArgv(
-            url = parsed.canonicalUrl,
+            url = reelUrl,
             mode = MediaMode.VIDEO,
             videoQuality = VideoQuality.ORIGINAL,
             audioQuality = AudioQuality.KBPS320,
@@ -518,515 +422,7 @@ class InstagramDownloaderTest {
     }
 
     // ------------------------------------------------------------------------
-    // 8. Round v3 Fixes: Bio separation, fallback chain, and avatar entities
-    // ------------------------------------------------------------------------
-
-    @Test
-    fun `decodes HTML entities in avatar URLs properly`() {
-        val rawAvatar = "https://scontent.cdninstagram.com/v/t51.2885-19/123_n.jpg?_nc_cat=1&amp;oh=00_AYB&amp;oe=66F&amp;edm=AP_V10E"
-        val expected = "https://scontent.cdninstagram.com/v/t51.2885-19/123_n.jpg?_nc_cat=1&oh=00_AYB&oe=66F&edm=AP_V10E"
-        val cleaned = InstagramFetchEngine.cleanUrl(rawAvatar)
-        assertEquals(expected, cleaned)
-        assertFalse(cleaned!!.contains("&amp;"))
-    }
-
-    @Test
-    fun `HTML path biography separation - og description counts line must not become biography`() {
-        val engine = InstagramFetchEngine(OkHttpClient())
-
-        // Case A: Page has og:description counts line and NO real bio in JSON -> biography must be empty string
-        val htmlWithoutBio = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta property="og:title" content="Nejam Nejam Side (@alinizam9873) • Instagram photos and videos">
-                <meta property="og:description" content="366 Followers, 376 Following, 29 Posts - See Instagram photos and videos from Nejam Nejam Side (@alinizam9873)">
-                <meta property="og:image" content="https://scontent.cdninstagram.com/v/t51.2885-19/avatar.jpg?oh=abc&amp;oe=xyz">
-            </head>
-            <body></body>
-            </html>
-        """.trimIndent()
-
-        val parsedA = engine.parseProfileHtml(htmlWithoutBio, "alinizam9873")
-        assertEquals("Nejam Nejam Side", parsedA.profile.fullName)
-        assertEquals(366L, parsedA.profile.followersCount)
-        assertEquals(376L, parsedA.profile.followingCount)
-        assertEquals(29L, parsedA.profile.postsCount)
-        assertEquals("", parsedA.profile.biography) // og:description counts line NEVER becomes biography
-        assertFalse(parsedA.profile.biography.contains("Followers"))
-        assertEquals("https://scontent.cdninstagram.com/v/t51.2885-19/avatar.jpg?oh=abc&oe=xyz", parsedA.profile.avatarUrl)
-
-        // Case B: Page has og:description counts line AND real biography in page JSON -> biography must be the real biography
-        val htmlWithBio = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta property="og:title" content="Artist Name (@artist) • Instagram photos">
-                <meta property="og:description" content="10K Followers, 150 Following, 42 Posts">
-                <script type="application/ld+json">
-                {
-                    "@context": "https://schema.org",
-                    "@type": "Person",
-                    "name": "Artist Name",
-                    "description": "Musician, producer, and sound designer &#x26; creator."
-                }
-                </script>
-            </head>
-            <body></body>
-            </html>
-        """.trimIndent()
-
-        val parsedB = engine.parseProfileHtml(htmlWithBio, "artist")
-        assertEquals(10000L, parsedB.profile.followersCount)
-        assertEquals(150L, parsedB.profile.followingCount)
-        assertEquals(42L, parsedB.profile.postsCount)
-        assertEquals("Musician, producer, and sound designer & creator.", parsedB.profile.biography)
-        assertFalse(parsedB.profile.biography.contains("Followers"))
-    }
-
-    @Test
-    fun `item fallback chain - when API edges empty and postsCount greater than 0, ytdlp fallback is attempted`() = runBlocking {
-        var fallbackAttempted = false
-        val mockItems = listOf(
-            InstagramItem(
-                id = "item_123",
-                shortcode = "Cxyz123",
-                type = InstagramItemType.REEL,
-                title = "Reel: Cxyz123",
-                url = "https://www.instagram.com/p/Cxyz123/",
-                isVideo = true
-            )
-        )
-
-        val apiJson = """
-            {
-                "data": {
-                    "user": {
-                        "full_name": "Nejam Nejam Side",
-                        "biography": "Musician",
-                        "profile_pic_url_hd": "https://scontent.cdninstagram.com/avatar.jpg?oh=1&amp;oe=2",
-                        "is_private": false,
-                        "is_verified": false,
-                        "edge_owner_to_timeline_media": {
-                            "count": 29,
-                            "edges": []
-                        },
-                        "edge_followed_by": { "count": 366 },
-                        "edge_follow": { "count": 376 }
-                    }
-                }
-            }
-        """.trimIndent()
-
-        val htmlPage = """
-            <!DOCTYPE html><html><head>
-            <meta property="og:title" content="Nejam Nejam Side (@alinizam9873)">
-            <meta property="og:description" content="366 Followers, 376 Following, 29 Posts">
-            </head><body></body></html>
-        """.trimIndent()
-
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val url = chain.request().url.toString()
-                val (code, contentType, bodyText) = if (url.contains("web_profile_info")) {
-                    Triple(200, "application/json", apiJson)
-                } else {
-                    Triple(200, "text/html", htmlPage)
-                }
-                Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(code)
-                    .message("OK")
-                    .body(bodyText.toResponseBody(contentType.toMediaType()))
-                    .build()
-            }
-            .build()
-
-        val engine = InstagramFetchEngine(
-            http = client,
-            ytdlpRunner = { username ->
-                fallbackAttempted = true
-                assertEquals("alinizam9873", username)
-                mockItems
-            }
-        )
-
-        val result = engine.fetchProfile("alinizam9873")
-
-        assertEquals(29L, result.profile.postsCount)
-        assertTrue("Fallback ytdlp listing must be attempted when API edges are empty", fallbackAttempted)
-        assertTrue("Items must contain fallback items", result.items.any { it.shortcode == "Cxyz123" })
-        assertNull("postsLoadError must be null when fallback succeeds", result.postsLoadError)
-        assertEquals("https://scontent.cdninstagram.com/avatar.jpg?oh=1&oe=2", result.profile.avatarUrl)
-    }
-
-    @Test
-    fun `item fallback chain - when all 3 routes fail while postsCount greater than 0, postsLoadError is populated`() = runBlocking {
-        val apiJson = """
-            {
-                "data": {
-                    "user": {
-                        "full_name": "Nejam Nejam Side",
-                        "biography": "",
-                        "profile_pic_url_hd": "https://scontent.cdninstagram.com/avatar.jpg",
-                        "is_private": false,
-                        "is_verified": false,
-                        "edge_owner_to_timeline_media": {
-                            "count": 29,
-                            "edges": []
-                        },
-                        "edge_followed_by": { "count": 366 },
-                        "edge_follow": { "count": 376 }
-                    }
-                }
-            }
-        """.trimIndent()
-
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(apiJson.toResponseBody("application/json".toMediaType()))
-                    .build()
-            }
-            .build()
-
-        val engine = InstagramFetchEngine(
-            http = client,
-            ytdlpRunner = { username ->
-                // Simulate bridge failure
-                emptyList()
-            }
-        )
-
-        val result = engine.fetchProfile("alinizam9873")
-
-        assertEquals(29L, result.profile.postsCount)
-        assertNotNull("postsLoadError must be populated with failure reason when all routes fail", result.postsLoadError)
-        assertTrue(result.postsLoadError!!.contains("Could not load public posts"))
-    }
-
-    @Test
-    fun `embedded JSON timeline parser - extracts media nodes and highlights from HTML`() {
-        val engine = InstagramFetchEngine(OkHttpClient())
-
-        val html = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta property="og:title" content="Test User (@testuser)">
-                <meta property="og:description" content="100 Followers, 50 Following, 2 Posts">
-                <script type="application/json">
-                {
-                    "xdt_api__v1__profile_timeline": {
-                        "edges": [
-                            {
-                                "node": {
-                                    "id": "111",
-                                    "shortcode": "SHORT1",
-                                    "__typename": "GraphClips",
-                                    "is_video": true,
-                                    "display_url": "https://cdn.example.com/thumb1.jpg?oh=abc&amp;oe=123",
-                                    "video_url": "https://cdn.example.com/video1.mp4",
-                                    "edge_media_to_caption": { "edges": [{ "node": { "text": "Reel &#x22;Awesome&#x22;" } }] }
-                                }
-                            },
-                            {
-                                "node": {
-                                    "id": "222",
-                                    "shortcode": "SHORT2",
-                                    "is_video": false,
-                                    "display_url": "https://cdn.example.com/photo2.jpg",
-                                    "edge_media_to_caption": { "edges": [{ "node": { "text": "Photo caption" } }] }
-                                }
-                            }
-                        ]
-                    }
-                }
-                </script>
-            </head>
-            <body>
-                <a href="/stories/highlights/1789999999/">highlight:1789999999</a>
-            </body>
-            </html>
-        """.trimIndent()
-
-        val items = engine.parseTimelineFromHtml(html, "testuser")
-        assertEquals(3, items.size)
-
-        val reel = items.find { it.shortcode == "SHORT1" }
-        assertNotNull(reel)
-        assertEquals(InstagramItemType.REEL, reel?.type)
-        assertEquals("Reel \"Awesome\"", reel?.caption)
-        assertEquals("https://cdn.example.com/thumb1.jpg?oh=abc&oe=123", reel?.previewUrl)
-
-        val photo = items.find { it.shortcode == "SHORT2" }
-        assertNotNull(photo)
-        assertEquals(InstagramItemType.PHOTO, photo?.type)
-
-        val highlight = items.find { it.type == InstagramItemType.HIGHLIGHT }
-        assertNotNull(highlight)
-        assertEquals("1789999999", highlight?.shortcode)
-    }
-
-    // ------------------------------------------------------------------------
-    // 9. Round v4 Fixes: Fallback triggers on media items, highlight validation, honest empty-states
-    // ------------------------------------------------------------------------
-
-    @Test
-    fun `Route-3 fallback decision triggers when ONLY highlight placeholders exist`() = runBlocking {
-        var fallbackAttempted = false
-        val mockItems = listOf(
-            InstagramItem(
-                id = "ytdlp_123",
-                shortcode = "Cytdlp123",
-                type = InstagramItemType.POST,
-                title = "Post: Cytdlp123",
-                url = "https://www.instagram.com/p/Cytdlp123/",
-                isVideo = false
-            )
-        )
-
-        val htmlWithHighlightOnly = """<!DOCTYPE html><html><head>
-<meta property="og:title" content="Test User (@testuser)">
-<meta property="og:description" content="100 Followers, 50 Following, 29 Posts">
-</head><body>
-<a href="/stories/highlights/1789999999/">highlight:1789999999</a>
-</body></html>"""
-
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(htmlWithHighlightOnly.toResponseBody("text/html".toMediaType()))
-                    .build()
-            }
-            .build()
-
-        val engine = InstagramFetchEngine(
-            http = client,
-            ytdlpRunner = { username ->
-                fallbackAttempted = true
-                assertEquals("testuser", username)
-                mockItems
-            }
-        )
-
-        val result = engine.fetchProfile("testuser")
-
-        assertEquals(29L, result.profile.postsCount)
-        assertTrue("Route 3 fallback must trigger when ONLY highlight placeholders exist", fallbackAttempted)
-        assertTrue("Result items must contain the media item from Route 3", result.items.any { it.shortcode == "Cytdlp123" })
-        assertNull("postsLoadError must be null when Route 3 fallback succeeds", result.postsLoadError)
-    }
-
-    @Test
-    fun `postsLoadError is set when postsCount greater than 0 with only placeholders`() = runBlocking {
-        val htmlWithHighlightOnly = """<!DOCTYPE html><html><head>
-<meta property="og:title" content="Test User (@testuser)">
-<meta property="og:description" content="100 Followers, 50 Following, 29 Posts">
-</head><body>
-<a href="/stories/highlights/1789999999/">highlight:1789999999</a>
-</body></html>"""
-
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(htmlWithHighlightOnly.toResponseBody("text/html".toMediaType()))
-                    .build()
-            }
-            .build()
-
-        val engine = InstagramFetchEngine(
-            http = client,
-            ytdlpRunner = { _ -> emptyList() }
-        )
-
-        val result = engine.fetchProfile("testuser")
-
-        assertEquals(29L, result.profile.postsCount)
-        assertNotNull("postsLoadError must be populated when postsCount > 0 and only placeholders exist", result.postsLoadError)
-        assertTrue(result.postsLoadError!!.contains("Could not load public posts"))
-        assertTrue("Highlight placeholder may exist in items", result.items.any { it.type == InstagramItemType.HIGHLIGHT })
-        assertFalse("No media items should be present", result.items.any { it.isMediaItem })
-    }
-
-    @Test
-    fun `short or ambiguous highlight matches are dropped while realistic long IDs kept`() {
-        val engine = InstagramFetchEngine(OkHttpClient())
-        val html = """<!DOCTYPE html><html><head>
-<meta property="og:title" content="Test User (@testuser)">
-<meta property="og:description" content="100 Followers, 50 Following, 10 Posts">
-</head><body>
-<a href="/stories/highlights/245/">highlight:245</a>
-<a href="/stories/highlights/1789999999/">highlight:1789999999</a>
-<span>highlight:abc</span>
-<span>highlight:99</span>
-</body></html>"""
-
-        val items = engine.parseTimelineFromHtml(html, "testuser")
-
-        // Short ID "245" (from device report) must be dropped
-        assertNull("Short highlight ID 245 must be dropped", items.find { it.shortcode == "245" })
-        assertNull("Non-numeric highlight token must be dropped", items.find { it.shortcode == "abc" })
-        assertNull("Short highlight ID 99 must be dropped", items.find { it.shortcode == "99" })
-
-        // Realistic long highlight ID must be kept
-        val longHighlight = items.find { it.shortcode == "1789999999" }
-        assertNotNull("Realistic long highlight ID must be kept", longHighlight)
-        assertEquals(InstagramItemType.HIGHLIGHT, longHighlight?.type)
-
-        // Helper checks
-        assertFalse(InstagramFetchEngine.isValidHighlightId("245"))
-        assertFalse(InstagramFetchEngine.isValidHighlightId("99"))
-        assertFalse(InstagramFetchEngine.isValidHighlightId("abc"))
-        assertFalse(InstagramFetchEngine.isValidHighlightId(null))
-        assertFalse(InstagramFetchEngine.isValidHighlightId(""))
-        assertTrue(InstagramFetchEngine.isValidHighlightId("1789999999"))
-        assertTrue(InstagramFetchEngine.isValidHighlightId("17987654321012345"))
-    }
-
-    @Test
-    fun `a highlight without resolved media exposes no Download path`() = runBlocking {
-        val unresolvedHighlight = InstagramItem(
-            id = "highlight_1789999999",
-            shortcode = "1789999999",
-            type = InstagramItemType.HIGHLIGHT,
-            title = "Highlight #1789999999",
-            url = "https://www.instagram.com/stories/highlights/1789999999/",
-            previewUrl = null,
-            directMediaUrl = null,
-            isVideo = false,
-            isAvailable = false
-        )
-
-        assertFalse("Highlight without media must not have resolved media", unresolvedHighlight.hasResolvedMedia)
-        assertFalse("Highlight without media must not be downloadable", unresolvedHighlight.isDownloadable)
-
-        val engine = DownloadEngine(
-            clientProvider = { throw AssertionError("Should not be called") },
-            historyStore = DownloadHistoryStore(tempFolder.newFolder()),
-            scope = this
-        )
-
-        var caughtException = false
-        try {
-            engine.startDownload(
-                item = unresolvedHighlight,
-                mode = MediaMode.VIDEO,
-                videoQuality = VideoQuality.ORIGINAL,
-                audioQuality = AudioQuality.KBPS320
-            )
-        } catch (e: IllegalArgumentException) {
-            caughtException = true
-            assertTrue(e.message!!.contains("Cannot download highlight"))
-        }
-        assertTrue("DownloadEngine must reject download of highlight without resolved media", caughtException)
-
-        // Resolved highlight test
-        val resolvedHighlight = unresolvedHighlight.copy(
-            directMediaUrl = "https://cdn.example.com/highlight_video.mp4",
-            previewUrl = "https://cdn.example.com/highlight_cover.jpg",
-            isAvailable = true
-        )
-        assertTrue(resolvedHighlight.hasResolvedMedia)
-        assertTrue(resolvedHighlight.isDownloadable)
-    }
-
-    @Test
-    fun `REELS and POSTS empty-states use failure reason when media fetch failed`() {
-        val failureReason = "Could not load public posts. All retrieval routes (web API, page data, yt-dlp bridge) failed to retrieve timeline items without login."
-
-        // Case 1: postsCount > 0 and media fetch failed (zero media items)
-        val postsEmptyMsg = InstagramTabHelper.getPostsEmptyMessage(postsCount = 221L, postsLoadError = failureReason)
-        assertEquals(failureReason, postsEmptyMsg)
-        assertFalse("Must not claim 'No public posts found' when fetch failed", postsEmptyMsg.contains("No public posts found"))
-
-        val reelsEmptyMsg = InstagramTabHelper.getReelsEmptyMessage(postsCount = 221L, hasMediaItems = false, postsLoadError = failureReason)
-        assertEquals(failureReason, reelsEmptyMsg)
-        assertFalse("Must not claim 'No public reels found' when fetch failed", reelsEmptyMsg.contains("No public reels found"))
-
-        // Case 2: postsCount > 0 and media was found (e.g. photos exist), but zero reels
-        val reelsEmptyWithMedia = InstagramTabHelper.getReelsEmptyMessage(postsCount = 221L, hasMediaItems = true, postsLoadError = null)
-        assertEquals("No public reels found.", reelsEmptyWithMedia)
-
-        // Case 3: postsCount == 0 (honest empty profile)
-        val postsEmptyZero = InstagramTabHelper.getPostsEmptyMessage(postsCount = 0L, postsLoadError = null)
-        assertEquals("No public posts found for this profile.", postsEmptyZero)
-
-        val reelsEmptyZero = InstagramTabHelper.getReelsEmptyMessage(postsCount = 0L, hasMediaItems = false, postsLoadError = null)
-        assertEquals("No public reels found.", reelsEmptyZero)
-    }
-
-    // ------------------------------------------------------------------------
-    // 10. Instagram Final Scope & Tool Trim Tests (v5-final)
-    // ------------------------------------------------------------------------
-
-    @Test
-    fun `InstagramTool contains exactly 1 tool PHOTO_DOWNLOADER`() {
-        val tools = InstagramTool.entries
-        assertEquals(1, tools.size)
-        assertEquals(InstagramTool.PHOTO_DOWNLOADER, tools[0])
-
-        val names = tools.map { it.name }
-        assertFalse("REELS_DOWNLOADER must be removed", names.contains("REELS_DOWNLOADER"))
-        assertFalse("VIDEO_DOWNLOADER must be removed", names.contains("VIDEO_DOWNLOADER"))
-        assertFalse("IGTV_DOWNLOADER must be removed", names.contains("IGTV_DOWNLOADER"))
-        assertFalse("CAROUSEL_DOWNLOADER must be removed", names.contains("CAROUSEL_DOWNLOADER"))
-        assertFalse("STORY_SAVER must be removed", names.contains("STORY_SAVER"))
-        assertFalse("STORIES_VIEWER must be removed", names.contains("STORIES_VIEWER"))
-    }
-
-    @Test
-    fun `InstagramTool retained entries have accurate labels and descriptions`() {
-        val tool = InstagramTool.PHOTO_DOWNLOADER
-        assertEquals("Photo Downloader", tool.title)
-        assertTrue(tool.description.contains("single photos", ignoreCase = true) && tool.description.contains("carousel slides", ignoreCase = true))
-        assertEquals("Paste photo or carousel link (instagram.com/p/…) or a handle…", tool.placeholder)
-        assertEquals("Fetch Photo", tool.actionButtonLabel)
-    }
-
-    @Test
-    fun `profile photo item preserves direct CDN URL and profile pic type`() {
-        val profile = InstagramProfile(
-            username = "natgeo",
-            fullName = "National Geographic",
-            avatarUrl = "https://scontent.cdninstagram.com/avatar_thumb.jpg",
-            fullSizeAvatarUrl = "https://scontent.cdninstagram.com/avatar_hd.jpg"
-        )
-        val directAvatar = profile.fullSizeAvatarUrl ?: profile.avatarUrl
-        val profilePicItem = InstagramItem(
-            id = "profile_pic_${profile.username}",
-            type = InstagramItemType.PROFILE_PIC,
-            title = "@${profile.username}",
-            url = directAvatar ?: "https://www.instagram.com/${profile.username}/",
-            previewUrl = directAvatar,
-            directMediaUrl = directAvatar,
-            isVideo = false,
-            isAvailable = true
-        )
-
-        assertEquals(InstagramItemType.PROFILE_PIC, profilePicItem.type)
-        assertEquals("@natgeo", profilePicItem.title)
-        assertEquals("https://scontent.cdninstagram.com/avatar_hd.jpg", profilePicItem.url)
-        assertEquals("https://scontent.cdninstagram.com/avatar_hd.jpg", profilePicItem.directMediaUrl)
-        assertTrue(profilePicItem.isDownloadable)
-        assertFalse(profilePicItem.isMediaItem)
-    }
-
-    // ------------------------------------------------------------------------
-    // 10. Fix Round v6 Tests: Shared Downloads Folder & Preview Gate
+    // 7. Shared Downloads Folder & Storage Checker Tests
     // ------------------------------------------------------------------------
 
     @Test
@@ -1079,115 +475,9 @@ class InstagramDownloaderTest {
         assertTrue("Must fail when shared storage is not set up", caught)
     }
 
-    @Test
-    fun `no og video in html ensures directMediaUrl is null and never thumbnail`() = runBlocking {
-        val htmlWithoutOgVideo = """<!DOCTYPE html><html><head>
-<meta property="og:title" content="Reel by testuser">
-<meta property="og:description" content="Watch this reel">
-<meta property="og:image" content="https://cdn.example.com/thumbnail.jpg">
-</head><body>
-</body></html>"""
-
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(htmlWithoutOgVideo.toResponseBody("text/html".toMediaType()))
-                    .build()
-            }
-            .build()
-
-        val engine = InstagramFetchEngine(http = client)
-        val parsed = InstagramUrlParser.parse("https://www.instagram.com/reel/De4SK5FT0Ps/")
-        val item = engine.fetchSingleItem(parsed)
-
-        assertEquals(InstagramItemType.REEL, item.type)
-        assertEquals("https://cdn.example.com/thumbnail.jpg", item.previewUrl)
-        assertNull("directMediaUrl must be null when og:video is absent (never thumbnail)", item.directMediaUrl)
-        assertTrue(item.isVideo)
-    }
-
-    @Test
-    fun `video or reel item without direct video URL does not open preview and sets notice`() {
-        val reelWithoutDirectVideo = InstagramItem(
-            id = "reel_123",
-            shortcode = "De4SK5FT0Ps",
-            type = InstagramItemType.REEL,
-            title = "Reel without direct video",
-            url = "https://www.instagram.com/reel/De4SK5FT0Ps/",
-            previewUrl = "https://cdn.example.com/thumbnail.jpg",
-            directMediaUrl = null,
-            isVideo = true
-        )
-
-        val decision = InstagramPreviewGate.evaluate(reelWithoutDirectVideo)
-        assertFalse("Preview must NOT open without direct video URL", decision.canOpen)
-        assertFalse("Video overlay must NOT be selected", decision.isVideoOverlay)
-        assertEquals(
-            "Video preview needs a direct video link — download the video to watch it.",
-            decision.notice
-        )
-    }
-
-    @Test
-    fun `photo item preview still works via previewUrl`() {
-        val photoItem = InstagramItem(
-            id = "photo_123",
-            shortcode = "DF123",
-            type = InstagramItemType.PHOTO,
-            title = "Photo Post",
-            url = "https://www.instagram.com/p/DF123/",
-            previewUrl = "https://cdn.example.com/photo.jpg",
-            directMediaUrl = null,
-            isVideo = false
-        )
-
-        val decision = InstagramPreviewGate.evaluate(photoItem)
-        assertTrue("Photo preview must open with previewUrl", decision.canOpen)
-        assertFalse("Photo preview must NOT use video overlay", decision.isVideoOverlay)
-        assertNull("Photo preview must not set an error notice", decision.notice)
-    }
-
-    @Test
-    fun `video item with direct video URL opens video preview overlay without notice`() {
-        val videoItem = InstagramItem(
-            id = "video_123",
-            shortcode = "De4SK5FT0Ps",
-            type = InstagramItemType.REEL,
-            title = "Reel with direct video",
-            url = "https://www.instagram.com/reel/De4SK5FT0Ps/",
-            previewUrl = "https://cdn.example.com/thumbnail.jpg",
-            directMediaUrl = "https://cdn.example.com/video.mp4",
-            isVideo = true
-        )
-
-        val decision = InstagramPreviewGate.evaluate(videoItem)
-        assertTrue("Video preview must open with direct video URL", decision.canOpen)
-        assertTrue("Must use video overlay", decision.isVideoOverlay)
-        assertNull("Must not set an error notice", decision.notice)
-    }
-
     // ------------------------------------------------------------------------
-    // 12. Photo Download & Redirect Scope Tests (v7)
+    // 8. Engine Photo Download Scope Tests
     // ------------------------------------------------------------------------
-
-    @Test
-    fun `PHOTO option argv contains direct image URL and neither -f nor --merge-output-format nor -x`() {
-        val directUrl = "https://scontent.cdninstagram.com/photo_full.jpg"
-        val argv = DownloadEngine.buildYtdlpArgv(
-            url = directUrl,
-            option = DownloadOption.PHOTO
-        )
-        assertTrue(argv.contains(directUrl))
-        assertFalse(argv.contains("-f"))
-        assertFalse(argv.contains("--merge-output-format"))
-        assertFalse(argv.contains("-x"))
-        assertFalse(argv.contains("--yes-playlist"))
-        assertEquals(listOf("yt-dlp", "--newline", "-P", DownloadEngine.DOWNLOAD_DIR, directUrl), argv)
-    }
 
     @Test
     fun `PHOTO option with blank directMediaUrl throws instead of falling back to post URL`() = runBlocking {
@@ -1218,47 +508,5 @@ class InstagramDownloaderTest {
         } catch (e: IllegalArgumentException) {
             assertTrue(e.message?.contains("direct") == true || e.message?.contains("photo") == true)
         }
-    }
-
-    @Test
-    fun `video or reel item in Photo tool does not take photo path`() {
-        val reelItem = InstagramItem(
-            id = "reel_test",
-            shortcode = "C8XYZ123",
-            type = InstagramItemType.REEL,
-            title = "Test Reel",
-            url = "https://www.instagram.com/reel/C8XYZ123/",
-            directMediaUrl = "https://cdn.example.com/video.mp4",
-            isVideo = true
-        )
-        // Gate decision seam: isVideoItem identifies video/reel so Photo tool redirects
-        assertTrue("Gate decision identifies reel as video item", InstagramPreviewGate.isVideoItem(reelItem))
-
-        // ViewModel / option routing seam: does NOT take DownloadOption.PHOTO
-        val option = DownloadViewModel.resolveDownloadOption(reelItem)
-        assertNotEquals("Reel must NOT take DownloadOption.PHOTO", DownloadOption.PHOTO, option)
-        assertEquals(DownloadOption.MEDIA, option)
-    }
-
-    @Test
-    fun `photo item with no resolved media does not silently do nothing and sets notice`() {
-        val photoItemWithoutMedia = InstagramItem(
-            id = "photo_no_media",
-            shortcode = "DF999",
-            type = InstagramItemType.PHOTO,
-            title = "Unresolved Photo",
-            url = "https://www.instagram.com/p/DF999/",
-            previewUrl = null,
-            directMediaUrl = null,
-            isVideo = false
-        )
-        val decision = InstagramPreviewGate.evaluate(photoItemWithoutMedia)
-        assertFalse("Preview must not open without resolved media", decision.canOpen)
-        assertFalse(decision.isVideoOverlay)
-        assertEquals(
-            InstagramPreviewGate.PHOTO_UNRESOLVED_NOTICE,
-            decision.notice
-        )
-        assertEquals("Photo could not be loaded — try the link again.", decision.notice)
     }
 }

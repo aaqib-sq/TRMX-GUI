@@ -62,14 +62,11 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.trmx.gui.download.DownloadViewModel
-import dev.trmx.gui.download.InstagramItem
-import dev.trmx.gui.download.InstagramTool
 import dev.trmx.gui.killer.AppKillerViewModel
 import dev.trmx.gui.model.ToolExample
 import dev.trmx.gui.ui.ActivityScreen
 import dev.trmx.gui.ui.ConnectScreen
 import dev.trmx.gui.ui.DownloaderScreen
-import dev.trmx.gui.ui.InstagramToolScreen
 import dev.trmx.gui.ui.JobDetailScreen
 import dev.trmx.gui.ui.KillScreen
 import dev.trmx.gui.ui.KillerDebugScreen
@@ -138,9 +135,7 @@ fun AppRoot(
     var screen by remember { mutableStateOf(Screen.RUN) }
     var showSettings by remember { mutableStateOf(false) }
     var showKillerDebug by remember { mutableStateOf(false) }
-    var selectedInstagramTool by remember { mutableStateOf<InstagramTool?>(null) }
     var isDownloaderOpen by remember { mutableStateOf(false) }
-    var stagedDownloadItem by remember { mutableStateOf<InstagramItem?>(null) }
 
     // Pair-link token adopted on cold start or warm onNewIntent.
     LaunchedEffect(pendingPairToken) {
@@ -250,17 +245,13 @@ fun AppRoot(
                 )
             } else {
                 // ---- Main Shell (3 Tabs: Run, Kill, Activity) ------------
-                val isToolSubScreen = screen == Screen.RUN && selectedInstagramTool != null
                 val isDownloaderSubScreen = screen == Screen.RUN && isDownloaderOpen
 
-                BackHandler(enabled = screen != Screen.RUN || isDownloaderSubScreen || isToolSubScreen) {
-                    when {
-                        isDownloaderSubScreen -> {
-                            isDownloaderOpen = false
-                            stagedDownloadItem = null
-                        }
-                        isToolSubScreen -> selectedInstagramTool = null
-                        else -> screen = Screen.RUN
+                BackHandler(enabled = screen != Screen.RUN || isDownloaderSubScreen) {
+                    if (isDownloaderSubScreen) {
+                        isDownloaderOpen = false
+                    } else {
+                        screen = Screen.RUN
                     }
                 }
 
@@ -276,28 +267,15 @@ fun AppRoot(
                                 screen == Screen.KILL -> "App Killer"
                                 screen == Screen.ACTIVITY -> "Activity"
                                 isDownloaderSubScreen -> "Downloader"
-                                isToolSubScreen -> selectedInstagramTool!!.title
                                 else -> "TRMX"
                             },
                             subtitle = when {
                                 screen == Screen.KILL -> "Automated force-stop"
                                 screen == Screen.ACTIVITY -> "Jobs & live output"
                                 isDownloaderSubScreen -> "Video & MP3 download engine"
-                                isToolSubScreen -> selectedInstagramTool!!.description
                                 else -> if (connected) "Connected · 127.0.0.1:8080" else "Bridge unreachable"
                             },
-                            onBack = when {
-                                isDownloaderSubScreen -> {
-                                    {
-                                        isDownloaderOpen = false
-                                        stagedDownloadItem = null
-                                    }
-                                }
-                                isToolSubScreen -> {
-                                    { selectedInstagramTool = null }
-                                }
-                                else -> null
-                            },
+                            onBack = if (isDownloaderSubScreen) { { isDownloaderOpen = false } } else null,
                             actions = {
                                 if (screen == Screen.KILL) {
                                     TextButton(onClick = { showKillerDebug = true }) {
@@ -329,7 +307,6 @@ fun AppRoot(
                                 onClick = {
                                     if (screen != Screen.RUN) {
                                         isDownloaderOpen = false
-                                        selectedInstagramTool = null
                                     }
                                     screen = Screen.RUN
                                 },
@@ -388,46 +365,19 @@ fun AppRoot(
                 ) { padding ->
                     when (screen) {
                         Screen.RUN -> {
-                            when {
-                                isDownloaderOpen -> {
-                                    DownloaderScreen(
-                                        stagedItem = stagedDownloadItem,
-                                        viewModel = downloadVm,
-                                        onBack = {
-                                            isDownloaderOpen = false
-                                            stagedDownloadItem = null
-                                        },
-                                        modifier = Modifier.padding(padding),
-                                    )
-                                }
-                                selectedInstagramTool != null -> {
-                                    val currentTool = selectedInstagramTool!!
-                                    InstagramToolScreen(
-                                        tool = currentTool,
-                                        viewModel = downloadVm,
-                                        onOpenDownloader = { item ->
-                                            stagedDownloadItem = item
-                                            downloadVm.onDirectDownloadUrlChange("")
-                                            isDownloaderOpen = true
-                                        },
-                                        onBack = { selectedInstagramTool = null },
-                                        modifier = Modifier.padding(padding),
-                                    )
-                                }
-                                else -> {
-                                    RunScreen(
-                                        onRunCommand = vm::runCommandLine,
-                                        onGoToKill = { screen = Screen.KILL },
-                                        onOpenDownloader = {
-                                            stagedDownloadItem = null
-                                            isDownloaderOpen = true
-                                        },
-                                        onOpenInstagram = {
-                                            selectedInstagramTool = InstagramTool.PHOTO_DOWNLOADER
-                                        },
-                                        modifier = Modifier.padding(padding),
-                                    )
-                                }
+                            if (isDownloaderOpen) {
+                                DownloaderScreen(
+                                    viewModel = downloadVm,
+                                    onBack = { isDownloaderOpen = false },
+                                    modifier = Modifier.padding(padding),
+                                )
+                            } else {
+                                RunScreen(
+                                    onRunCommand = vm::runCommandLine,
+                                    onGoToKill = { screen = Screen.KILL },
+                                    onOpenDownloader = { isDownloaderOpen = true },
+                                    modifier = Modifier.padding(padding),
+                                )
                             }
                         }
                         Screen.KILL -> {

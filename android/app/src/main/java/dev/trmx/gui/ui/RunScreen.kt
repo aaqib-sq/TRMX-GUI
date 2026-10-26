@@ -5,14 +5,6 @@ package dev.trmx.gui.ui
  * 1. Quick Command Bar: Direct shell execution in Termux with quick suggestion chips.
  * 2. App Killer Card: Force-stop background apps.
  * 3. Downloader Card: Media & MP3 download engine and history.
- * 4. Instagram Section: Named exactly "Instagram", with separate per-tool entries:
- *    - Story Saver
- *    - Reels Downloader
- *    - Photo Downloader
- *    - Video Downloader
- *    - IGTV Downloader
- *    - Carousel Downloader
- *    - Stories Viewer
  *
  * The legacy 9-tools list and Scan affordance are completely deleted.
  */
@@ -35,7 +27,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -60,7 +51,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.trmx.gui.ui.Tokens.Palette as P
@@ -72,7 +62,6 @@ fun RunScreen(
     onRunCommand: (String) -> Unit,
     onGoToKill: () -> Unit,
     onOpenDownloader: () -> Unit,
-    onOpenInstagram: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var commandInput by remember { mutableStateOf("") }
@@ -275,72 +264,6 @@ fun RunScreen(
                         "Video & MP3 download engine, quality choices, history",
                         fontSize = 12.sp,
                         color = P.TextSecondary,
-                    )
-                }
-
-                Icon(
-                    Icons.Outlined.ChevronRight,
-                    contentDescription = null,
-                    tint = P.TextMuted,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-
-        // ---- Instagram Entry Card (PART A) -------------------------------
-        TrmxCard(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = 16.dp,
-            onClick = onOpenInstagram,
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = P.SurfaceHigh,
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Outlined.AutoStories,
-                            contentDescription = null,
-                            tint = P.TextPrimary,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.width(14.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "Instagram",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = P.TextPrimary,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = P.SurfaceHigh,
-                        ) {
-                            Text(
-                                "7 tools",
-                                fontSize = 11.sp,
-                                color = P.TextSecondary,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                    Text(
-                        "Stories, Reels, Photos, Videos, IGTV, Carousels · No login",
-                        fontSize = 12.sp,
-                        color = P.TextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
 
