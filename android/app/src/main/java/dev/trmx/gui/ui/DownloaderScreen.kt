@@ -362,7 +362,6 @@ fun DownloaderScreen(
                             )
                         }
                     }
-                }
 
                 // 4. Download Folder Location (~/storage/downloads)
                 Row(
